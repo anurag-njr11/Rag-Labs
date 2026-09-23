@@ -273,6 +273,76 @@ async def estimate(project_id: str, body: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+@router.post("/{project_id}/recommend")
+async def recommend(project_id: str) -> dict[str, Any]:
+    """Smart recommendation: analyze uploaded documents and recommend optimal pipeline config.
+
+    Reads document metadata to infer the best settings for each pipeline stage.
+    Returns the recommended config with reasoning for each choice.
+    """
+    from ..core.recommender import Recommender
+    from ..ingest.document_analyzer import aggregate_corpus_metadata
+
+    await _project(project_id)
+
+    # Fetch document metadata for all documents in this project
+    metadatas = await db.fetch_all(
+        "SELECT metadata FROM document_metadata WHERE project_id=? ORDER BY created_at",
+        (project_id,)
+    )
+
+    if not metadatas:
+        # No documents uploaded yet; return default recommendation
+        from ..core.pipeline import recommended_pipeline
+        cfg = recommended_pipeline()
+        return {
+            "config": cfg,
+            "reasoning": {
+                "parse": "Using default parser (PyMuPDF4LLM).",
+                "chunk": "Using default chunking (recursive, 768 chars).",
+                "embed": "Using default embedder (bge-small, local).",
+                "vector_store": "Using default vector store (NumPy, exact).",
+                "retrieve": "Using default retriever (hybrid).",
+                "rerank": "Reranking off by default.",
+                "prompt": "Using default prompt template.",
+                "generate": "Using default LLM (Gemini).",
+            },
+            "metadata": {
+                "corpus_size": 0,
+                "estimated_chunks": 0,
+                "confidence": 0.5,
+            },
+        }
+
+    # Parse metadata and aggregate
+    parsed_metadatas = []
+    for row in metadatas:
+        meta_dict = db.loads(row["metadata"], {})
+        from ..ingest.document_analyzer import DocumentMetadata
+        parsed_metadatas.append(DocumentMetadata(**meta_dict))
+
+    corpus_metadata = aggregate_corpus_metadata(parsed_metadatas)
+
+    # Get recommendation
+    recommender = Recommender()
+    config, reasoning = recommender.recommend(corpus_metadata)
+
+    # Validate the recommended config
+    cfg = _validate(config)
+
+    return {
+        "config": cfg,
+        "reasoning": reasoning,
+        "metadata": {
+            "corpus_size": corpus_metadata.get("total_char_count", 0),
+            "estimated_chunks": corpus_metadata.get("estimated_chunks", 0),
+            "languages": corpus_metadata.get("languages", ["en"]),
+            "domains": corpus_metadata.get("inferred_domains", []),
+            "confidence": 0.85,  # Hard-coded for now; could be dynamic
+        },
+    }
+
+
 # --- builds -----------------------------------------------------------------
 
 @router.get("/{project_id}/builds")

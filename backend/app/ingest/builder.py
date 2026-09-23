@@ -29,6 +29,7 @@ from ..engine import stores
 from ..nodes.chunk import approx_tokens
 from . import lookup
 from .jobs import Job
+from .document_analyzer import analyze_document
 
 _locks: dict[str, asyncio.Lock] = {}
 
@@ -193,6 +194,20 @@ async def _index_documents(build: dict[str, Any], cfg: PipelineConfig, docs: lis
         async with db.tx() as c:
             await c.execute("UPDATE documents SET parse_quality=?, error=NULL WHERE id=?",
                             (db.dumps(parsed["quality"]), d["id"]))
+
+        # Analyze document for smart configuration recommendations
+        try:
+            metadata = analyze_document(parsed["pages"])
+            meta_id = db.new_id()
+            async with db.tx() as c:
+                await c.execute(
+                    "INSERT OR REPLACE INTO document_metadata (id, document_id, project_id, metadata, created_at)"
+                    " VALUES (?, ?, ?, ?, ?)",
+                    (meta_id, d["id"], build["project_id"], db.dumps(metadata.__dict__), db.now_iso())
+                )
+        except Exception as e:
+            log(f"{d['filename']}: Document analysis failed: {e}", "warning")
+
         prepared.append((d, chunks))
     progress("parse", len(docs), len(docs), "Parsed")
 

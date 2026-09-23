@@ -135,6 +135,26 @@ export const useRecommendedPipeline = (o?: QOpts<PipelineConfig>) =>
     ...o,
   })
 
+export interface SmartRecommendation {
+  config: PipelineConfig
+  reasoning: Record<string, string>
+  metadata: {
+    corpus_size: number
+    estimated_chunks: number
+    languages: string[]
+    domains: string[]
+    confidence: number
+  }
+}
+
+export const useSmartRecommend = (projectId: string | undefined) =>
+  useQuery({
+    queryKey: ['recommend', projectId],
+    queryFn: () => api.post<SmartRecommendation>(`/projects/${projectId}/recommend`, {}),
+    enabled: !!projectId,
+    staleTime: 5 * 60_000,
+  })
+
 export const useValidatePipeline = () =>
   useMutation({ mutationFn: (config: PipelineConfig) => api.post<ValidateResult>('/pipelines/validate', { config }) })
 

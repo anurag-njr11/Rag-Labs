@@ -21,12 +21,19 @@ from ..llm import provider as llm
 Progress = Callable[[int, int], Awaitable[None] | None]
 
 FASTEMBED_MODELS = {
+    # Lightweight & balanced
     "BAAI/bge-small-en-v1.5": {"dim": 384, "size": "67 MB"},
-    "BAAI/bge-base-en-v1.5": {"dim": 768, "size": "210 MB"},
     "sentence-transformers/all-MiniLM-L6-v2": {"dim": 384, "size": "90 MB"},
     "snowflake/snowflake-arctic-embed-s": {"dim": 384, "size": "130 MB"},
+    # Standard & recommended
+    "BAAI/bge-base-en-v1.5": {"dim": 768, "size": "210 MB"},
     "nomic-ai/nomic-embed-text-v1.5": {"dim": 768, "size": "520 MB"},
-    "mixedbread-ai/mxbai-embed-large-v1": {"dim": 1024, "size": "640 MB"},
+    # High quality & specialized
+    "mixedbread-ai/mxbai-embed-large-v1": {"dim": 1024, "size": "640 MB"},  # Best for code
+    # HuggingFace additions
+    "BAAI/bge-m3": {"dim": 1024, "size": "1 GB"},  # Multilingual, very strong
+    "intfloat/e5-large-v2": {"dim": 1024, "size": "1.3 GB"},  # MTEB top performer
+    "jinaai/jina-embeddings-v2-base-en": {"dim": 768, "size": "150 MB"},  # Long context (8k)
 }
 
 # Instruction prefixes the model authors recommend. Used when the prefix field is left empty.
@@ -34,8 +41,11 @@ DEFAULT_PREFIXES: dict[str, tuple[str, str]] = {
     "nomic-ai/nomic-embed-text-v1.5": ("search_query: ", "search_document: "),
     "BAAI/bge-small-en-v1.5": ("Represent this sentence for searching relevant passages: ", ""),
     "BAAI/bge-base-en-v1.5": ("Represent this sentence for searching relevant passages: ", ""),
+    "BAAI/bge-m3": ("Represent this sentence for searching relevant passages: ", ""),
     "mixedbread-ai/mxbai-embed-large-v1": ("Represent this sentence for searching relevant passages: ", ""),
     "snowflake/snowflake-arctic-embed-s": ("Represent this sentence for searching relevant passages: ", ""),
+    "intfloat/e5-large-v2": ("query: ", "passage: "),
+    "jinaai/jina-embeddings-v2-base-en": ("", ""),  # No specific prefixes needed
 }
 
 

@@ -24,6 +24,16 @@ CREATE TABLE IF NOT EXISTS documents (
 );
 CREATE INDEX IF NOT EXISTS ix_documents_project ON documents(project_id);
 
+-- Document metadata for smart auto-configuration recommendations
+CREATE TABLE IF NOT EXISTS document_metadata (
+    id                    TEXT PRIMARY KEY,
+    document_id           TEXT NOT NULL UNIQUE REFERENCES documents(id) ON DELETE CASCADE,
+    project_id            TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    metadata              TEXT NOT NULL,               -- JSON: DocumentMetadata fields
+    created_at            TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_document_metadata_project ON document_metadata(project_id);
+
 -- Immutable. An edit inserts a new row.
 CREATE TABLE IF NOT EXISTS pipeline_versions (
     id                TEXT PRIMARY KEY,
