@@ -291,30 +291,7 @@ async def recommend(project_id: str) -> dict[str, Any]:
         (project_id,)
     )
 
-    if not metadatas:
-        # No documents uploaded yet; return default recommendation
-        from ..core.pipeline import recommended_pipeline
-        cfg = recommended_pipeline()
-        return {
-            "config": cfg,
-            "reasoning": {
-                "parse": "Using default parser (PyMuPDF4LLM).",
-                "chunk": "Using default chunking (recursive, 768 chars).",
-                "embed": "Using default embedder (bge-small, local).",
-                "vector_store": "Using default vector store (NumPy, exact).",
-                "retrieve": "Using default retriever (hybrid).",
-                "rerank": "Reranking off by default.",
-                "prompt": "Using default prompt template.",
-                "generate": "Using default LLM (Gemini).",
-            },
-            "metadata": {
-                "corpus_size": 0,
-                "estimated_chunks": 0,
-                "confidence": 0.5,
-            },
-        }
-
-    # Parse metadata and aggregate
+    # Parse metadata and aggregate (works with empty list too)
     parsed_metadatas = []
     for row in metadatas:
         meta_dict = db.loads(row["metadata"], {})
@@ -338,7 +315,7 @@ async def recommend(project_id: str) -> dict[str, Any]:
             "estimated_chunks": corpus_metadata.get("estimated_chunks", 0),
             "languages": corpus_metadata.get("languages", ["en"]),
             "domains": corpus_metadata.get("inferred_domains", []),
-            "confidence": 0.85,  # Hard-coded for now; could be dynamic
+            "confidence": 0.85 if metadatas else 0.5,  # Lower confidence when no docs analyzed
         },
     }
 
