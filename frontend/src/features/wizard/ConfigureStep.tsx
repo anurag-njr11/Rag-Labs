@@ -58,12 +58,12 @@ export function ConfigureStep({
         />
 
         {/* Auto-Configure Toggle */}
-        <div className="mb-6 flex items-center justify-between rounded-lg bg-bg-secondary p-4">
+        <div className="mb-6 flex items-center justify-between rounded-lg border border-border-default bg-bg-surface p-4">
           <div className="flex items-center gap-3">
-            <Zap size={18} className="text-blue-500" />
+            <Zap size={18} className="text-accent-default" />
             <div>
-              <div className="font-medium">Auto-Configure</div>
-              <div className="text-sm text-text-secondary">Let the system choose optimal settings based on your documents</div>
+              <div className="font-semibold text-text-primary">Auto-Configure</div>
+              <div className="text-body text-text-secondary">Let the system choose optimal settings based on your documents</div>
             </div>
           </div>
           <Switch checked={autoMode} onChange={setAutoMode} />
@@ -71,13 +71,13 @@ export function ConfigureStep({
 
         {/* Smart Recommendation Summary (when auto mode is on) */}
         {autoMode && smartRec.data && (
-          <div className="mb-6 rounded-lg border border-border-primary bg-bg-secondary p-4">
+          <div className="mb-6 rounded-lg border border-border-default bg-bg-surface p-4">
             <div className="mb-4">
-              <div className="flex items-center gap-2 font-medium text-text-primary">
-                <Zap size={16} className="text-blue-500" />
+              <div className="flex items-center gap-2 font-semibold text-text-primary">
+                <Zap size={16} className="text-accent-default" />
                 Smart Configuration
               </div>
-              <div className="mt-1 text-sm text-text-secondary">
+              <div className="mt-1 text-body text-text-secondary">
                 {smartRec.data.metadata.corpus_size > 0
                   ? `Based on ${smartRec.data.metadata.estimated_chunks.toLocaleString()} chunks from ${(smartRec.data.metadata.corpus_size / 1_000_000).toFixed(1)}MB of documents`
                   : 'Default configuration recommended'
@@ -86,12 +86,14 @@ export function ConfigureStep({
             </div>
 
             {/* Recommendation summary grid */}
-            <div className="mb-4 grid gap-2">
-              {Object.entries(smartRec.data.reasoning).slice(0, 8).map(([stage], idx) => (
-                <div key={stage} className="flex items-center gap-2 text-sm">
-                  <div className="text-text-secondary">✓</div>
-                  <div className="font-mono text-xs uppercase tracking-wider text-text-tertiary min-w-24">{stage}</div>
-                  <div className="text-text-primary truncate">{smartRec.data.reasoning[stage]}</div>
+            <div className="mb-4 space-y-2">
+              {Object.entries(smartRec.data.reasoning).map(([stage, reason]) => (
+                <div key={stage} className="flex items-start gap-2 text-body">
+                  <span className="text-success-fg mt-0.5 flex-shrink-0">✓</span>
+                  <div className="flex-1 min-w-0">
+                    <div className="font-mono text-caption uppercase tracking-wide text-text-tertiary">{stage}</div>
+                    <div className="text-text-primary">{reason}</div>
+                  </div>
                 </div>
               ))}
             </div>
@@ -99,26 +101,31 @@ export function ConfigureStep({
             {/* Show Reasoning expandable */}
             <button
               onClick={() => setShowReasoning(!showReasoning)}
-              className="flex items-center gap-2 text-sm text-blue-500 hover:text-blue-600 transition-colors"
+              className="flex items-center gap-2 text-label text-accent-default hover:text-accent-hover transition-colors"
             >
               <ChevronDown size={14} style={{ transform: showReasoning ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 200ms' }} />
               {showReasoning ? 'Hide reasoning' : 'Show detailed reasoning'}
             </button>
 
-            {/* Expanded reasoning */}
+            {/* Expanded reasoning details */}
             {showReasoning && (
-              <div className="mt-4 space-y-3 border-t border-border-primary pt-4">
-                {Object.entries(smartRec.data.reasoning).map(([stage, reason]) => (
-                  <div key={stage}>
-                    <div className="font-mono text-xs uppercase tracking-wider text-text-tertiary mb-1">{stage}</div>
-                    <div className="text-sm text-text-primary">{reason}</div>
+              <div className="mt-4 space-y-4 border-t border-border-default pt-4">
+                <div className="space-y-3">
+                  {Object.entries(smartRec.data.reasoning).map(([stage, reason]) => (
+                    <div key={stage}>
+                      <div className="font-mono text-caption uppercase tracking-wide text-text-tertiary mb-1">{stage}</div>
+                      <div className="text-body text-text-primary leading-relaxed">{reason}</div>
+                    </div>
+                  ))}
+                </div>
+                <div className="border-t border-border-default pt-3">
+                  <div className="text-caption text-text-secondary">
+                    <span className="font-semibold text-text-primary">Confidence:</span> {(smartRec.data.metadata.confidence * 100).toFixed(0)}%
+                    {smartRec.data.metadata.domains && smartRec.data.metadata.domains.length > 0 && (
+                      <span> • Detected: {smartRec.data.metadata.domains.join(', ')}</span>
+                    )}
                   </div>
-                ))}
-                {smartRec.data.metadata.confidence < 0.9 && (
-                  <div className="mt-3 text-xs text-text-secondary italic border-t border-border-primary pt-3">
-                    Confidence: {(smartRec.data.metadata.confidence * 100).toFixed(0)}% (corpus fingerprint: {smartRec.data.metadata.domains.length > 0 ? smartRec.data.metadata.domains.join(', ') : 'general'})
-                  </div>
-                )}
+                </div>
               </div>
             )}
           </div>
