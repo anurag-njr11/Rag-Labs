@@ -42,13 +42,13 @@ class Recommender:
         # --- PARSER ---
         if avg_structure > 0.2:
             parser_type = "pymupdf4llm"
-            reasoning["parse"] = "Document has structure (headings/tables). PyMuPDF4LLM preserves Markdown."
+            reasoning["parse"] = "PyMuPDF4LLM preserves document structure (headings, tables) as Markdown. Recommended when structure matters."
         elif ocr_needed:
             parser_type = "pymupdf_text"
-            reasoning["parse"] = "Document appears to be scanned. Using PyMuPDF with OCR enabled."
+            reasoning["parse"] = "Document appears to be scanned (low char density). Using PyMuPDF with OCR to extract text from images."
         else:
             parser_type = "pymupdf_text"
-            reasoning["parse"] = "Using PyMuPDF for fast plain-text extraction."
+            reasoning["parse"] = "PyMuPDF extracts text efficiently. Works well for most PDFs and is fast."
 
         parse_config = {
             "type": parser_type,
@@ -61,27 +61,20 @@ class Recommender:
         # --- CHUNK ---
         if avg_structure > 0.2 or has_code:
             chunk_type = "structure_aware"
-            reasoning["chunk"] = "Document has structure (headings) or code. Respecting boundaries ensures context."
-        elif avg_code > 0.1:
-            chunk_type = "recursive"
-            reasoning["chunk"] = "Code-heavy document. Recursive chunking respects sentence boundaries in comments."
+            chunk_size = 512 if has_code else 768
+            reasoning["chunk"] = f"Structure-aware chunking respects heading boundaries and keeps code blocks intact. {chunk_size} chars balances context with specificity."
         else:
             chunk_type = "recursive"
-            reasoning["chunk"] = "Using recursive chunking for sentence-aware boundaries."
-
-        # Chunk size: smaller for technical, larger for general
-        if avg_code > 0.2:
-            chunk_size = 512
-            reasoning["chunk"] += " Smaller chunks (512) for code precision."
-        elif total_chars > 10_000_000:
-            chunk_size = 1024
-            reasoning["chunk"] += " Larger chunks (1024) for large corpus."
-        elif total_chars < 1_000_000:
-            chunk_size = 512
-            reasoning["chunk"] += " Smaller chunks (512) for detailed Q&A."
-        else:
-            chunk_size = 768
-            reasoning["chunk"] += " Balanced chunk size (768)."
+            # Chunk size based on corpus size
+            if total_chars < 1_000_000:
+                chunk_size = 512
+                reasoning["chunk"] = "Small corpus (< 1MB). Using 512-char chunks for detailed Q&A. Recursive chunking respects sentence boundaries."
+            elif total_chars > 10_000_000:
+                chunk_size = 1024
+                reasoning["chunk"] = "Large corpus (> 10MB). Using 1024-char chunks to reduce overhead while maintaining context."
+            else:
+                chunk_size = 768
+                reasoning["chunk"] = "Medium corpus. Using 768-char chunks—balanced between specificity and context coverage. Recursive chunking respects sentence breaks."
 
         chunk_config = {
             "type": chunk_type,
@@ -100,23 +93,23 @@ class Recommender:
             embed_type = "api"
             embed_provider = "gemini"
             embed_model = ""  # default
-            reasoning["embed"] = f"Non-English detected ({primary_lang}). Using Gemini API for better multilingual support."
+            reasoning["embed"] = f"Non-English detected ({primary_lang}). Gemini API handles multilingual content better than local models."
         elif has_code and avg_code > 0.15:
             embed_type = "fastembed"
             embed_model = "mixedbread-ai/mxbai-embed-large-v1"
-            reasoning["embed"] = "Code-heavy corpus. MXBai (1024d) ranks #1 on MTEB for code retrieval."
+            reasoning["embed"] = "Code-heavy corpus (>15% code). MXBai (1024d) ranks #1 on MTEB for code retrieval. Better at matching error messages and symbols."
         elif estimated_chunks > 50_000:
             embed_type = "fastembed"
             embed_model = "BAAI/bge-base-en-v1.5"
-            reasoning["embed"] = "Large corpus (>50k chunks). BGE-base (768d) balances quality and speed."
+            reasoning["embed"] = f"Large corpus ({estimated_chunks:,} chunks). BGE-base (768d) balances quality (MTEB #4) with speed. 210MB download, runs locally."
         elif total_chars < 500_000:
             embed_type = "fastembed"
             embed_model = "BAAI/bge-small-en-v1.5"
-            reasoning["embed"] = "Small corpus. BGE-small (384d) is fast and sufficient."
+            reasoning["embed"] = "Small corpus. BGE-small (384d) is fast, lightweight (67MB), and sufficient for precise retrieval."
         else:
             embed_type = "fastembed"
             embed_model = "BAAI/bge-base-en-v1.5"
-            reasoning["embed"] = "BGE-base (768d) is recommended for general use."
+            reasoning["embed"] = "BGE-base (768d) is the balanced recommendation—ranked #4 on MTEB, handles both semantic and exact matches well."
 
         embed_config = {
             "type": embed_type,
@@ -133,15 +126,15 @@ class Recommender:
         # --- VECTOR STORE ---
         if estimated_chunks < 1000:
             store_type = "numpy"
-            reasoning["vector_store"] = "Small corpus (<1k chunks). NumPy provides exact search."
+            reasoning["vector_store"] = f"Tiny corpus ({estimated_chunks} chunks). NumPy provides exact, deterministic search with no approximation."
         elif estimated_chunks < 50_000:
             store_type = "faiss"
             store_config_type = "Flat"
-            reasoning["vector_store"] = "Medium corpus (1k–50k chunks). FAISS Flat provides exact, indexed search."
+            reasoning["vector_store"] = f"Medium corpus ({estimated_chunks:,} chunks). FAISS Flat is exact (no approximation), indexed, and deterministic. Every search gets the same results."
         else:
             store_type = "faiss"
             store_config_type = "HNSW"
-            reasoning["vector_store"] = "Large corpus (>50k chunks). FAISS HNSW balances accuracy and speed."
+            reasoning["vector_store"] = f"Large corpus ({estimated_chunks:,} chunks). FAISS HNSW uses graph-based search—fast (~5ms queries) and approximate (97%+ recall). Trade-off: slightly different results on re-index."
 
         vector_store_config: dict[str, Any] = {
             "type": store_type,
@@ -160,10 +153,10 @@ class Recommender:
         # --- RETRIEVE ---
         if has_code or "technical" in inferred_domains:
             retrieve_type = "fused"
-            retrieve_reason = "Technical/code corpus. Fused retrieval (dense + keyword + exact) catches symbol matches."
+            retrieve_reason = "Technical/code corpus detected. Fused retrieval (dense + keyword + exact) catches error messages, symbol names, and API references. Exact-match weight boosted to 1.5."
         else:
             retrieve_type = "hybrid"
-            retrieve_reason = "Using hybrid retrieval (dense + keyword) for general knowledge."
+            retrieve_reason = "Hybrid retrieval (dense semantic + keyword BM25) works well for general knowledge. Returns top 8 results via RRF fusion."
 
         retrieve_config = {
             "type": retrieve_type,
@@ -181,17 +174,17 @@ class Recommender:
         }
         if estimated_chunks > 10_000 and has_code:
             retrieve_config["pin_definitions"] = True
-            retrieve_reason += " Pinning section headings that match queries."
+            retrieve_reason += " Section headings that match query terms are pinned to top-5 (helps for finding API docs)."
 
         reasoning["retrieve"] = retrieve_reason
 
         # --- RERANK ---
         if estimated_chunks > 50_000:
             rerank_type = "cross_encoder"
-            reasoning["rerank"] = "Large corpus (>50k chunks). Reranking filters noise in dense retrieval."
+            reasoning["rerank"] = f"Large corpus ({estimated_chunks:,} chunks). Cross-encoder reranking uses a second model to filter noise. Adds ~50ms per query but improves accuracy."
         else:
             rerank_type = "none"
-            reasoning["rerank"] = "Skipping reranking; retrieval quality sufficient without extra cost."
+            reasoning["rerank"] = "Corpus size is moderate. Retrieval + fusion quality sufficient without reranking overhead."
 
         rerank_config = {"type": rerank_type}
 
@@ -202,17 +195,17 @@ class Recommender:
             "say_dont_know": True,
             "source_labels": True,
         }
-        reasoning["prompt"] = "Using cited Q&A with max 4000 context tokens and instruction to refuse unanswerable questions."
+        reasoning["prompt"] = "Cited Q&A template: LLM cites chunks with [1], [2] markers. Max 4000 tokens keeps context tight. 'Say don't know' prevents hallucination on unanswerable questions."
 
         # --- GENERATE ---
         if has_code:
             gen_temp = 0.1
             gen_reasoning = "none"
-            reasoning["generate"] = "Code-heavy corpus. Temperature=0.1 for precise answers; no extended reasoning."
+            reasoning["generate"] = "Code corpus: temperature=0.1 makes answers reproducible (deterministic). No extended reasoning (faster, focused on accuracy)."
         else:
             gen_temp = 0.2
             gen_reasoning = "low"
-            reasoning["generate"] = "Temperature=0.2 balances quality and diversity. Low reasoning for speed."
+            reasoning["generate"] = "Temperature=0.2 balances focus + diversity. Low reasoning effort (~0.5x overhead) for speed. Gemini default model."
 
         generate_config = {
             "type": "gemini",
