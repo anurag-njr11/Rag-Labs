@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { ArrowLeft, ArrowRight, RotateCcw, Zap } from 'lucide-react'
+import { ArrowLeft, ArrowRight, RotateCcw, Zap, ChevronDown } from 'lucide-react'
 import { ApiError, errorMessage, useCreateVersion, useRecommendedPipeline, useSmartRecommend } from '@/api/hooks'
 import type { PipelineConfig, PipelineFieldError, Project } from '@/api/types'
 import { Banner, Button, Spinner, Switch } from '@/components/ui'
@@ -19,6 +19,7 @@ export function ConfigureStep({
   const [config, setConfig] = useState<PipelineConfig | undefined>(initial)
   const [errors, setErrors] = useState<PipelineFieldError[]>([])
   const [autoMode, setAutoMode] = useState(true)
+  const [showReasoning, setShowReasoning] = useState(false)
   const save = useCreateVersion(project.id)
   // The active config may arrive after first render (recommended fallback).
   const value = config ?? initial
@@ -70,30 +71,55 @@ export function ConfigureStep({
 
         {/* Smart Recommendation Summary (when auto mode is on) */}
         {autoMode && smartRec.data && (
-          <div className="mb-6 rounded-lg border border-blue-200 bg-blue-50 p-4">
-            <div className="mb-3 font-medium text-blue-900">📊 Smart Configuration</div>
-            <div className="space-y-2 text-sm">
-              {Object.entries(smartRec.data.reasoning).map(([stage, reason]) => (
-                <div key={stage} className="flex gap-2">
-                  <div className="font-mono text-xs uppercase tracking-wider text-blue-600 min-w-20">{stage}:</div>
-                  <div className="text-blue-900">{reason}</div>
+          <div className="mb-6 rounded-lg border border-border-primary bg-bg-secondary p-4">
+            <div className="mb-4">
+              <div className="flex items-center gap-2 font-medium text-text-primary">
+                <Zap size={16} className="text-blue-500" />
+                Smart Configuration
+              </div>
+              <div className="mt-1 text-sm text-text-secondary">
+                {smartRec.data.metadata.corpus_size > 0
+                  ? `Based on ${smartRec.data.metadata.estimated_chunks.toLocaleString()} chunks from ${(smartRec.data.metadata.corpus_size / 1_000_000).toFixed(1)}MB of documents`
+                  : 'Default configuration recommended'
+                }
+              </div>
+            </div>
+
+            {/* Recommendation summary grid */}
+            <div className="mb-4 grid gap-2">
+              {Object.entries(smartRec.data.reasoning).slice(0, 8).map(([stage], idx) => (
+                <div key={stage} className="flex items-center gap-2 text-sm">
+                  <div className="text-text-secondary">✓</div>
+                  <div className="font-mono text-xs uppercase tracking-wider text-text-tertiary min-w-24">{stage}</div>
+                  <div className="text-text-primary truncate">{smartRec.data.reasoning[stage]}</div>
                 </div>
               ))}
             </div>
-            {smartRec.data.metadata.confidence < 0.8 && (
-              <div className="mt-3 text-xs text-blue-700 italic">
-                Confidence: {(smartRec.data.metadata.confidence * 100).toFixed(0)}%
+
+            {/* Show Reasoning expandable */}
+            <button
+              onClick={() => setShowReasoning(!showReasoning)}
+              className="flex items-center gap-2 text-sm text-blue-500 hover:text-blue-600 transition-colors"
+            >
+              <ChevronDown size={14} style={{ transform: showReasoning ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 200ms' }} />
+              {showReasoning ? 'Hide reasoning' : 'Show detailed reasoning'}
+            </button>
+
+            {/* Expanded reasoning */}
+            {showReasoning && (
+              <div className="mt-4 space-y-3 border-t border-border-primary pt-4">
+                {Object.entries(smartRec.data.reasoning).map(([stage, reason]) => (
+                  <div key={stage}>
+                    <div className="font-mono text-xs uppercase tracking-wider text-text-tertiary mb-1">{stage}</div>
+                    <div className="text-sm text-text-primary">{reason}</div>
+                  </div>
+                ))}
+                {smartRec.data.metadata.confidence < 0.9 && (
+                  <div className="mt-3 text-xs text-text-secondary italic border-t border-border-primary pt-3">
+                    Confidence: {(smartRec.data.metadata.confidence * 100).toFixed(0)}% (corpus fingerprint: {smartRec.data.metadata.domains.length > 0 ? smartRec.data.metadata.domains.join(', ') : 'general'})
+                  </div>
+                )}
               </div>
-            )}
-            {!autoMode && (
-              <Button
-                size="sm"
-                onClick={applySmartRecommend}
-                disabled={smartRec.isPending}
-                className="mt-4"
-              >
-                Apply These Settings
-              </Button>
             )}
           </div>
         )}
