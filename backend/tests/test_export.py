@@ -64,7 +64,7 @@ async def project(tmp_path, monkeypatch):
         await c.execute("INSERT INTO projects (id, name, created_at) VALUES ('p', 'Export Test', ?)",
                         (db.now_iso(),))
     await create_document("p", "guide.md",
-                          b"# Guide\n\nRAG Builder exports a standalone bundle.\n\n"
+                          b"# Guide\n\nRAGLabs exports a standalone bundle.\n\n"
                           b"## int_parsing\n\nRaised for bad integers.\n")
     yield "p"
     await stores.close_all()
@@ -83,9 +83,9 @@ def _cfg(embed_type: str = "export_test_hash", rerank_type: str = "none", genera
 
 # --- requirements.txt / .env.example: pure config -> text, no build needed ---
 
-def test_requirements_always_includes_numpy_and_pydantic():
+def test_requirements_includes_numpy_but_not_unused_pydantic():
     req = export_mod._requirements(_cfg(embed_type="export_test_hash"))
-    assert "numpy" in req and "pydantic" in req
+    assert "numpy" in req and "pydantic" not in req
 
 
 def test_requirements_includes_fastembed_only_for_local_embed_or_rerank():
@@ -107,6 +107,42 @@ def test_requirements_includes_openai_for_api_provider_generate():
 def test_env_example_lists_only_needed_provider_keys():
     gemini_gen = export_mod._env_example(_cfg(embed_type="export_test_hash", generate_type="gemini"))
     assert "GEMINI_API_KEY" in gemini_gen and "NVIDIA_API_KEY" not in gemini_gen
+
+
+def test_readme_mentions_first_run_download_only_for_local_models():
+    project, version = {"name": "Demo"}, {"version": 1}
+    local = export_mod._readme(project, version, _cfg(embed_type="fastembed", rerank_type="cross_encoder"))
+    assert "first run downloads" in local and "`models/`" in local
+    remote = export_mod._readme(project, version, _cfg(embed_type="api", rerank_type="none"))
+    assert "first run downloads" not in remote and "`models/`" not in remote
+
+
+# --- rag.py runtime, loaded straight from the template file ------------------
+
+def _load_rag(monkeypatch):
+    import importlib.util
+
+    # Importing rag.py setdefaults this env var; pre-set it so monkeypatch restores it afterwards.
+    monkeypatch.setenv("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
+    spec = importlib.util.spec_from_file_location("exported_rag", export_mod._RAG_TEMPLATE_PATH)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return mod
+
+
+def test_rag_cli_reports_errors_without_traceback(monkeypatch, capsys):
+    rag = _load_rag(monkeypatch)
+
+    def boom(_q):
+        raise RuntimeError("Missing NVIDIA_API_KEY.")
+
+    monkeypatch.setattr(rag, "answer", boom)
+    monkeypatch.setattr("sys.argv", ["rag.py", "a question"])
+    with pytest.raises(SystemExit) as exc:
+        rag.main()
+    assert exc.value.code == 1
+    err = capsys.readouterr().err
+    assert err.strip() == "Error: Missing NVIDIA_API_KEY." and "Traceback" not in err
 
 
 # --- full endpoint: build a real index, export it, inspect the zip ----------

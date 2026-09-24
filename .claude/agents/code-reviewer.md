@@ -1,6 +1,6 @@
 ---
 name: code-reviewer
-description: Read-only reviewer for RAG Builder changes. Checks a diff or a set of files for correctness bugs, contract drift against frontend/API.md, broken architectural rules, accessibility gaps and missing tests. Use after a feature agent finishes and before merging.
+description: Read-only reviewer for RAGLabs changes. Checks a diff or a set of files for correctness bugs, contract drift against frontend/API.md, broken architectural rules, accessibility gaps and missing tests. Use after a feature agent finishes and before merging.
 tools: Read, Grep, Glob, Bash
 ---
 

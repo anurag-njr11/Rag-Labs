@@ -1,4 +1,4 @@
-# RAG Builder — Idea Catalogue
+# RAGLabs — Idea Catalogue
 
 > Working notes from the planning sessions. Every idea we surfaced, why it matters,
 > what it costs, and where it lands. Includes the ideas we rejected and why — those
@@ -532,7 +532,7 @@ That number is the product. Optimise it.
 
 - *"Stop guessing your RAG config. Measure it."*
 - *"Your RAG isn't bad because of chunk size. It's bad because your docs don't answer the question. We show you which ones."*
-- *"RAG Builder is the place you find out your RAG config is wrong — and which one to use instead."*
+- *"RAGLabs is the place you find out your RAG config is wrong — and which one to use instead."*
 - Phase stack: *"Phase 1 gives you a working RAG chatbot. Phase 2 tells you whether it's any good and makes it better. Phase 3 keeps telling you, from real questions, forever."*
 
 ### 9.4 The code vertical as the proving ground
@@ -541,7 +541,7 @@ That number is the product. Optimise it.
 The two project ideas overlap ~70% (parse, chunk, index, hybrid retrieve, rerank, evaluate).
 Building both means building that stack twice. The synthesis:
 
-> **RAG Builder, with code/technical documentation as the first vertical, where correctness is
+> **RAGLabs, with code/technical documentation as the first vertical, where correctness is
 > verified by execution.**
 
 It fixes the weakest joint in each:

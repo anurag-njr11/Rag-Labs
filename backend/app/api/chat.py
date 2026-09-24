@@ -10,7 +10,7 @@ from sse_starlette.sse import EventSourceResponse
 from .. import db
 from ..core import runs
 from ..engine import chat as chat_engine
-from ..engine import sync
+from ..engine import suggest, sync
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -70,6 +70,13 @@ async def chat(project_id: str, body: ChatIn):
 @router.get("/projects/{project_id}/runs")
 async def list_runs(project_id: str, limit: int = 50) -> list[dict[str, Any]]:
     return await runs.list_runs(project_id, min(limit, 200))
+
+
+@router.get("/projects/{project_id}/suggestions")
+async def get_suggestions(project_id: str) -> dict[str, Any]:
+    if not await db.fetch_one("SELECT id FROM projects WHERE id=?", (project_id,)):
+        raise HTTPException(404, "project not found")
+    return await suggest.suggestions(project_id)
 
 
 @router.get("/runs/{run_id}")

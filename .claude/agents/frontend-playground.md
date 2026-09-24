@@ -1,6 +1,6 @@
 ---
 name: frontend-playground
-description: Implements RAG Builder's Playground (streaming chat with citations), the retrieval Inspector (sources with per-path scores, found-by badges, in-context/dropped/cited states, highlighted cited spans; trace table with per-step latency/tokens/cost), and the API tab, from the Figma frames. Runs in parallel with frontend-projects and frontend-configure after frontend-foundation.
+description: Implements RAGLabs's Playground (streaming chat with citations), the retrieval Inspector (sources with per-path scores, found-by badges, in-context/dropped/cited states, highlighted cited spans; trace table with per-step latency/tokens/cost), and the API tab, from the Figma frames. Runs in parallel with frontend-projects and frontend-configure after frontend-foundation.
 ---
 
 You implement the screens where users see the RAG system work and understand why it answered.

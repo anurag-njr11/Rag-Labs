@@ -48,7 +48,7 @@ async def resolved_config(version: dict[str, Any]) -> PipelineConfig:
 
 
 def _requirements(cfg: PipelineConfig) -> str:
-    pkgs: dict[str, str] = {"numpy": "numpy>=2.5.3", "pydantic": "pydantic>=2.13.5"}
+    pkgs: dict[str, str] = {"numpy": "numpy>=2.5.3"}
     if cfg["embed"]["type"] == "fastembed" or cfg["rerank"]["type"] == "cross_encoder":
         pkgs["fastembed"] = "fastembed>=0.8.1"
     if cfg["embed"]["type"] == "api" or cfg["generate"]["type"] in ("gemini", "nvidia"):
@@ -67,15 +67,22 @@ def _env_example(cfg: PipelineConfig) -> str:
 
 
 def _readme(project: dict[str, Any], version: dict[str, Any], cfg: PipelineConfig) -> str:
+    local = [m for m in (cfg["embed"]["model"] if cfg["embed"]["type"] == "fastembed" else None,
+                         cfg["rerank"]["model"] if cfg["rerank"]["type"] == "cross_encoder" else None) if m]
+    first_run = (
+        f"\nThe first run downloads {' and '.join(f'`{m}`' for m in local)} into `models/` next to `rag.py`"
+        " (set `FASTEMBED_CACHE_PATH` to put them elsewhere); later runs reuse them offline.\n"
+        if local else ""
+    )
     return f"""# {project['name']} — standalone RAG export
 
-Exported from RAG Builder: project "{project['name']}", version {version['version']}.
+Exported from RAGLabs: project "{project['name']}", version {version['version']}.
 
 Pipeline: parse={cfg['parse']['type']} · chunk={cfg['chunk']['type']} · embed={cfg['embed']['type']} · \
 retrieve={cfg['retrieve']['type']} · rerank={cfg['rerank']['type']} · prompt={cfg['prompt']['type']} · \
 generate={cfg['generate']['type']}
 
-This bundle runs with **zero** dependency on the RAG Builder backend, the `app` package, or any
+This bundle runs with **zero** dependency on the RAGLabs backend, the `app` package, or any
 vector-store library (FAISS/Chroma/Qdrant/LanceDB) — retrieval is brute-force NumPy cosine/dot/L2
 search over the vectors in `data/vectors.npy`, which is fine at this corpus's chunk count.
 
@@ -95,14 +102,14 @@ pipeline uses an API embedder or generator).
 
 With no arguments, `rag.py` starts an interactive prompt (empty line or Ctrl+C to quit).
 It's also importable: `from rag import answer; answer("...")`.
-
+{first_run}
 ## Contents
 
 - `rag.py` — the standalone runtime (retrieval, fusion, rerank, prompt, generate).
 - `config.json` — the resolved pipeline configuration this was exported from.
 - `data/chunks.jsonl` — one JSON object per indexed chunk.
 - `data/vectors.npy` — float32 embedding matrix, row-aligned with `chunks.jsonl`.
-"""
+""" + ("- `models/` — created on first run; downloaded local models.\n" if local else "")
 
 
 async def build_export_zip(project: dict[str, Any], version: dict[str, Any], build: dict[str, Any]) -> bytes:

@@ -114,6 +114,13 @@ export interface Version {
   index?: IndexStatus
   changes_from_parent?: Change[]
   parent_version?: number | null
+  /** Detail only: each time this version was made active, newest first. */
+  activations?: VersionActivation[]
+}
+export interface VersionActivation {
+  at: string
+  /** The version it replaced; null if it was the project's first. */
+  previous_version: number | null
 }
 export interface ProjectSummary {
   vector_store: string
@@ -374,6 +381,11 @@ export interface ChatResult {
   sources: ChatSource[]
   run_id: string
   totals: ChatTotals
+}
+/** `GET /projects/{id}/suggestions`: the first source that yields questions wins. */
+export interface Suggestions {
+  source: 'eval' | 'headings' | 'recent' | 'none'
+  questions: string[]
 }
 export interface RunSummary {
   id: string

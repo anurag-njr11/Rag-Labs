@@ -47,6 +47,16 @@ CREATE TABLE IF NOT EXISTS pipeline_versions (
     UNIQUE (project_id, version)
 );
 
+-- Append-only log of which version became active, and when.
+CREATE TABLE IF NOT EXISTS version_activations (
+    id                  TEXT PRIMARY KEY,
+    project_id          TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    version_id          TEXT NOT NULL REFERENCES pipeline_versions(id) ON DELETE CASCADE,
+    previous_version_id TEXT,                         -- NULL for a project's first version
+    created_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_version_activations_version ON version_activations(version_id);
+
 -- One build per (project, index config). Versions differing only in
 -- instant-effect params share a build. A build is synced to the current corpus.
 CREATE TABLE IF NOT EXISTS index_builds (

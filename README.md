@@ -1,4 +1,4 @@
-# RAG Builder
+# RAGLabs
 
 Build your own "chat with your documents" assistant from a web UI — no code.
 Upload documents, choose and tune every part of the pipeline (including the vector database),
@@ -23,7 +23,7 @@ for the idea catalogue.
 
 Every parameter is labelled **⚡ instant** (applies at query time) or **🔁 rebuild** (needs
 re-indexing). Rebuilds reuse cached work: switching vector store never re-embeds.
-Every saved configuration is an immutable version you can diff and roll back.
+Every saved configuration is an immutable version you can diff and switch back to at any time.
 
 ## Requirements
 

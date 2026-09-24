@@ -1,5 +1,5 @@
 [project]
-name = "rag-builder"
+name = "raglabs"
 version = "0.1.0"
 description = "Build, tune and inspect RAG systems from a GUI"
 requires-python = ">=3.12,<3.13"

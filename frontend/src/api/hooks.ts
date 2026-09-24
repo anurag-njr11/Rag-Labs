@@ -38,6 +38,7 @@ import type {
   RunDetail,
   RunSummary,
   SlotCatalog,
+  Suggestions,
   UpdateProjectBody,
   UploadResult,
   ValidateResult,
@@ -68,6 +69,7 @@ export const qk = {
   chunks: (id: string, docId: string, limit: number) => ['projects', id, 'documents', docId, 'chunks', limit] as const,
   projectJobs: (id: string) => ['projects', id, 'jobs'] as const,
   runs: (id: string, limit: number) => ['projects', id, 'runs', limit] as const,
+  suggestions: (id: string) => ['projects', id, 'suggestions'] as const,
   job: (jobId: string) => ['jobs', jobId] as const,
   run: (runId: string) => ['runs', runId] as const,
   evalSets: (id: string) => ['projects', id, 'eval', 'sets'] as const,
@@ -272,15 +274,6 @@ export function useActivateVersion(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (vid: string) => api.post<VersionJobResult>(`/projects/${projectId}/versions/${vid}/activate`),
-    onSuccess: () => invalidateProject(qc, projectId),
-  })
-}
-
-/** Creates a NEW version copying `vid`. */
-export function useRollbackVersion(projectId: string) {
-  const qc = useQueryClient()
-  return useMutation({
-    mutationFn: (vid: string) => api.post<VersionJobResult>(`/projects/${projectId}/versions/${vid}/rollback`),
     onSuccess: () => invalidateProject(qc, projectId),
   })
 }
@@ -495,6 +488,15 @@ export const useRuns = (projectId: string | undefined, limit = 50, o?: QOpts<Run
   useQuery({
     queryKey: qk.runs(projectId ?? '', limit),
     queryFn: () => api.get<RunSummary[]>(`/projects/${projectId}/runs`, { limit }),
+    enabled: !!projectId,
+    ...o,
+  })
+
+/** Starter questions drawn from the project's own eval set, section headings or recent questions. */
+export const useSuggestions = (projectId: string | undefined, o?: QOpts<Suggestions>) =>
+  useQuery({
+    queryKey: qk.suggestions(projectId ?? ''),
+    queryFn: () => api.get<Suggestions>(`/projects/${projectId}/suggestions`),
     enabled: !!projectId,
     ...o,
   })

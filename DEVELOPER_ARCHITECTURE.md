@@ -1,6 +1,6 @@
-# RAG Builder — Developer Architecture
+# RAGLabs — Developer Architecture
 
-This document explains how RAG Builder actually works, as implemented in this repository, so a developer can trace any request end-to-end and make changes safely. **The source code is the source of truth.** Where `README.md`, `PRD.md`, `USER_GUIDE.md` or `IDEAS.md` describe something that does not match the code, that is called out explicitly (see Part 29, and inline "⚠ Discrepancy" notes). Nothing in this document is invented — every class, function and file path below was read from source.
+This document explains how RAGLabs actually works, as implemented in this repository, so a developer can trace any request end-to-end and make changes safely. **The source code is the source of truth.** Where `README.md`, `PRD.md`, `USER_GUIDE.md` or `IDEAS.md` describe something that does not match the code, that is called out explicitly (see Part 29, and inline "⚠ Discrepancy" notes). Nothing in this document is invented — every class, function and file path below was read from source.
 
 Stack: **FastAPI + SQLite (aiosqlite)** backend under `backend/app/`, **React 19 + TypeScript + Vite + Tailwind v4** frontend under `frontend/src/`, five embedded/local vector store engines, two LLM providers (Gemini, NVIDIA) reached through one OpenAI-compatible client.
 
@@ -8,7 +8,7 @@ Stack: **FastAPI + SQLite (aiosqlite)** backend under `backend/app/`, **React 19
 
 ## 1. System Overview
 
-RAG Builder lets a user create a **project**, upload documents, configure an 8-stage **RAG pipeline** (parse → chunk → embed → vector_store → retrieve → rerank → prompt → generate) through a schema-driven UI, build a vector index, chat against it in a **Playground** with a retrieval **Inspector** and per-turn cost/latency **trace**, and **measure** any pipeline version on the **Evaluate** tab against an auto-generated, zero-labelling eval set (Part 37). Every saved pipeline configuration is an immutable **version**; only one version per project is "active" at a time (a mutable pointer). Rebuild-relevant configuration is deduplicated into shared **index builds**, and both parsed documents/chunks and embedding vectors are content-addressed and cached so that re-running a pipeline with the same effective inputs does no work.
+RAGLabs lets a user create a **project**, upload documents, configure an 8-stage **RAG pipeline** (parse → chunk → embed → vector_store → retrieve → rerank → prompt → generate) through a schema-driven UI, build a vector index, chat against it in a **Playground** with a retrieval **Inspector** and per-turn cost/latency **trace**, and **measure** any pipeline version on the **Evaluate** tab against an auto-generated, zero-labelling eval set (Part 37). Every saved pipeline configuration is an immutable **version**; only one version per project is "active" at a time (a mutable pointer). Rebuild-relevant configuration is deduplicated into shared **index builds**, and both parsed documents/chunks and embedding vectors are content-addressed and cached so that re-running a pipeline with the same effective inputs does no work.
 
 There is **no separate backend server process for vector search** — NumPy, FAISS, Chroma, Qdrant and LanceDB all run **embedded in-process** (Qdrant and Chroma use their local/embedded client modes, not a networked server). There is **no background worker/queue** (no Celery/Redis) — background work (index builds, URL fetch) runs as plain `asyncio.Task`s tracked by an in-memory job registry (`backend/app/ingest/jobs.py`), which does not survive a process restart.
 
@@ -229,8 +229,8 @@ User drops files
 **Components**: `VersionsTab.tsx` (list + detail split) → `DiffTable.tsx` (real LCS line-diff for long text fields like a custom system prompt, capped at `n*m > 250_000` to avoid pathological cost, falling back to all-removed/all-added).
 
 - `GET /api/projects/{id}/versions` (list, each with live-computed index status incl. `stale` when a `ready` build's corpus has since changed — computed on the fly, not stored), `GET .../versions/{version_id}` (detail incl. `changes_from_parent`), `GET .../versions/diff?a=&b=` (arbitrary pairwise diff).
-- **Activate**: `POST .../versions/{version_id}/activate` — flips `projects.active_version_id` only; if that version's build isn't ready, also (re)starts a sync job.
-- **Rollback**: `POST .../versions/{version_id}/rollback` — does **not** mutate history; it **creates a brand-new version** whose config copies the target's, with `note="Rolled back to v{n}"` and `parent_id` = the version that was active just before rollback (not the rolled-back-to version's own parent) — history stays strictly append-only, consistent with `pipeline_versions` being documented as immutable in `schema.sql`.
+- **Activate**: `POST .../versions/{version_id}/activate` — flips `projects.active_version_id` and appends a row to `version_activations` (skipped if already active); if that version's build isn't ready, also (re)starts a sync job. This is the only way to go back to an older version — there is no separate rollback that copies it into a new version.
+- **Activation history**: `GET .../versions/{version_id}` returns `activations: [{at, previous_version}]`, newest first, shown in the detail as a disclosure.
 - **Build**: `POST .../versions/{version_id}/build` — manual re-build trigger, shown only when the version's index isn't already ready/building.
 
 ---
@@ -685,8 +685,7 @@ Owned by `backend/app/api/projects.py` (the version-graph logic) using pure func
 - **Creation**: `POST /api/projects/{id}/versions` → `_insert_version()` inside one `db.tx()`: next `version` = `MAX(version)+1` for the project (per-project sequential integers), row inserted with `parent_id` = the previously-active version's id, and if `activate=True`, `projects.active_version_id` is updated **in the same transaction** (atomic activate-on-create). If the submitted config is semantically identical to the active version (`with_defaults(active.config) == with_defaults(new)`), **no row is inserted** — the endpoint short-circuits with `{unchanged: true}`.
 - **Immutability**: rows in `pipeline_versions` are never updated or deleted by any code path found — every edit is a new row. `schema.sql`'s own comment: "Immutable. An edit inserts a new row."
 - **Diffing**: `diff_pipelines(before, after)` — both sides run through `with_defaults()` first (so an old version missing newer fields diffs cleanly against current schemas — this is directly tested by `test_old_versions_missing_new_fields_diff_cleanly`), then per-slot: a `type` change is one diff entry (no field-level diff for that slot); otherwise every differing field is reported with its resolved `effect`.
-- **Rollback**: `POST .../versions/{version_id}/rollback` does **not** touch the target row — it calls `_insert_version()` with the target's config, `note="Rolled back to v{n}"`, `parent_id` = the *currently active* version's id (not the rolled-back-to version's own parent), and activates it. So `parent_id` means "which version was active when this row was created," not strict config lineage.
-- **"Promoted"/active version**: a single mutable pointer, `projects.active_version_id` — any version can be reactivated at any time via `POST .../versions/{id}/activate`, no restriction to "newest." Activating a version whose build isn't ready/synced also (re)starts a sync job.
+- **"Promoted"/active version**: a single mutable pointer, `projects.active_version_id` — any version can be reactivated at any time via `POST .../versions/{id}/activate`, no restriction to "newest." Every change of the pointer goes through `_set_active()`, which also appends to `version_activations` (`version_id`, `previous_version_id`, `created_at`) in the same transaction, so switches are recorded without duplicating version rows. Activating a version whose build isn't ready/synced also (re)starts a sync job.
 - **Build sharing**: because `index_builds` is keyed by `(project_id, index_config_hash)`, two versions differing only in instant-effect fields resolve to the *same* build row — activating one after the other is a no-op index-wise (`_maybe_build()` finds the existing build already synced and does nothing).
 
 ---
@@ -919,8 +918,8 @@ erDiagram
 | GET | `/{id}/versions/{vid}` | Get one version (+ diff from parent) |
 | POST | `/{id}/versions` | Create a new version (validate, optionally activate+build) |
 | POST | `/{id}/versions/{vid}/activate` | Activate a version |
-| POST | `/{id}/versions/{vid}/rollback` | Create+activate a new version copying an old one |
 | POST | `/{id}/versions/{vid}/build` | Force (re)build |
+| GET | `/{id}/suggestions` | Starter questions for the Playground/API tab (`engine/suggest.py`: eval set → headings → recent questions) |
 | POST | `/{id}/estimate` | Estimate rebuild cost of a candidate config |
 | POST | `/{id}/recommend` | Smart auto-configuration (corpus-aware) |
 | GET | `/{id}/builds` | List index builds |
@@ -970,7 +969,7 @@ Real, but **in-memory only** (`backend/app/ingest/jobs.py`) — no Celery/Redis/
 
 `engine/sync.py:start_sync(project_id, cfg, before=None)` dedupes concurrent requests for the same `(project_id, index_config_hash)` — a second request while one is running just returns the already-running `Job` instead of starting a duplicate.
 
-**Everywhere a build can be triggered**: document upload (`build=true`), URL add, document reindex, version create/activate/rollback/manual-build, and — notably — a chat request itself, via `engine/chat.py:ensure_ready()`, which can transparently kick off a sync and stream a `status` event before answering. Eval generation and eval runs reuse `ensure_ready()` too (via `engine/evaluate.py:ready_build()`), so evaluating a version whose index isn't built yet builds it first.
+**Everywhere a build can be triggered**: document upload (`build=true`), URL add, document reindex, version create/activate/manual-build, and — notably — a chat request itself, via `engine/chat.py:ensure_ready()`, which can transparently kick off a sync and stream a `status` event before answering. Eval generation and eval runs reuse `ensure_ready()` too (via `engine/evaluate.py:ready_build()`), so evaluating a version whose index isn't built yet builds it first.
 
 **Job kinds**: `sync` (index build / URL fetch), `evalset` (eval-set generation), `eval` (eval run). All share the same `Job` bus and `GET /api/jobs/{id}/events` stream. Eval jobs emit `progress` stages `index` (only when a build is needed) → `generate` → `validate` for `evalset`, and `index` → `evaluate` for `eval`, plus `log` warnings when one LLM batch fails. The frontend `JobStage` union and `STAGE_LABELS` (`app/JobProgress.tsx`) include these stages; `features/evaluate/EvalJobProgress.tsx` renders them as a one-line bar (the full `JobProgress` component's stage list is build-specific).
 
@@ -1012,7 +1011,7 @@ Backend only — run via `cd backend && uv run pytest -q` (`pyproject.toml`: `te
 | `test_eval.py` | `summarize`/MRR math; evidence hit rule incl. a chunk-boundary cut and wrong-document rejection; `token_f1`; `sample_chunks` round-robin + determinism + tiny-chunk skip; `parse_json` fence tolerance; `check_candidate` reject reasons; `generate_set` end-to-end with `evaluate.complete` monkeypatched (asserts generic and bad-evidence questions are rejected); `run_eval` on two builds with **different chunk sizes** scoring the same items (asserts cross-chunking hits and a `not_retrieved` diagnosis) | Imports `test_retrieval` for the deterministic `HashEmbedder` + `_cfg`; no real LLM calls |
 | `test_vectorstores.py` | Contract compliance for all 5 stores × 8 index configs: upsert/search/delete/reopen-from-disk persistence; exact-store cross-agreement on cosine/dot/l2; `is_exact()` flags | Hits real FAISS/Chroma/Qdrant/LanceDB libraries with synthetic random vectors (seeded, no real embedding model) |
 
-**Gaps** (confirmed absent from the suite): no FastAPI endpoint/HTTP tests (`api/*.py` untested via `TestClient`), no real-file-type ingestion tests (PDF/DOCX/HTML — only synthetic in-memory markdown), no real embedding-model test (fastembed never actually loaded in tests), no real LLM call test, no reranker test, no background-job/SSE test, no version diff/rollback API test, no project CRUD test. **No frontend tests exist at all** — `frontend/package.json` has no vitest/jest/testing-library; `npm run build` (type-check + Vite build) is what README/USER_GUIDE call "tests," which is a mislabeling — it's a build/typecheck, not a test run.
+**Gaps** (confirmed absent from the suite): no FastAPI endpoint/HTTP tests (`api/*.py` untested via `TestClient`), no real-file-type ingestion tests (PDF/DOCX/HTML — only synthetic in-memory markdown), no real embedding-model test (fastembed never actually loaded in tests), no real LLM call test, no reranker test, no background-job/SSE test, no version diff API test (activation log is covered by `tests/test_versions.py`), no project CRUD test. **No frontend tests exist at all** — `frontend/package.json` has no vitest/jest/testing-library; `npm run build` (type-check + Vite build) is what README/USER_GUIDE call "tests," which is a mislabeling — it's a build/typecheck, not a test run.
 
 ---
 

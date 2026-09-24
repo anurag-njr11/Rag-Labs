@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
-"""Standalone RAG runtime, exported from RAG Builder.
+"""Standalone RAG runtime, exported from RAGLabs.
 
-Zero dependency on the RAG Builder backend or the `app` package: this file,
+Zero dependency on the RAGLabs backend or the `app` package: this file,
 `config.json`, and `data/` are everything it needs. Retrieval is brute-force
 NumPy cosine/dot/L2 search over the exported vectors (no FAISS/Chroma/Qdrant/
 LanceDB), keyword search uses an in-memory SQLite FTS5 table, and exact-match
-lookup is pure regex — all ported from the RAG Builder engine so behaviour
+lookup is pure regex — all ported from the RAGLabs engine so behaviour
 matches the live system for the same pipeline configuration.
 
 Usage:
@@ -32,8 +32,12 @@ import numpy as np
 
 HERE = Path(__file__).resolve().parent
 DATA_DIR = HERE / "data"
+# Local embedding/rerank models download here on first use (not %TEMP%, which the OS may clear).
+MODELS_DIR = Path(os.environ.get("FASTEMBED_CACHE_PATH") or HERE / "models")
+# Windows without Developer Mode can't symlink; huggingface_hub warns about it on every download.
+os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-# --- provider defaults (mirrors RAG Builder's app/config.py Settings) -------
+# --- provider defaults (mirrors RAGLabs's app/config.py Settings) -------
 
 PROVIDER_BASE_URL = {
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -448,7 +452,7 @@ DEFAULT_PREFIXES: dict[str, tuple[str, str]] = {
 def _fastembed_model(name: str):
     from fastembed import TextEmbedding
 
-    return TextEmbedding(model_name=name)
+    return TextEmbedding(model_name=name, cache_dir=str(MODELS_DIR))
 
 
 def embed_query(question: str) -> np.ndarray:
@@ -484,7 +488,7 @@ def embed_query(question: str) -> np.ndarray:
 def _cross_encoder(name: str):
     from fastembed.rerank.cross_encoder import TextCrossEncoder
 
-    return TextCrossEncoder(model_name=name)
+    return TextCrossEncoder(model_name=name, cache_dir=str(MODELS_DIR))
 
 
 def rerank(question: str, results: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -759,10 +763,18 @@ def answer(question: str) -> str:
 
 
 def main() -> None:
+    # Redirected/piped output on Windows defaults to cp1252, which can't encode e.g. "→" in an answer.
+    for stream in (sys.stdout, sys.stderr):
+        if hasattr(stream, "reconfigure"):
+            stream.reconfigure(encoding="utf-8", errors="replace")
     if len(sys.argv) > 1:
-        print(answer(" ".join(sys.argv[1:])))
+        try:
+            print(answer(" ".join(sys.argv[1:])))
+        except Exception as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
         return
-    print("RAG Builder standalone export. Type a question (empty line or Ctrl+C to quit).")
+    print("RAGLabs standalone export. Type a question (empty line or Ctrl+C to quit).")
     while True:
         try:
             q = input("\n> ").strip()

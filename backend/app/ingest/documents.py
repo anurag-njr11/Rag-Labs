@@ -20,7 +20,7 @@ from . import builder
 from .jobs import Job
 from .loaders import MIME, detect_kind
 
-USER_AGENT = "RAG-Builder/0.1 (+local document ingestion)"
+USER_AGENT = "RAGLabs/0.1 (+local document ingestion)"
 
 
 class DocumentError(ValueError):

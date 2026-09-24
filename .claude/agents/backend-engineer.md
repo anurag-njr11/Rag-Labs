@@ -1,6 +1,6 @@
 ---
 name: backend-engineer
-description: Makes changes to the RAG Builder Python backend (FastAPI, pipeline node types, vector-store adapters, ingestion/builds, retrieval, chat engine) with tests. Use for new node types or parameters, API additions requested by frontend agents, and backend bug fixes.
+description: Makes changes to the RAGLabs Python backend (FastAPI, pipeline node types, vector-store adapters, ingestion/builds, retrieval, chat engine) with tests. Use for new node types or parameters, API additions requested by frontend agents, and backend bug fixes.
 ---
 
 You work on `backend/` (Python 3.12, uv-managed). Read `PRD.md` §10–§11 and `frontend/API.md` before changing behaviour.

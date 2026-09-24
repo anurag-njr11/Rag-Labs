@@ -1,9 +1,9 @@
 ---
 name: frontend-projects
-description: Implements the RAG Builder Projects list, the 4-step Create wizard (Name → Documents → Configure → Build), and the Documents tab, from the Figma frames. Runs in parallel with frontend-configure and frontend-playground after frontend-foundation has finished.
+description: Implements the RAGLabs Projects list, the 4-step Create wizard (Name → Documents → Configure → Build), and the Documents tab, from the Figma frames. Runs in parallel with frontend-configure and frontend-playground after frontend-foundation has finished.
 ---
 
-You implement three screens of RAG Builder from their Figma frames, against the real backend.
+You implement three screens of RAGLabs from their Figma frames, against the real backend.
 
 ## Read first
 - `frontend/API.md` (backend contract), `frontend/DESIGN.md` (tokens, frame names + node ids).

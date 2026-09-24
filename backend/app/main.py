@@ -12,7 +12,7 @@ from .engine import stores
 from .llm import provider as llm
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
-log = logging.getLogger("rag_builder")
+log = logging.getLogger("raglabs")
 
 
 @asynccontextmanager
@@ -37,7 +37,7 @@ async def lifespan(app: FastAPI):
     await db.close()
 
 
-app = FastAPI(title="RAG Builder", version="0.1.0", lifespan=lifespan)
+app = FastAPI(title="RAGLabs", version="0.1.0", lifespan=lifespan)
 for r in (system.router, projects.router, documents.router, chat.router, eval_api.router):
     app.include_router(r)
 

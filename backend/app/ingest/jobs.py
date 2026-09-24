@@ -14,7 +14,7 @@ from typing import Any, AsyncIterator, Awaitable, Callable
 
 from .. import db
 
-log = logging.getLogger("rag_builder.jobs")
+log = logging.getLogger("raglabs.jobs")
 
 MAX_EVENTS = 500
 

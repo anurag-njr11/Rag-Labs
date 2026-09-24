@@ -1,6 +1,6 @@
 import { useMemo, useState, type FormEvent } from 'react'
 import { ExternalLink, Play } from 'lucide-react'
-import { errorMessage, useChat, useRun, useRuns } from '@/api/hooks'
+import { errorMessage, useChat, useRun, useRuns, useSuggestions } from '@/api/hooks'
 import type { ChatResult, RunDetail } from '@/api/types'
 import { BACKEND_DOCS_URL } from '@/app/AppLayout'
 import { useWorkspace } from '@/app/workspace'
@@ -14,7 +14,7 @@ const ORIGIN = (() => {
   }
 })()
 
-const EXAMPLE_Q = 'How do I make a field optional with a default?'
+const FALLBACK_Q = 'What topics do these documents cover?'
 type Lang = 'curl' | 'python' | 'js' | 'stream'
 
 const clip = (s: string, n: number) => (s.length > n ? `${s.slice(0, n - 1)}…` : s)
@@ -92,16 +92,20 @@ export default function ApiTab() {
   const url = `${ORIGIN}/api/projects/${project.id}/chat`
   const version = project.active_version?.version
   const [lang, setLang] = useState<Lang>('curl')
+  const suggestions = useSuggestions(project.id)
+  const exampleQ = suggestions.data?.questions[0] ?? FALLBACK_Q
 
   const snippets: Record<Lang, string> = useMemo(() => {
-    const body = JSON.stringify({ question: EXAMPLE_Q, stream: false })
+    const shellQuote = (o: object) => JSON.stringify(o).replace(/'/g, `'\\''`)
+    const body = shellQuote({ question: exampleQ, stream: false })
+    const qLit = JSON.stringify(exampleQ)
     return {
       curl: `curl -X POST ${url} \\\n  -H "Content-Type: application/json" \\\n  -d '${body}'`,
-      python: `import requests\n\nres = requests.post(\n    "${url}",\n    json={"question": "${EXAMPLE_Q}", "stream": False},\n    timeout=120,\n)\nres.raise_for_status()\ndata = res.json()\nprint(data["answer"])\nfor c in data["citations"]:\n    print(f"[{c['n']}] {c['document']} — {c['heading_path']}")`,
-      js: `const res = await fetch("${url}", {\n  method: "POST",\n  headers: { "Content-Type": "application/json" },\n  body: JSON.stringify({ question: "${EXAMPLE_Q}", stream: false }),\n})\nif (!res.ok) throw new Error((await res.json()).detail?.message ?? res.statusText)\nconst { answer, citations } = await res.json()`,
-      stream: `curl -N -X POST ${url} \\\n  -H "Content-Type: application/json" \\\n  -H "Accept: text/event-stream" \\\n  -d '${JSON.stringify({ question: EXAMPLE_Q, stream: true })}'\n\n# event: run        data: {"type":"run","run_id":"…","version":${version ?? 1},"store":"faiss",…}\n# event: retrieval  data: {"type":"retrieval","results":[…],"trace":[…]}\n# event: token      data: {"type":"token","text":"In Pydantic v2 …"}\n# event: done       data: {"type":"done","answer":"…","citations":[…],"totals":{…},"truncated":false}`,
+      python: `import requests\n\nres = requests.post(\n    "${url}",\n    json={"question": ${qLit}, "stream": False},\n    timeout=120,\n)\nres.raise_for_status()\ndata = res.json()\nprint(data["answer"])\nfor c in data["citations"]:\n    print(f"[{c['n']}] {c['document']} — {c['heading_path']}")`,
+      js: `const res = await fetch("${url}", {\n  method: "POST",\n  headers: { "Content-Type": "application/json" },\n  body: JSON.stringify({ question: ${qLit}, stream: false }),\n})\nif (!res.ok) throw new Error((await res.json()).detail?.message ?? res.statusText)\nconst { answer, citations } = await res.json()`,
+      stream: `curl -N -X POST ${url} \\\n  -H "Content-Type: application/json" \\\n  -H "Accept: text/event-stream" \\\n  -d '${shellQuote({ question: exampleQ, stream: true })}'\n\n# event: run        data: {"type":"run","run_id":"…","version":${version ?? 1},"store":"faiss",…}\n# event: retrieval  data: {"type":"retrieval","results":[…],"trace":[…]}\n# event: token      data: {"type":"token","text":"According to …"}\n# event: done       data: {"type":"done","answer":"…","citations":[…],"totals":{…},"truncated":false}`,
     }
-  }, [url, version])
+  }, [url, version, exampleQ])
 
   // Example response: the latest successful run of this project, else a static example.
   const runs = useRuns(project.id, 10)
@@ -162,7 +166,7 @@ export default function ApiTab() {
         <CodeBlock code={example} title="200 · application/json" maxHeight={420} wrap />
       </Card>
 
-      <TryIt projectId={project.id} />
+      <TryIt projectId={project.id} exampleQ={exampleQ} />
 
       <Card padding="lg">
         <h2 className="text-heading text-text-primary">Notes</h2>
@@ -188,9 +192,10 @@ export default function ApiTab() {
   )
 }
 
-function TryIt({ projectId }: { projectId: string }) {
+function TryIt({ projectId, exampleQ }: { projectId: string; exampleQ: string }) {
   const chat = useChat(projectId)
-  const [q, setQ] = useState(EXAMPLE_Q)
+  const [edited, setQ] = useState<string | null>(null)
+  const q = edited ?? exampleQ
   const submit = (e: FormEvent) => {
     e.preventDefault()
     if (q.trim()) chat.mutate({ question: q.trim() })

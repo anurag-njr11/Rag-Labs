@@ -53,7 +53,7 @@ building), `useVersion(projectId, vid)`, `useVersionDiff(projectId, a, b)` (vers
 `useUpdateProject(id)` · `useDeleteProject()` mutate(id) · `useValidatePipeline()` mutate(config)→ValidateResult ·
 `useEstimate(projectId)` mutate(config)→EstimateResult · `useCreateVersion(projectId)`
 mutate(CreateVersionBody)→{version, job_id, unchanged} · `useActivateVersion(projectId)` mutate(vid) ·
-`useRollbackVersion(projectId)` mutate(vid) · `useBuildVersion(projectId)` mutate(vid)→{job_id} (409 if no docs) ·
+`useBuildVersion(projectId)` mutate(vid)→{job_id} (409 if no docs) ·
 `useUploadDocuments(projectId)` mutate({files, build?=true})→UploadResult · `useAddUrl(projectId)`
 mutate({url, sitemap?, max_pages?})→{job_id} · `useDeleteDocument(projectId)` mutate(docId) (optimistic) ·
 `useReindexDocument(projectId)` mutate(docId)→{job_id} · `useChat(projectId)` (non-streaming)→ChatResult.

@@ -1,4 +1,4 @@
-# RAG Builder User Guide
+# RAGLabs User Guide
 
 **Build, Chat & Evaluate:** Upload documents, tune every pipeline parameter, chat with cited answers, inspect retrieval — and measure how well each configuration retrieves, with test questions generated from your own documents (no labelling).
 
@@ -82,7 +82,7 @@ Every RAG system is defined by 8 **pipeline stages**:
 
 Each pipeline is immutable. Editing creates a new version:
 - Compare two versions with **Diff**
-- Promote old versions with **Rollback** (creates a new copy)
+- Go back to an old version with **Make active** (each switch is kept in its activation history)
 - Never rewrite history
 
 ### Content-Addressed Caching
@@ -459,6 +459,192 @@ Tick **Only misses** to list just the failures.
 
 ## API Reference
 
+### Using the API Tab
+
+The **API** tab (the last tab in a project) turns your project into an HTTP service. Any script or app can send a question to the project and get back the same cited answer you see in the Playground. It uses the project's **active version**, so when you change the configuration or switch versions, callers get the new behaviour with no code change.
+
+#### Before You Start
+
+- The backend is running (`uv run uvicorn app.main:app` in `backend/`, serving `http://127.0.0.1:8000`).
+- The project has documents and an active version. The Playground should already answer questions.
+- An LLM key (`GEMINI_API_KEY` or `NVIDIA_API_KEY`) is set in the **server's** `.env`. Callers don't need a key.
+
+#### Step 1: Open the API Tab
+
+1. Open your project.
+2. Click the **API** tab in the top bar (after Evaluate).
+
+The page has five cards: **Query endpoint**, **Request**, **Response**, **Try it** and **Notes**.
+
+#### Step 2: Copy Your Endpoint
+
+The **Query endpoint** card shows your project's URL, already filled in:
+
+```
+POST http://127.0.0.1:8000/api/projects/<your-project-id>/chat
+```
+
+Click the copy button next to it. The project ID is the same one in your browser's address bar (`/projects/<your-project-id>/api`).
+
+The request body is JSON:
+
+| Field | Required | Meaning |
+|---|---|---|
+| `question` | Yes | Your question, 1–8000 characters |
+| `version_id` | No | Answer with a specific version instead of the active one (see Step 6) |
+| `stream` | No | `false` returns one JSON response. `true` (the default) streams the answer as Server-Sent Events (see Step 7) |
+
+#### Step 3: Test It in the App
+
+1. Scroll to the **Try it** card.
+2. Type a question about **your** documents. The box starts with a Pydantic example question; replace it.
+3. Click **Send request**.
+4. After a few seconds the raw JSON response appears: exactly what your code will receive.
+
+If it fails, a red banner shows the error (see [Errors](#errors) below).
+
+#### Step 4: Call It From Your Code
+
+The **Request** card has ready-made snippets with your URL filled in. Pick **curl**, **Python** or **JavaScript**, click the copy button, and change the question.
+
+**curl** (macOS, Linux, Git Bash):
+
+```bash
+curl -X POST http://127.0.0.1:8000/api/projects/YOUR_PROJECT_ID/chat \
+  -H "Content-Type: application/json" \
+  -d '{"question": "What is the dataset about?", "stream": false}'
+```
+
+**Windows PowerShell** (the curl snippet's quoting doesn't work in PowerShell, so use this instead):
+
+```powershell
+$body = @{ question = "What is the dataset about?"; stream = $false } | ConvertTo-Json
+$res = Invoke-RestMethod -Method Post -ContentType "application/json" -Body $body `
+  -Uri "http://127.0.0.1:8000/api/projects/YOUR_PROJECT_ID/chat"
+$res.answer
+```
+
+**Python** (`pip install requests` first):
+
+```python
+import requests
+
+res = requests.post(
+    "http://127.0.0.1:8000/api/projects/YOUR_PROJECT_ID/chat",
+    json={"question": "What is the dataset about?", "stream": False},
+    timeout=120,
+)
+res.raise_for_status()
+data = res.json()
+print(data["answer"])
+for c in data["citations"]:
+    print(f"[{c['n']}] {c['document']} — {c['heading_path']}")
+```
+
+**JavaScript** (Node 18+ or a server-side app; for browser pages see [Limits](#limits)):
+
+```js
+const res = await fetch("http://127.0.0.1:8000/api/projects/YOUR_PROJECT_ID/chat", {
+  method: "POST",
+  headers: { "Content-Type": "application/json" },
+  body: JSON.stringify({ question: "What is the dataset about?", stream: false }),
+})
+if (!res.ok) throw new Error((await res.json()).detail?.message ?? res.statusText)
+const { answer, citations } = await res.json()
+```
+
+#### Step 5: Read the Response
+
+The **Response** card shows a real response from your latest successful run (long fields trimmed), so you can see the shape with your own data. The fields are:
+
+| Field | What it holds |
+|---|---|
+| `answer` | The answer text, with citation markers like `[1]` |
+| `citations` | One entry per marker: `n` (the number in `[n]`), `document`, `page_start`/`page_end`, `heading_path`, and `spans`: character ranges in the cited chunk that support the claim |
+| `sources` | Every retrieved chunk in rank order: `rank`, `document`, pages, `heading_path`, `found_by` (`dense`/`keyword`/`exact`), `scores`, `cited` (true if the answer cites it) and `text` |
+| `run_id` | ID of this run. It appears in the Playground's **History** (see Step 8) |
+| `totals` | `latency_ms`, `tokens_in`, `tokens_out`, `cost_usd` |
+
+To show sources to your users, loop over `citations` and match each `n` to the `[n]` markers in `answer`.
+
+#### Step 6: Pin a Version (Optional)
+
+By default every call uses the active version. To keep a caller on one version while you experiment with others:
+
+1. Open the **Versions** tab and click the version you want.
+2. Copy its ID from the address bar: it's the value after `?v=`. You can also list all versions with `GET /api/projects/YOUR_PROJECT_ID/versions`.
+3. Add it to the request body: `{"question": "...", "version_id": "THE_VERSION_ID", "stream": false}`.
+
+Leave out `version_id` to follow whichever version is active.
+
+#### Step 7: Stream the Answer (Optional)
+
+For a chat UI that shows the answer as it's written, send `"stream": true`. The **Streaming** snippet on the Request card shows the curl version. The response is a stream of events:
+
+`status` (only if the index is being rebuilt) → `run` → `retrieval` → `token` (many) → `done`, or `error`
+
+Each event's `data:` line is JSON with a `type` field. The endpoint is a `POST`, so browsers' `EventSource` can't read it; read the stream with an HTTP client instead:
+
+```python
+import json
+import requests
+
+with requests.post(
+    "http://127.0.0.1:8000/api/projects/YOUR_PROJECT_ID/chat",
+    json={"question": "What is the dataset about?", "stream": True},
+    stream=True,
+    timeout=300,
+) as res:
+    res.raise_for_status()
+    for line in res.iter_lines(decode_unicode=True):
+        if not line.startswith("data:"):
+            continue  # skip "event:" lines and blank separators
+        event = json.loads(line[5:])
+        if event["type"] == "token":
+            print(event["text"], end="", flush=True)
+        elif event["type"] == "done":
+            print("\n\nSources:")
+            for c in event["citations"]:
+                print(f"[{c['n']}] {c['document']} — {c['heading_path']}")
+        elif event["type"] == "error":
+            raise RuntimeError(event["message"])
+```
+
+#### Step 8: Check Your Calls
+
+Every API call is recorded as a run, just like a Playground question:
+
+- **Playground → History** lists API calls alongside chat questions. Open one to inspect its retrieved chunks and trace table (latency, tokens and cost per step).
+- The API tab's **Response** card always shows your latest successful run.
+
+#### Errors
+
+Errors come back as JSON with a `detail` field:
+
+| Status | Meaning | Fix |
+|---|---|---|
+| `404` | Project or `version_id` not found | Check the IDs in the URL and body |
+| `409` | The project has no documents, or its index build failed | Add documents on the Documents tab, or fix the build |
+| `422` | Invalid body, e.g. empty `question` | Send `{"question": "..."}` with 1–8000 characters |
+| `502` | The LLM provider failed (no key, rate limit, overload) | Check the server's `.env` key and retry, or switch the Generate provider |
+
+In streaming mode, errors arrive as an `error` event: `{"type": "error", "code": "...", "message": "..."}`.
+
+#### Limits
+
+- **Local only.** The server listens on `127.0.0.1`, so only your own machine can call it. To reach it from another machine, start it with `uv run uvicorn app.main:app --host 0.0.0.0` and use your machine's IP. There's **no authentication**, so anyone who can reach the port can use your LLM key; only do this on a network you trust.
+- **No browser calls from other sites.** The backend doesn't send CORS headers, so JavaScript on another web page (another origin) is blocked by the browser. Call the API from a server, script or Node app instead.
+- **The first call after a rebuild-type change is slow.** If you changed a 🔁 Rebuild setting, the first call rebuilds the index before answering (a `status` event when streaming).
+
+#### API Tab or Export RAG?
+
+| | API tab | Export RAG (Versions tab) |
+|---|---|---|
+| Runs on | Your RAGLabs backend | Any machine with Python |
+| Config changes | Picked up live | Frozen at export time |
+| LLM key | The server's `.env` | The developer's own `.env` |
+| Best for | Apps that call your pipeline over HTTP | Shipping the pipeline into another project |
+
 ### Endpoint
 
 ```
@@ -490,10 +676,12 @@ event: retrieval
 data: {"results": [...], "trace": [...]}
 
 event: token
-data: "The"
+data: {"type": "token", "text": "The"}
 
 event: done
 data: {
+  "type": "done",
+  "run_id": "...",
   "answer": "The answer text...",
   "citations": [...],
   "retrieved": [...],
@@ -519,9 +707,11 @@ With `stream: false`:
     {
       "n": 1,
       "chunk_id": "...",
+      "document_id": "...",
       "document": "pydantic.pdf",
       "page_start": 42,
       "page_end": 42,
+      "heading_path": "Fields > Optional fields",
       "spans": [[10, 50]]
     }
   ],
@@ -530,13 +720,18 @@ With `stream: false`:
       "rank": 1,
       "document": "pydantic.pdf",
       "page_start": 42,
+      "page_end": 42,
+      "heading_path": "Fields > Optional fields",
       "found_by": ["dense", "keyword"],
-      "text": "Optional fields...",
-      "cited": true
+      "scores": {"dense": 0.82, "keyword": 7.1},
+      "cited": true,
+      "text": "Optional fields..."
     }
   ],
+  "run_id": "...",
   "totals": {
     "ms": 1234,
+    "latency_ms": 1234,
     "tokens_in": 245,
     "tokens_out": 35,
     "cost_usd": 0.0089

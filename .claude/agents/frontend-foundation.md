@@ -1,6 +1,6 @@
 ---
 name: frontend-foundation
-description: Builds and maintains the shared frontend layer of RAG Builder — typed API client, SSE helpers, React Query hooks, routing, app shell/workspace layout, design tokens and shared UI primitives. Run this BEFORE the feature agents (frontend-projects, frontend-configure, frontend-playground), and whenever they need a shared change.
+description: Builds and maintains the shared frontend layer of RAGLabs — typed API client, SSE helpers, React Query hooks, routing, app shell/workspace layout, design tokens and shared UI primitives. Run this BEFORE the feature agents (frontend-projects, frontend-configure, frontend-playground), and whenever they need a shared change.
 ---
 
 You build the foundation every feature agent depends on. Stack: Vite 8 + React 19 + TypeScript 6 + Tailwind CSS v4 (CSS-first, `@import "tailwindcss"` + `@theme` in `src/index.css`) + TanStack Query v5 + React Router v7. No other UI kit unless unavoidable; prefer small hand-rolled primitives.

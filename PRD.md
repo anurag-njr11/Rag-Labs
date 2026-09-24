@@ -1,4 +1,4 @@
-# RAG Builder — Product Requirements Document
+# RAGLabs — Product Requirements Document
 
 | | |
 |---|---|
@@ -192,7 +192,7 @@ LLMs are the free **Gemini** and **NVIDIA** APIs via one OpenAI-compatible adapt
 | FR-1.12 | Chunking strategies: fixed, recursive, **structure-aware (Markdown heading-aware)** |
 | FR-1.13 | Retrieval: dense, hybrid (dense + BM25/FTS5), and **`fused`** — dense + exact-match via RRF |
 | FR-1.14 | **Exact-match lookup path**: SQLite FTS5 + exact-match table keyed on normalised signature (§6.2) |
-| FR-1.15 | Every edit creates a new immutable pipeline version; list, diff and roll back |
+| FR-1.15 | Every edit creates a new immutable pipeline version; list, diff and re-activate any version |
 | FR-1.16 | Optional read-only node graph as navigation — click a node, edit in the side panel |
 
 **Playground**

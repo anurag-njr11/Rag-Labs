@@ -102,6 +102,18 @@ async def _project_out(p: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
+async def _set_active(c: Any, project_id: str, version_id: str) -> None:
+    """Point the project at `version_id` and log the switch. Call inside a transaction."""
+    row = await (await c.execute("SELECT active_version_id FROM projects WHERE id=?", (project_id,))).fetchone()
+    previous = row[0] if row else None
+    if previous == version_id:
+        return
+    await c.execute("UPDATE projects SET active_version_id=? WHERE id=?", (version_id, project_id))
+    await c.execute(
+        "INSERT INTO version_activations (id, project_id, version_id, previous_version_id, created_at)"
+        " VALUES (?, ?, ?, ?, ?)", (db.new_id(), project_id, version_id, previous, db.now_iso()))
+
+
 async def _insert_version(project_id: str, cfg: dict[str, Any], note: str, parent_id: str | None,
                           activate: bool) -> dict[str, Any]:
     vid = db.new_id()
@@ -115,7 +127,7 @@ async def _insert_version(project_id: str, cfg: dict[str, Any], note: str, paren
             (vid, project_id, row[0], db.dumps(cfg), index_config_hash(cfg), parent_id, note, db.now_iso()),
         )
         if activate:
-            await c.execute("UPDATE projects SET active_version_id=? WHERE id=?", (vid, project_id))
+            await _set_active(c, project_id, vid)
     return await db.fetch_one("SELECT * FROM pipeline_versions WHERE id=?", (vid,))  # type: ignore[return-value]
 
 
@@ -215,6 +227,10 @@ async def get_version(project_id: str, version_id: str) -> dict[str, Any]:
         if v["parent_id"] else None
     v["changes_from_parent"] = diff_pipelines(db.loads(parent["config"]), v["config"]) if parent else []
     v["parent_version"] = parent["version"] if parent else None
+    v["activations"] = await db.fetch_all(
+        "SELECT a.created_at AS at, pv.version AS previous_version FROM version_activations a"
+        " LEFT JOIN pipeline_versions pv ON pv.id = a.previous_version_id"
+        " WHERE a.version_id=? ORDER BY a.created_at DESC, a.rowid DESC", (version_id,))
     return v
 
 
@@ -235,18 +251,8 @@ async def create_version(project_id: str, body: VersionIn) -> dict[str, Any]:
 async def activate_version(project_id: str, version_id: str) -> dict[str, Any]:
     v = await _version(project_id, version_id)
     async with db.tx() as c:
-        await c.execute("UPDATE projects SET active_version_id=? WHERE id=?", (version_id, project_id))
+        await _set_active(c, project_id, version_id)
     return {"version": _version_out(v, version_id), "job_id": await _maybe_build(project_id, db.loads(v["config"]))}
-
-
-@router.post("/{project_id}/versions/{version_id}/rollback", status_code=201)
-async def rollback_version(project_id: str, version_id: str) -> dict[str, Any]:
-    v = await _version(project_id, version_id)
-    active = await sync.active_version(project_id)
-    cfg = _validate(db.loads(v["config"]))
-    nv = await _insert_version(project_id, cfg, f"Rolled back to v{v['version']}",
-                               active["id"] if active else None, activate=True)
-    return {"version": _version_out(nv, nv["id"]), "job_id": await _maybe_build(project_id, cfg)}
 
 
 @router.post("/{project_id}/versions/{version_id}/build")
@@ -323,7 +329,7 @@ async def recommend(project_id: str) -> dict[str, Any]:
 @router.get("/{project_id}/versions/{version_id}/export")
 async def export_version(project_id: str, version_id: str) -> Response:
     """A plug-and-play standalone bundle: unzip, `pip install -r requirements.txt`,
-    `python rag.py "question"` — no RAG Builder backend, no `app` import, no vector-store
+    `python rag.py "question"` — no RAGLabs backend, no `app` import, no vector-store
     dependency (brute-force NumPy search over the exported vectors)."""
     p = await _project(project_id)
     v = await _version(project_id, version_id)

@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { CircleCheck, Download, GitCommitHorizontal, Play, RotateCcw } from 'lucide-react'
+import { CircleCheck, Download, GitCommitHorizontal, Play } from 'lucide-react'
 import { API_BASE, errorMessage } from '@/api/client'
 import { formatDateTime, formatNumber, formatRelative, shortHash, storeLabel } from '@/api/format'
 import {
-  useActivateVersion, useBuildVersion, useEstimate, useNodes, useRollbackVersion, useVersion, useVersionDiff, useVersions,
+  useActivateVersion, useBuildVersion, useEstimate, useNodes, useVersion, useVersionDiff, useVersions,
 } from '@/api/hooks'
 import type { Change, EstimateResult, Version } from '@/api/types'
 import { JobProgress } from '@/app/JobProgress'
@@ -71,7 +71,7 @@ export default function VersionsTab() {
           ))}
         </ul>
       </Card>
-      <VersionDetail key={selected.id} version={selected} all={list} onSelect={select} />
+      <VersionDetail key={selected.id} version={selected} all={list} />
     </div>
   )
 }
@@ -106,14 +106,13 @@ function VersionRow({ v, selected, onSelect }: { v: Version; selected: boolean; 
   )
 }
 
-function VersionDetail({ version, all, onSelect }: { version: Version; all: Version[]; onSelect: (id: string) => void }) {
+function VersionDetail({ version, all }: { version: Version; all: Version[] }) {
   const { project } = useWorkspace()
   const { toast } = useToast()
   const detail = useVersion(project.id, version.id)
   const nodes = useNodes()
   const v = detail.data ?? version
   const activeV = all.find((x) => x.active)
-  const nextVersion = Math.max(...all.map((x) => x.version)) + 1
 
   // Compare target: '' = parent (changes_from_parent), else another version id.
   // A first version has no parent: compare it with the active version instead.
@@ -132,9 +131,8 @@ function VersionDetail({ version, all, onSelect }: { version: Version; all: Vers
   }, [cfgKey, version.active, activeKey, estimateMutate])
 
   const activate = useActivateVersion(project.id)
-  const rollback = useRollbackVersion(project.id)
   const build = useBuildVersion(project.id)
-  const [confirm, setConfirm] = useState<'activate' | 'rollback' | null>(null)
+  const [confirm, setConfirm] = useState(false)
   const [jobId, setJobId] = useState<string | null>(null)
 
   const parentV = v.parent_version ?? all.find((x) => x.id === v.parent_id)?.version ?? null
@@ -156,25 +154,13 @@ function VersionDetail({ version, all, onSelect }: { version: Version; all: Vers
   const doActivate = () =>
     activate.mutate(v.id, {
       onSuccess: (r) => {
-        setConfirm(null)
+        setConfirm(false)
         toast({ title: `v${v.version} is now active`, description: r.job_id ? 'Updating the index…' : undefined, tone: 'success' })
         if (r.job_id) setJobId(r.job_id)
       },
       onError: (e) => {
-        setConfirm(null)
+        setConfirm(false)
         onError("Couldn't activate")(e)
-      },
-    })
-  const doRollback = () =>
-    rollback.mutate(v.id, {
-      onSuccess: (r) => {
-        setConfirm(null)
-        toast({ title: `Rolled back — created v${r.version.version}`, description: `A copy of v${v.version}, now active.`, tone: 'success' })
-        onSelect(r.version.id)
-      },
-      onError: (e) => {
-        setConfirm(null)
-        onError("Couldn't roll back")(e)
       },
     })
   const doBuild = () =>
@@ -227,14 +213,9 @@ function VersionDetail({ version, all, onSelect }: { version: Version; all: Vers
             </Button>
           )}
           {!v.active && (
-            <>
-              <Button variant="secondary" icon={<RotateCcw size={14} aria-hidden />} onClick={() => setConfirm('rollback')}>
-                Roll back to this
-              </Button>
-              <Button variant="primary" onClick={() => setConfirm('activate')}>
-                Make active
-              </Button>
-            </>
+            <Button variant="primary" onClick={() => setConfirm(true)}>
+              Make active
+            </Button>
           )}
         </div>
       </div>
@@ -302,36 +283,33 @@ function VersionDetail({ version, all, onSelect }: { version: Version; all: Vers
         )}
       </div>
 
+      {!!v.activations?.length && (
+        <Disclosure label={`Activation history (${v.activations.length})`} className="mt-4">
+          <ul className="flex flex-col gap-1.5 text-body-sm text-text-secondary">
+            {v.activations.map((a, i) => (
+              <li key={`${a.at}-${i}`}>
+                Made active <span title={formatDateTime(a.at)}>{formatRelative(a.at)}</span>
+                {a.previous_version != null ? `, replacing v${a.previous_version}` : ' as the first version'}
+              </li>
+            ))}
+          </ul>
+        </Disclosure>
+      )}
+
       <Disclosure label="Full configuration" className="mt-4">
         <CodeBlock code={JSON.stringify(v.config, null, 2)} title={`v${v.version} config`} maxHeight={420} />
       </Disclosure>
 
       <Dialog
-        open={confirm === 'activate'}
-        onClose={() => setConfirm(null)}
+        open={confirm}
+        onClose={() => setConfirm(false)}
         title={`Make v${v.version} active?`}
         description="The Playground and API will answer with this version's pipeline."
         footer={
           <>
-            <Button variant="secondary" onClick={() => setConfirm(null)}>Cancel</Button>
+            <Button variant="secondary" onClick={() => setConfirm(false)}>Cancel</Button>
             <Button variant="primary" loading={activate.isPending} onClick={doActivate}>
               Make active
-            </Button>
-          </>
-        }
-      >
-        <ActivationSummary estimate={estimate} />
-      </Dialog>
-      <Dialog
-        open={confirm === 'rollback'}
-        onClose={() => setConfirm(null)}
-        title={`Roll back to v${v.version}?`}
-        description={`Creates v${nextVersion} — a copy of v${v.version}'s configuration — and makes it active. History is kept.`}
-        footer={
-          <>
-            <Button variant="secondary" onClick={() => setConfirm(null)}>Cancel</Button>
-            <Button variant="primary" icon={<RotateCcw size={14} aria-hidden />} loading={rollback.isPending} onClick={doRollback}>
-              Roll back
             </Button>
           </>
         }

@@ -324,7 +324,7 @@ Build these from the components and tokens above. The content uses the Pydantic 
 ### 6.4 Versions tab
 - **Left list** (320px Card, rows 64px): v4 "Smaller chunks for API reference" · just now · `idx 9f3c2a` · Building (Info) · — ; **v3** "Hybrid + rerank" · 2h ago · `idx 71be04` · Ready · **active** (Accent badge) ; v2 "Switch to FAISS" · yesterday · `idx 71be04` · Ready ; v1 "Initial" · 3d ago · `idx 0a19d7` · Ready. The selected row gets bg-accent-subtle and a 2px left accent bar.
 - **Right detail Card:**
-  - Header: "v4" title, note, meta "Created by you · Sep 23, 12:10 · index hash `9f3c2a`". Actions: Secondary "Roll back to this" (rollback icon) and Primary "Make active".
+  - Header: "v4" title, note, meta "Created by you · Sep 23, 12:10 · index hash `9f3c2a`". Actions: Primary "Make active" (the Figma frame still shows a "Roll back to this" button — removed in code, activation covers it).
   - "Changes vs v3" diff table: mono rows `Stage · param`, `old → new` (old struck through in text-tertiary, new in text-primary), effect badge:
     - Chunk · size: 1000 → 800 [🔁 Rebuild]
     - Chunk · overlap: 150 → 120 [🔁 Rebuild]

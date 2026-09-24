@@ -114,11 +114,11 @@ interface Change { slot: Slot; field: string; before: unknown; after: unknown; e
 | `POST /api/pipelines/validate` | `{config}` | `{valid: true, config, index_config_hash}` or `{valid: false, errors: PipelineFieldError[]}` |
 | `POST /api/projects/{id}/estimate` | `{config}` | `{changes: Change[], rebuild_needed: boolean, estimate: Estimate, index_config_hash}` |
 | `GET /api/projects/{id}/versions` | | `Version[]` newest first, each with `index` |
-| `GET /api/projects/{id}/versions/{vid}` | | `Version` with `index`, `changes_from_parent`, `parent_version` |
+| `GET /api/projects/{id}/versions/{vid}` | | `Version` with `index`, `changes_from_parent`, `parent_version`, `activations: {at, previous_version}[]` (newest first) |
 | `GET /api/projects/{id}/versions/diff?a={vid}&b={vid}` | | `{a: number, b: number, changes: Change[]}` (a → b) |
 | `POST /api/projects/{id}/versions` | `{config, note?, activate?=true, build?=true}` | `201 {version: Version, job_id: string\|null, unchanged: boolean}` — `unchanged: true` if identical to active (no new version) |
-| `POST /api/projects/{id}/versions/{vid}/activate` | | `{version, job_id}` |
-| `POST /api/projects/{id}/versions/{vid}/rollback` | | `201 {version, job_id}` — creates a NEW version copying `vid` |
+| `GET /api/projects/{id}/suggestions` | | `{source: 'eval'\|'headings'\|'recent'\|'none', questions: string[]}` — up to 3 starter questions from the latest eval set, else section headings of the active build, else recent questions |
+| `POST /api/projects/{id}/versions/{vid}/activate` | | `{version, job_id}` — also logged in `activations` |
 | `POST /api/projects/{id}/versions/{vid}/build` | | `{job_id}` (409 if no documents) |
 | `GET /api/projects/{id}/builds` | | `Build[]` (id, index_config_hash, config, store_type, status, dim, chunk_count, error, stats, started_at, finished_at) |
 
