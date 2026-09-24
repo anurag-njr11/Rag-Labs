@@ -5,7 +5,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from .. import db
@@ -14,7 +14,7 @@ from ..core.pipeline import (
     PipelineError, diff_pipelines, index_config_hash, recommended_pipeline, validate_pipeline, with_defaults,
 )
 from ..engine import stores, sync
-from ..ingest import builder
+from ..ingest import builder, export as export_mod
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -318,6 +318,24 @@ async def recommend(project_id: str) -> dict[str, Any]:
             "confidence": 0.85 if metadatas else 0.5,  # Lower confidence when no docs analyzed
         },
     }
+
+
+@router.get("/{project_id}/versions/{version_id}/export")
+async def export_version(project_id: str, version_id: str) -> Response:
+    """A plug-and-play standalone bundle: unzip, `pip install -r requirements.txt`,
+    `python rag.py "question"` — no RAG Builder backend, no `app` import, no vector-store
+    dependency (brute-force NumPy search over the exported vectors)."""
+    p = await _project(project_id)
+    v = await _version(project_id, version_id)
+    cfg = with_defaults(db.loads(v["config"], {}))
+    b = await db.fetch_one("SELECT * FROM index_builds WHERE project_id=? AND index_config_hash=?",
+                           (project_id, index_config_hash(cfg)))
+    if b is None or not await builder.build_is_synced(b):
+        raise HTTPException(409, "No ready, synced build for this version. Build the index first.")
+    data = await export_mod.build_export_zip(p, v, b)
+    filename = f"{export_mod.slugify(p['name'])}-v{v['version']}-rag.zip"
+    return Response(content=data, media_type="application/zip",
+                    headers={"Content-Disposition": f'attachment; filename="{filename}"'})
 
 
 # --- builds -----------------------------------------------------------------

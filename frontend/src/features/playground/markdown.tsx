@@ -5,7 +5,7 @@
  * Tolerates partial input while streaming (an unclosed ``` fence renders as code).
  */
 import { Fragment, type ReactNode } from 'react'
-import { cn } from '@/components/ui'
+import { CodeBlock, cn } from '@/components/ui'
 
 export type RenderCitation = (n: number, key: string) => ReactNode
 
@@ -161,9 +161,7 @@ export function Markdown({ text, cite, trailing, className }: MarkdownProps) {
           case 'code':
             return (
               <Fragment key={kp}>
-                <pre tabIndex={0} className="overflow-x-auto rounded-lg border border-border-default bg-bg-code p-3 font-mono text-mono text-text-code">
-                  <code>{b.text}</code>
-                </pre>
+                <CodeBlock code={b.text} title={b.lang || undefined} />
                 {tail(i)}
               </Fragment>
             )
