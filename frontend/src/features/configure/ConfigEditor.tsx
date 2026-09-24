@@ -98,9 +98,9 @@ export function ConfigEditor({ value, onChange, errors, baseline, className }: C
   return (
     // Container query: the stage nav shows only when the editor itself is wide (not in the 880px wizard column).
     <div className={cn('@container', className)}>
-      <div className="flex gap-8">
-        <nav aria-label="Pipeline stages" className="hidden w-60 shrink-0 @min-[900px]:block">
-          <ol className="sticky top-[calc(var(--topbar-h)+16px)] flex flex-col gap-1">
+      <div className="flex gap-10">
+        <nav aria-label="Pipeline stages" className="hidden w-64 shrink-0 @min-[900px]:block">
+          <ol className="sticky top-[calc(var(--topbar-h)+16px)] flex flex-col gap-1.5">
             {SLOTS.map((slot, i) => {
               const sc = catalog.find((s) => s.slot === slot)
               const cfg = value[slot]
@@ -115,15 +115,22 @@ export function ConfigEditor({ value, onChange, errors, baseline, className }: C
                     onClick={() => jump(slot)}
                     aria-current={isActive ? 'location' : undefined}
                     className={cn(
-                      'focus-ring relative flex h-11 w-full items-center gap-3 rounded-md border px-3 text-left',
+                      'focus-ring relative flex h-14 w-full items-center gap-3 rounded-lg border px-3.5 text-left transition-colors',
                       isActive ? 'border-border-default bg-bg-surface shadow-sm' : 'border-transparent hover:bg-bg-subtle',
                     )}
                   >
                     {isActive && <span aria-hidden className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-accent-default" />}
-                    <span className="w-3 shrink-0 font-mono text-mono-sm text-text-tertiary">{i + 1}</span>
+                    <span
+                      className={cn(
+                        'flex size-6 shrink-0 items-center justify-center rounded-full font-mono text-mono-sm',
+                        isActive ? 'bg-accent-default text-text-inverse' : 'bg-bg-muted text-text-tertiary',
+                      )}
+                    >
+                      {i + 1}
+                    </span>
                     <span className="flex min-w-0 flex-1 flex-col">
-                      <span className="text-label text-text-primary">{sc?.title ?? slot}</span>
-                      <span className="truncate text-body-sm text-text-tertiary">{chosenLabel(cfg, nt)}</span>
+                      <span className="text-heading text-text-primary">{sc?.title ?? slot}</span>
+                      <span className="truncate text-body text-text-tertiary">{chosenLabel(cfg, nt)}</span>
                     </span>
                     {hasErr ? (
                       <TriangleAlert size={14} className="shrink-0 text-danger-fg" aria-label="Has errors" />
@@ -142,9 +149,9 @@ export function ConfigEditor({ value, onChange, errors, baseline, className }: C
           </ol>
         </nav>
 
-        <div className="flex min-w-0 max-w-[880px] flex-1 flex-col gap-4">
+        <div className="flex min-w-0 flex-1 flex-col gap-5">
           {/* Compact stage jump row when the editor is narrow */}
-          <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1 @min-[900px]:hidden" role="navigation" aria-label="Pipeline stages">
+          <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1 scrollbar-none @min-[900px]:hidden" role="navigation" aria-label="Pipeline stages">
             {SLOTS.map((slot, i) => {
               const sc = catalog.find((s) => s.slot === slot)
               const ch = changedBySlot.get(slot)
@@ -241,16 +248,16 @@ function StageCard({ n, slot, catalog, value, baseline, changes, errors, onChang
 
   const titleId = `${stageId(slot)}-title`
   return (
-    <Card padding="lg" id={stageId(slot)} aria-labelledby={titleId} role="region" className="scroll-mt-[calc(var(--topbar-h)+16px)]">
-      <div className="mb-4 flex flex-wrap items-start justify-between gap-3">
+    <Card padding="lg" id={stageId(slot)} aria-labelledby={titleId} role="region" className="scroll-mt-[calc(var(--topbar-h)+16px)] sm:p-6">
+      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
-          <h2 id={titleId} tabIndex={-1} className="text-title text-text-primary outline-none">
+          <h2 id={titleId} tabIndex={-1} className="text-title-lg text-text-primary outline-none">
             <span className="text-text-tertiary">{n}</span> · {catalog?.title ?? slot}
           </h2>
-          {catalog?.description && <p className="mt-0.5 text-body text-text-secondary">{catalog.description}</p>}
+          {catalog?.description && <p className="mt-1 text-body-lg text-text-secondary">{catalog.description}</p>}
         </div>
         {catalog && (
-          <span className="flex items-center gap-1.5 text-body-sm text-text-tertiary">
+          <span className="flex items-center gap-1.5 text-body text-text-tertiary">
             Changing the type <EffectBadge effect={catalog.effect} />
           </span>
         )}
@@ -281,7 +288,7 @@ function StageCard({ n, slot, catalog, value, baseline, changes, errors, onChang
       )}
 
       {nt && (
-        <div className="mt-5 border-t border-border-default pt-5">
+        <div className="mt-6 border-t border-border-default pt-6">
           <SchemaForm
             node={nt}
             slot={catalog}

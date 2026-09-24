@@ -49,7 +49,7 @@ export function SourceItem({ chunk, citations, final, selected, flashing, domId 
     <Card
       id={domId}
       tabIndex={-1}
-      padding="sm"
+      padding="md"
       selected={selected}
       aria-label={`Source ${chunk.rank}: ${chunk.document}`}
       className={cn('scroll-mt-3 space-y-2 outline-none', flashing && 'animate-flash', dropped && !selected && 'opacity-60')}
@@ -74,7 +74,7 @@ export function SourceItem({ chunk, citations, final, selected, flashing, domId 
             </span>
           </Tooltip>
         )}
-        <span className="min-w-0 truncate text-label text-text-primary" title={chunk.document}>{chunk.document}</span>
+        <span className="min-w-0 truncate text-heading text-text-primary" title={chunk.document}>{chunk.document}</span>
         {pages && <span className="shrink-0 font-mono text-mono-sm text-text-tertiary">{pages}</span>}
         {chunk.context_n != null && (
           <span className="shrink-0 font-mono text-mono-sm text-accent-text" title={`Numbered [${chunk.context_n}] in the prompt`}>
@@ -94,7 +94,7 @@ export function SourceItem({ chunk, citations, final, selected, flashing, domId 
       </div>
 
       {/* Row 2: heading path */}
-      {heading && <p className="truncate text-body-sm text-text-tertiary" title={heading}>{heading}</p>}
+      {heading && <p className="truncate text-body text-text-tertiary" title={heading}>{heading}</p>}
 
       {/* Row 3: found-by + scores */}
       <div className="flex flex-wrap items-center gap-1">
@@ -144,7 +144,7 @@ export function SourceItem({ chunk, citations, final, selected, flashing, domId 
             type="button"
             onClick={() => setExpanded((v) => !v)}
             aria-expanded={expanded}
-            className="focus-ring mt-1 rounded-sm text-body-sm text-accent-text hover:text-accent-hover"
+            className="focus-ring mt-1 rounded-sm text-body text-accent-text hover:text-accent-hover"
           >
             {expanded ? 'Show less' : 'Show more'}
           </button>

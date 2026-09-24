@@ -1,105 +1,122 @@
 import { useState, type ReactNode } from 'react'
-import { ChevronRight } from 'lucide-react'
+import { ChevronRight, FileText } from 'lucide-react'
 import type { EvalItem, EvalSetDetail } from '@/api/types'
-import { Badge, Card, CardHeader, Disclosure, cn } from '@/components/ui'
+import { Badge, Card, Disclosure, cn } from '@/components/ui'
 
-const CELL = 'px-2 py-2 first:pl-4 last:pr-4 align-top'
-
+/** One eval question as an expandable list row (fits the narrow side panel). */
 function ItemRow({ item, n }: { item: EvalItem; n: number }) {
   const [open, setOpen] = useState(false)
   return (
-    <tr className="border-b border-border-default last:border-b-0">
-        <td className={cn(CELL, 'w-10 font-mono text-mono-sm text-text-tertiary')}>{n}</td>
-        <td className={CELL}>
-          <button
-            type="button"
-            aria-expanded={open}
-            onClick={() => setOpen((o) => !o)}
-            className="focus-ring flex items-start gap-1.5 rounded-sm text-left text-body text-text-primary hover:text-accent-text"
-          >
-            <ChevronRight size={14} aria-hidden className={cn('mt-1 shrink-0 transition-transform', open && 'rotate-90')} />
-            <span>{item.question}</span>
-          </button>
-          {open && (
-            <dl className="mt-2 ml-5 grid gap-1.5 text-body-sm">
-              <div>
-                <dt className="inline text-text-tertiary">Answer: </dt>
-                <dd className="inline text-text-primary">{item.gold_answer}</dd>
-              </div>
-              <div>
-                <dt className="text-text-tertiary">Evidence (verbatim from the source):</dt>
-                <dd className="mt-0.5 rounded-md border-l-2 border-accent-default bg-bg-subtle px-2 py-1 text-text-secondary">{item.evidence}</dd>
-              </div>
-              {item.closed_book_answer && (
-                <div>
-                  <dt className="inline text-text-tertiary">Model's answer with no documents: </dt>
-                  <dd className="inline text-text-secondary">{item.closed_book_answer}</dd>
-                </div>
-              )}
-            </dl>
+    <li className="border-b border-border-default last:border-b-0">
+      <button
+        type="button"
+        aria-expanded={open}
+        onClick={() => setOpen((o) => !o)}
+        className="focus-ring flex w-full items-start gap-2.5 rounded-md px-1 py-2.5 text-left hover:bg-bg-subtle"
+      >
+        <span className="mt-0.5 w-5 shrink-0 text-right font-mono text-mono-sm text-text-tertiary">{n}</span>
+        <span className="min-w-0 flex-1 text-body text-text-primary">{item.question}</span>
+        <ChevronRight size={14} aria-hidden className={cn('mt-1 shrink-0 text-text-tertiary transition-transform', open && 'rotate-90')} />
+      </button>
+      {open && (
+        <dl className="mb-3 ml-8 mr-1 grid gap-2 text-body-sm">
+          {item.document && (
+            <div className="flex items-center gap-1.5 text-text-tertiary">
+              <FileText size={12} aria-hidden className="shrink-0" />
+              <span className="truncate" title={item.document}>{item.document}</span>
+            </div>
           )}
-        </td>
-        <td className={cn(CELL, 'w-48 truncate text-body-sm text-text-secondary')} title={item.document ?? ''}>{item.document ?? '—'}</td>
-        {!item.valid && (
-          <td className={cn(CELL, 'w-64 text-body-sm text-warning-fg')}>{item.reject_reason}</td>
-        )}
-    </tr>
+          <div>
+            <dt className="text-text-tertiary">Answer</dt>
+            <dd className="text-text-primary">{item.gold_answer}</dd>
+          </div>
+          <div>
+            <dt className="text-text-tertiary">Evidence (verbatim from the source)</dt>
+            <dd className="mt-0.5 rounded-md border-l-2 border-accent-default bg-bg-subtle px-2 py-1 text-text-secondary">{item.evidence}</dd>
+          </div>
+          {item.closed_book_answer && (
+            <div>
+              <dt className="text-text-tertiary">Model's answer with no documents</dt>
+              <dd className="text-text-secondary">{item.closed_book_answer}</dd>
+            </div>
+          )}
+          {!item.valid && item.reject_reason && (
+            <div>
+              <dt className="text-text-tertiary">Why it was dropped</dt>
+              <dd className="text-warning-fg">{item.reject_reason}</dd>
+            </div>
+          )}
+        </dl>
+      )}
+    </li>
   )
 }
 
-function ItemTable({ items, rejected }: { items: EvalItem[]; rejected?: boolean }) {
+function ItemList({ items, label }: { items: EvalItem[]; label: string }) {
   return (
-    <div className="overflow-x-auto">
-      <table className="w-full min-w-[640px] border-collapse text-left">
-        <caption className="sr-only">{rejected ? 'Rejected questions' : 'Eval questions'}</caption>
-        <thead>
-          <tr className="h-9 border-b border-border-default bg-bg-subtle text-caption text-text-tertiary">
-            <th scope="col" className={cn(CELL, 'py-0 font-medium')}>#</th>
-            <th scope="col" className={cn(CELL, 'py-0 font-medium')}>Question</th>
-            <th scope="col" className={cn(CELL, 'py-0 font-medium')}>Source</th>
-            {rejected && <th scope="col" className={cn(CELL, 'py-0 font-medium')}>Why it was dropped</th>}
-          </tr>
-        </thead>
-        <tbody>
-          {items.map((it, i) => <ItemRow key={it.id} item={it} n={i + 1} />)}
-        </tbody>
-      </table>
-    </div>
+    <ol aria-label={label} className="mt-1">
+      {items.map((it, i) => <ItemRow key={it.id} item={it} n={i + 1} />)}
+    </ol>
   )
 }
 
-export function EvalSetCard({ set, actions }: { set: EvalSetDetail; actions?: ReactNode }) {
+/** Eval set summary for the Evaluate side panel: size, filter stats, regenerate controls, question list. */
+export function EvalSetCard({
+  set, actions, progress, compact,
+}: {
+  set: EvalSetDetail
+  actions?: ReactNode
+  progress?: ReactNode
+  /** Rail variant: shorter copy, and no kept-question list (the per-question results already show them). */
+  compact?: boolean
+}) {
   const kept = set.items.filter((i) => i.valid)
   const dropped = set.items.filter((i) => !i.valid)
   const st = set.stats
   return (
-    <Card padding="none" className="overflow-hidden">
-      <div className="p-4 pb-0">
-        <CardHeader
-          title="Eval set"
-          description="Written from your own documents, then filtered: a question is dropped if the model can answer it without the documents, or if its evidence isn't really in the source."
-          actions={actions}
-        />
-        <div className="mb-3 flex flex-wrap items-center gap-2 text-body-sm">
-          <Badge tone="success">{kept.length} questions kept</Badge>
-          {!!st.too_generic && <Badge tone="warning">{st.too_generic} too generic</Badge>}
-          {!!st.bad_evidence && <Badge tone="warning">{st.bad_evidence} bad evidence</Badge>}
-          <span className="text-text-tertiary">
+    <Card padding="lg" className="flex flex-col gap-4">
+      <div>
+        <h2 className="text-heading-lg text-text-primary">Eval set</h2>
+        <p className="mt-1 text-body text-text-secondary">
+          {compact
+            ? 'Questions written from your documents; ones a model can answer without them are dropped.'
+            : "Written from your own documents, then filtered: a question is dropped if the model can answer it without the documents, or if its evidence isn't really in the source."}
+        </p>
+      </div>
+
+      <div className="flex items-end gap-3 rounded-lg bg-bg-subtle px-4 py-3">
+        <span className="font-mono text-display tabular-nums text-text-primary">{kept.length}</span>
+        <span className="pb-1 text-body text-text-secondary">
+          questions kept
+          <span className="block text-body-sm text-text-tertiary">
             from {st.sampled ?? '—'} sampled chunks · 0 labelled by hand
           </span>
-        </div>
+        </span>
       </div>
-      <Disclosure label={`Questions (${kept.length})`} className="px-4" defaultOpen={false}>
-        <div className="-mx-4">
-          <ItemTable items={kept} />
+
+      {(!!st.too_generic || !!st.bad_evidence) && (
+        <div className="flex flex-wrap gap-2">
+          {!!st.too_generic && <Badge tone="warning">{st.too_generic} too generic</Badge>}
+          {!!st.bad_evidence && <Badge tone="warning">{st.bad_evidence} bad evidence</Badge>}
         </div>
-      </Disclosure>
-      {dropped.length > 0 && (
-        <Disclosure label={`Rejected by the filter (${dropped.length})`} className="px-4 pb-2">
-          <div className="-mx-4">
-            <ItemTable items={dropped} rejected />
-          </div>
-        </Disclosure>
+      )}
+
+      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+      {progress}
+
+      {(!compact || dropped.length > 0) && (
+        <div className="-mx-1 border-t border-border-default pt-2">
+          {!compact && (
+            <Disclosure label={`Questions (${kept.length})`} className="px-1">
+              <ItemList items={kept} label="Eval questions" />
+            </Disclosure>
+          )}
+          {dropped.length > 0 && (
+            <Disclosure label={`Rejected by the filter (${dropped.length})`} className="px-1">
+              <ItemList items={dropped} label="Rejected questions" />
+            </Disclosure>
+          )}
+        </div>
       )}
     </Card>
   )

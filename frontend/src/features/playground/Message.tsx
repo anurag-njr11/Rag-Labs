@@ -73,10 +73,10 @@ export function Message({ turn, projectId, inspected, activeN, maxTokens, onCite
   }
 
   return (
-    <article className="space-y-4" aria-label={`Question: ${turn.question}`}>
+    <article className="space-y-5" aria-label={`Question: ${turn.question}`}>
       {/* User bubble */}
       <div className="flex justify-end">
-        <div className="max-w-[min(560px,90%)] whitespace-pre-wrap break-words rounded-lg border border-border-default bg-bg-surface px-3.5 py-2.5 text-body text-text-primary shadow-sm">
+        <div className="max-w-[min(600px,90%)] whitespace-pre-wrap break-words rounded-2xl rounded-br-md border border-accent-border bg-accent-subtle px-4 py-3 text-body-lg text-text-primary">
           {turn.question}
         </div>
       </div>
@@ -90,7 +90,7 @@ export function Message({ turn, projectId, inspected, activeN, maxTokens, onCite
         )}
 
         {pending && (
-          <p className="flex items-center gap-2 text-body-sm text-text-secondary" role="status">
+          <p className="flex items-center gap-2 text-body text-text-secondary" role="status">
             <Spinner size={12} /> {pending}
             {elapsed >= 2 && <span className="font-mono text-mono-sm text-text-tertiary">{elapsed}s</span>}
           </p>

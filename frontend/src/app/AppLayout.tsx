@@ -1,14 +1,15 @@
 import { Suspense } from 'react'
 import { Link, Outlet } from 'react-router-dom'
-import { Layers, Moon, Sun } from 'lucide-react'
+import { Moon, Sun } from 'lucide-react'
 import { Badge, Button, Spinner } from '@/components/ui'
+import { BrandMark } from './BrandMark'
 import { useTheme } from './theme'
 
 /** Backend's interactive API docs (FastAPI). */
 export const BACKEND_DOCS_URL = 'http://127.0.0.1:8000/docs'
 
 /** Top bar height in px — also exposed as CSS var --topbar-h for sticky offsets. */
-export const TOPBAR_H = 52
+export const TOPBAR_H = 64
 
 export function PageFallback() {
   return (
@@ -18,7 +19,7 @@ export function PageFallback() {
   )
 }
 
-/** App chrome: skip link + 52px sticky top bar + routed content. */
+/** App chrome: skip link + 64px sticky top bar + routed content. */
 export function AppLayout() {
   const [theme, setTheme] = useTheme()
   return (
@@ -29,13 +30,13 @@ export function AppLayout() {
       >
         Skip to content
       </a>
-      <header className="sticky top-0 z-30 flex h-[52px] shrink-0 items-center justify-between border-b border-border-default bg-bg-surface px-4 sm:px-8">
-        <Link to="/" className="focus-ring flex items-center gap-2.5 rounded-md" aria-label="RAGLabs — all projects">
-          <span className="flex size-6 items-center justify-center rounded-md bg-bg-inverse text-text-inverse">
-            <Layers size={14} aria-hidden />
+      <header className="sticky top-0 z-30 flex h-[64px] shrink-0 items-center justify-between border-b border-border-default bg-bg-surface px-4 sm:px-8">
+        <Link to="/" className="focus-ring flex items-center gap-3 rounded-lg" aria-label="RAGLabs — all projects">
+          <BrandMark size={36} className="shrink-0 drop-shadow-sm" />
+          <span className="text-[22px] font-semibold leading-none tracking-[-0.03em] text-text-primary">
+            RAG<span className="text-accent-text">Labs</span>
           </span>
-          <span className="text-heading text-text-primary">RAGLabs</span>
-          <Badge tone="neutral" className="hidden sm:inline-flex">Phase 1</Badge>
+          <Badge tone="neutral" className="ml-1 hidden sm:inline-flex">Phase 1</Badge>
         </Link>
         <div className="flex items-center gap-1.5">
           <a

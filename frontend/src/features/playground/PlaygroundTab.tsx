@@ -1,19 +1,22 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent, type ReactNode } from 'react'
-import { ArrowUp, ChevronUp, History, MessageCircle, Plus, Square, X } from 'lucide-react'
-import { errorMessage, useProviders, useRuns, useVersions } from '@/api/hooks'
+import { ArrowUp, ChevronUp, History, MessageCircle, PanelRightOpen, Plus, Sparkles, Square, X } from 'lucide-react'
+import { errorMessage, useProviders, useRuns, useSuggestions, useVersions } from '@/api/hooks'
 import { formatMs, formatRelative, storeLabel } from '@/api/format'
-import type { Version } from '@/api/types'
+import type { Suggestions, Version } from '@/api/types'
 import { useWorkspace } from '@/app/workspace'
 import { Button, Popover, Select, Spinner, StatusBadge, cn, useToast } from '@/components/ui'
 import { Inspector, inspectorSummary, type InspectorFocus, type InspectorTab } from './Inspector'
 import { Message } from './Message'
 import { isActive, useChatSession, type Turn } from './session'
 
-const SUGGESTIONS = [
-  'How do I make a field optional with a default?',
-  "Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='abc', input_type=str]",
-  'What does model_config do?',
-]
+const SUGGESTION_LABEL: Record<Suggestions['source'], string> = {
+  eval: 'Try a question from your eval set',
+  headings: 'Try a section from your documents',
+  recent: 'Your recent questions',
+  none: '',
+}
+
+const INSPECTOR_KEY = 'raglabs.playground.inspector'
 
 function useMediaQuery(q: string) {
   const [m, setM] = useState(() => (typeof window === 'undefined' ? true : window.matchMedia(q).matches))
@@ -42,13 +45,31 @@ export default function PlaygroundTab() {
   const [focus, setFocus] = useState<InspectorFocus & { n: number | null }>({ chunkId: null, n: null, tick: 0 })
   const [sheetOpen, setSheetOpen] = useState(false)
   const closeSheet = useCallback(() => setSheetOpen(false), [])
+  /** Desktop: Inspector column shown or hidden (remembered per browser). */
+  const [inspectorOpen, setInspectorOpenState] = useState(() => {
+    try {
+      return localStorage.getItem(INSPECTOR_KEY) !== '0'
+    } catch {
+      return true
+    }
+  })
+  const setInspectorOpen = useCallback((open: boolean) => {
+    setInspectorOpenState(open)
+    try {
+      localStorage.setItem(INSPECTOR_KEY, open ? '1' : '0')
+    } catch {
+      /* storage unavailable: remember for this visit only */
+    }
+  }, [])
   const wideRef = useRef(wide)
   useEffect(() => {
     wideRef.current = wide
   }, [wide])
+  /** Bring the Inspector into view: re-open the column on desktop, open the bottom sheet on mobile. */
   const openSheet = useCallback(() => {
-    if (!wideRef.current) setSheetOpen(true)
-  }, [])
+    if (wideRef.current) setInspectorOpen(true)
+    else setSheetOpen(true)
+  }, [setInspectorOpen])
 
   const activeVersionId = project.active_version_id ?? ''
   const selectedVersionId = versionId || activeVersionId
@@ -133,6 +154,7 @@ export default function PlaygroundTab() {
   const [historyOpen, setHistoryOpen] = useState(false)
   const historyBtn = useRef<HTMLButtonElement>(null)
   const runs = useRuns(project.id, 20, { enabled: historyOpen })
+  const suggestions = useSuggestions(project.id, { enabled: turns.length === 0 })
   const loadRun = async (id: string) => {
     setHistoryOpen(false)
     try {
@@ -161,43 +183,52 @@ export default function PlaygroundTab() {
       focus={focus}
       indexType={indexType}
       compact={compact}
+      onCollapse={compact ? undefined : () => setInspectorOpen(false)}
       className="h-full"
     />
   )
   const sum = inspectorSummary(inspected)
+  /** Thread + composer width: roomier when the Inspector column is hidden. */
+  const threadWidth = wide && !inspectorOpen ? 'max-w-[960px]' : 'max-w-[840px]'
 
   return (
     <div className="flex h-[calc(100dvh-var(--chrome-h))] min-h-[480px]">
       {/* ------------------------------------------------------------------ chat pane */}
       <section aria-label="Chat" className="flex min-w-0 flex-[3] flex-col bg-bg-canvas">
-        <div className="flex shrink-0 flex-wrap items-center gap-2 border-b border-border-default bg-bg-surface px-4 py-2 sm:px-6">
+        <div className="flex shrink-0 flex-wrap items-center gap-1 border-b border-border-default bg-bg-surface px-3 py-2.5 sm:gap-2 sm:px-6">
           <label htmlFor="pg-version" className="sr-only">Version</label>
           <Select
             id="pg-version"
-            size="sm"
-            wrapperClassName="w-[150px]"
+            wrapperClassName="w-[128px] sm:w-[170px]"
             value={selectedVersionId}
             onChange={(e) => setVersionId(e.target.value === activeVersionId ? '' : e.target.value)}
             options={versionOptions}
             disabled={streaming || !versionOptions.length}
           />
-          <Button size="sm" variant="ghost" icon={<Plus size={14} aria-hidden />} onClick={newChat} disabled={!turns.length}>
+          <Button variant="ghost" icon={<Plus size={16} aria-hidden />} onClick={newChat} disabled={!turns.length}>
             New chat
           </Button>
           <Button
             ref={historyBtn}
-            size="sm"
             variant="ghost"
-            icon={<History size={14} aria-hidden />}
+            icon={<History size={16} aria-hidden />}
             onClick={() => setHistoryOpen((o) => !o)}
             aria-expanded={historyOpen}
             aria-haspopup="dialog"
           >
             History
           </Button>
-          <span className="ml-auto truncate font-mono text-mono-sm text-text-tertiary" title="Model · vector store of the selected version">
+          <span
+            className="ml-auto hidden min-w-0 truncate rounded-full border border-border-default bg-bg-subtle px-3 py-1 font-mono text-mono text-text-secondary sm:block"
+            title="Model · vector store of the selected version"
+          >
             {[model, store ? storeLabel(store.type) : ''].filter(Boolean).join(' · ')}
           </span>
+          {wide && !inspectorOpen && (
+            <Button variant="secondary" icon={<PanelRightOpen size={16} aria-hidden />} onClick={() => setInspectorOpen(true)}>
+              Inspector
+            </Button>
+          )}
         </div>
 
         <Popover open={historyOpen} onClose={() => setHistoryOpen(false)} anchor={historyBtn} align="start" width={360} aria-label="Recent runs">
@@ -233,31 +264,45 @@ export default function PlaygroundTab() {
         </Popover>
 
         <div ref={thread} onScroll={onThreadScroll} className="relative min-h-0 flex-1 overflow-y-auto">
-          <div className="mx-auto w-full max-w-[760px] space-y-8 px-4 py-6 sm:px-6">
+          <div className={cn('mx-auto w-full space-y-10 px-4 py-8 sm:px-8', threadWidth)}>
             {turns.length === 0 ? (
-              <div className="flex flex-col items-center gap-4 py-10 text-center">
-                <div className="flex size-10 items-center justify-center rounded-lg bg-bg-subtle text-text-secondary">
-                  <MessageCircle size={20} aria-hidden />
+              <div className="flex flex-col items-center gap-6 py-8 text-center sm:py-14">
+                <div className="flex size-14 items-center justify-center rounded-2xl bg-accent-subtle text-accent-text">
+                  <MessageCircle size={26} aria-hidden />
                 </div>
-                <div>
-                  <h2 className="text-heading text-text-primary">Ask {project.name}</h2>
-                  <p className="mt-1 max-w-md text-body text-text-secondary">
+                <div className="space-y-2">
+                  <h2 className="text-title-lg text-text-primary">Ask {project.name}</h2>
+                  <p className="text-body text-text-tertiary">
+                    {[
+                      `${project.documents} document${project.documents === 1 ? '' : 's'}`,
+                      model,
+                      store ? storeLabel(store.type) : '',
+                    ].filter(Boolean).join(' · ')}
+                  </p>
+                  <p className="mx-auto max-w-lg text-body-lg text-text-secondary">
                     Answers cite their sources as [n]. Click a citation to see the passage, how it was found and why it ranked.
                   </p>
                 </div>
-                <div className="flex w-full max-w-lg flex-col gap-2">
-                  {SUGGESTIONS.map((s) => (
-                    <button
-                      key={s}
-                      type="button"
-                      onClick={() => send(s)}
-                      className="focus-ring truncate rounded-lg border border-border-default bg-bg-surface px-3 py-2 text-left text-body text-text-secondary shadow-sm hover:border-border-strong hover:text-text-primary"
-                      title={s}
-                    >
-                      {s}
-                    </button>
-                  ))}
-                </div>
+                {!!suggestions.data?.questions.length && (
+                  <div className="flex w-full max-w-2xl flex-col gap-3">
+                    <p className="flex items-center gap-1.5 text-left text-label text-text-tertiary">
+                      <Sparkles size={14} aria-hidden /> {SUGGESTION_LABEL[suggestions.data.source]}
+                    </p>
+                    <div className="grid gap-3 sm:grid-cols-2">
+                      {suggestions.data.questions.map((s) => (
+                        <button
+                          key={s}
+                          type="button"
+                          onClick={() => send(s)}
+                          className="focus-ring rounded-xl border border-border-default bg-bg-surface px-4 py-3 text-left text-body-lg text-text-secondary shadow-sm transition-[border-color,color,box-shadow] hover:border-accent-border hover:text-text-primary hover:shadow-md"
+                          title={s}
+                        >
+                          <span className="line-clamp-3">{s}</span>
+                        </button>
+                      ))}
+                    </div>
+                  </div>
+                )}
               </div>
             ) : (
               turns.map((t) => (
@@ -299,9 +344,9 @@ export default function PlaygroundTab() {
         )}
 
         {/* Composer */}
-        <div className="shrink-0 border-t border-border-default bg-bg-surface px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-3 sm:px-6">
-          <div className="mx-auto w-full max-w-[760px]">
-            <div className="relative rounded-lg border border-border-strong bg-bg-surface shadow-sm transition-[border-color,box-shadow] focus-within:border-border-focus focus-within:shadow-[var(--shadow-focus)]">
+        <div className="shrink-0 border-t border-border-default bg-bg-surface px-4 pb-[max(12px,env(safe-area-inset-bottom))] pt-4 sm:px-8">
+          <div className={cn('mx-auto w-full', threadWidth)}>
+            <div className="relative rounded-xl border border-border-strong bg-bg-surface shadow-sm transition-[border-color,box-shadow] focus-within:border-border-focus focus-within:shadow-[var(--shadow-focus)]">
               <label htmlFor="pg-input" className="sr-only">Ask a question</label>
               <textarea
                 id="pg-input"
@@ -313,26 +358,25 @@ export default function PlaygroundTab() {
                 disabled={streaming}
                 placeholder={streaming ? 'Waiting for the answer…' : 'Ask a question, or paste an error message…'}
                 aria-describedby="pg-hint"
-                className="block max-h-48 min-h-[76px] w-full resize-none rounded-lg bg-transparent py-2.5 pl-3 pr-14 text-body text-text-primary outline-none placeholder:text-text-tertiary disabled:cursor-not-allowed disabled:text-text-disabled"
+                className="block max-h-56 min-h-[92px] w-full resize-none rounded-xl bg-transparent py-3 pl-4 pr-16 text-body-lg text-text-primary outline-none placeholder:text-text-tertiary disabled:cursor-not-allowed disabled:text-text-disabled"
               />
-              <div className="absolute bottom-2 right-2">
+              <div className="absolute bottom-2.5 right-2.5">
                 {streaming ? (
-                  <Button variant="secondary" iconOnly size={wide ? 'sm' : 'md'} aria-label="Stop generating" onClick={session.stop} className={cn(!wide && 'size-11')} icon={<Square size={12} aria-hidden />} />
+                  <Button variant="secondary" iconOnly aria-label="Stop generating" onClick={session.stop} className="size-10 rounded-full" icon={<Square size={14} aria-hidden />} />
                 ) : (
                   <Button
                     variant="primary"
                     iconOnly
-                    size={wide ? 'sm' : 'md'}
                     aria-label="Send"
                     onClick={() => send()}
                     disabled={!draft.trim()}
-                    className={cn(!wide && 'size-11')}
-                    icon={<ArrowUp size={14} aria-hidden />}
+                    className="size-10 rounded-full"
+                    icon={<ArrowUp size={18} aria-hidden />}
                   />
                 )}
               </div>
             </div>
-            <p id="pg-hint" className="mt-1.5 hidden text-body-sm text-text-tertiary sm:block">
+            <p id="pg-hint" className="mt-2 hidden text-body text-text-tertiary sm:block">
               Enter to send · Shift+Enter for newline · answers cite sources as [n]
             </p>
           </div>
@@ -341,7 +385,9 @@ export default function PlaygroundTab() {
 
       {/* ------------------------------------------------------------------ inspector */}
       {wide ? (
-        <aside className="flex min-w-[380px] flex-[2] flex-col border-l border-border-default bg-bg-surface">{inspector()}</aside>
+        inspectorOpen && (
+          <aside className="flex min-w-[400px] flex-[2] flex-col border-l border-border-default bg-bg-surface">{inspector()}</aside>
+        )
       ) : (
         sheetOpen && inspected && (
           <BottomSheet onClose={closeSheet}>{inspector(true)}</BottomSheet>

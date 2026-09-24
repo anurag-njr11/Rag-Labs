@@ -2,10 +2,11 @@ import { Fragment, type ReactNode } from 'react'
 import { Check } from 'lucide-react'
 import { cn } from './cn'
 
-export type ProgressTone = 'accent' | 'success' | 'danger' | 'neutral'
+export type ProgressTone = 'accent' | 'success' | 'warning' | 'danger' | 'neutral'
 const fill: Record<ProgressTone, string> = {
   accent: 'bg-accent-default',
   success: 'bg-success-fg',
+  warning: 'bg-warning-fg',
   danger: 'bg-danger-fg',
   neutral: 'bg-text-disabled',
 }

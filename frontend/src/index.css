@@ -9,9 +9,12 @@
 
   /* Type scale */
   --text-display: 24px;  --text-display--line-height: 32px; --text-display--font-weight: 600; --text-display--letter-spacing: -0.4px;
+  --text-title-lg: 20px; --text-title-lg--line-height: 28px; --text-title-lg--font-weight: 600; --text-title-lg--letter-spacing: -0.3px;
   --text-title: 18px;    --text-title--line-height: 26px;   --text-title--font-weight: 600;   --text-title--letter-spacing: -0.2px;
+  --text-heading-lg: 16px; --text-heading-lg--line-height: 22px; --text-heading-lg--font-weight: 600; --text-heading-lg--letter-spacing: -0.1px;
   --text-heading: 14px;  --text-heading--line-height: 20px; --text-heading--font-weight: 600;
   --text-label: 13px;    --text-label--line-height: 18px;   --text-label--font-weight: 500;
+  --text-body-lg: 14px;  --text-body-lg--line-height: 21px;
   --text-body: 13px;     --text-body--line-height: 20px;
   --text-body-sm: 12px;  --text-body-sm--line-height: 16px;
   --text-caption: 11px;  --text-caption--line-height: 14px; --text-caption--font-weight: 500; --text-caption--letter-spacing: 0.1px;

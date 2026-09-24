@@ -21,6 +21,8 @@ const HEADING = /^(#{1,6})\s+(.*)$/
 const UL = /^\s*[-*+]\s+(.*)$/
 const OL = /^\s*(\d{1,4})[.)]\s+(.*)$/
 const QUOTE = /^\s*>\s?(.*)$/
+/** A line holding only citation markers, e.g. "[3]" or "[1, 2] [4]." — models often put these on their own line. */
+const CITE_ONLY = /^\s*(?:\[\d{1,3}(?:\s*,\s*\d{1,3})*\]\s*)+[.,;:]?\s*$/
 
 export function parseBlocks(src: string): Block[] {
   const lines = src.replace(/\r\n?/g, '\n').split('\n')
@@ -62,6 +64,7 @@ export function parseBlocks(src: string): Block[] {
       while (i < lines.length) {
         const m = kind === 'ul' ? UL.exec(lines[i]) : OL.exec(lines[i])
         if (m) items.push(kind === 'ul' ? m[1] : m[2])
+        else if (CITE_ONLY.test(lines[i]) && items.length) items[items.length - 1] += ` ${lines[i].trim()}`
         else if (lines[i].trim() && /^\s{2,}/.test(lines[i]) && items.length) items[items.length - 1] += `\n${lines[i].trim()}`
         else break
         i++
@@ -78,6 +81,23 @@ export function parseBlocks(src: string): Block[] {
       i--
       blocks.push({ kind: 'quote', text: body.join('\n') })
       continue
+    }
+    // Citation-only line after a list / heading / paragraph: attach it to that block instead of a new line.
+    if (CITE_ONLY.test(line)) {
+      const cites = line.trim()
+      if (para.length) {
+        para[para.length - 1] += ` ${cites}`
+        continue
+      }
+      const prev = blocks[blocks.length - 1]
+      if (prev && (prev.kind === 'ul' || prev.kind === 'ol')) {
+        prev.items[prev.items.length - 1] += ` ${cites}`
+        continue
+      }
+      if (prev && (prev.kind === 'p' || prev.kind === 'h' || prev.kind === 'quote')) {
+        prev.text += ` ${cites}`
+        continue
+      }
     }
     para.push(line)
   }
@@ -148,14 +168,14 @@ export function Markdown({ text, cite, trailing, className }: MarkdownProps) {
   const lastIdx = blocks.length - 1
   const tail = (i: number) => (i === lastIdx && trailing ? trailing : null)
   return (
-    <div className={cn('space-y-3 break-words text-body text-text-primary', className)}>
+    <div className={cn('space-y-3 break-words text-body-lg text-text-primary', className)}>
       {blocks.map((b, i) => {
         const kp = `b${i}`
         switch (b.kind) {
           case 'p':
             return <p key={kp}>{inlineWithBreaks(b.text, cite, kp)}{tail(i)}</p>
           case 'h': {
-            const cls = b.level <= 2 ? 'text-heading' : 'text-label'
+            const cls = b.level <= 2 ? 'text-heading-lg' : 'text-heading'
             return <p key={kp} role="heading" aria-level={Math.min(6, b.level + 2)} className={cn(cls, 'pt-1 text-text-primary')}>{renderInline(b.text, cite, kp)}{tail(i)}</p>
           }
           case 'code':

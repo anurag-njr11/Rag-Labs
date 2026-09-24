@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
-import { Search } from 'lucide-react'
+import { PanelRightClose, Search } from 'lucide-react'
 import { formatMs } from '@/api/format'
-import { Banner, EmptyState, FoundByBadge, Spinner, Tabs, cn, tabPanelProps } from '@/components/ui'
+import { Banner, Button, EmptyState, FoundByBadge, Spinner, Tabs, cn, tabPanelProps } from '@/components/ui'
 import { SourceItem, isCited } from './Sources'
 import { TracePanel } from './Trace'
 import { isActive, type Turn } from './session'
@@ -35,10 +35,12 @@ export interface InspectorProps {
   indexType?: string
   /** Hide the "Inspector" title row (mobile sheet has its own). */
   compact?: boolean
+  /** Shows a "hide inspector" button in the header. */
+  onCollapse?: () => void
   className?: string
 }
 
-export function Inspector({ turn, tab, onTabChange, focus, indexType, compact, className }: InspectorProps) {
+export function Inspector({ turn, tab, onTabChange, focus, indexType, compact, onCollapse, className }: InspectorProps) {
   const scroller = useRef<HTMLDivElement>(null)
   const [flashId, setFlashId] = useState<string | null>(null)
   const s = inspectorSummary(turn)
@@ -62,20 +64,19 @@ export function Inspector({ turn, tab, onTabChange, focus, indexType, compact, c
   }, [turn?.id])
 
   const summary = turn && turn.retrieved.length > 0 && (
-    <p className="text-body-sm text-text-tertiary">
+    <p className="text-body text-text-tertiary">
       {s.retrieved} retrieved · {s.inContext} in context · {turn.status === 'done' ? `${s.cited} cited` : isActive(turn) ? 'citations pending' : '0 cited'}
     </p>
   )
 
   return (
     <section aria-label="Inspector" className={cn('flex min-h-0 flex-col', className)}>
-      <div className={cn('shrink-0 space-y-2 border-b border-border-default px-4 pb-3', compact ? 'pt-1' : 'pt-4')}>
+      <div className={cn('shrink-0 space-y-2 border-b border-border-default px-5 pb-3', compact ? 'pt-1' : 'pt-4')}>
         <div className="flex flex-wrap items-center gap-3">
-          {!compact && <h2 className="text-heading text-text-primary">Inspector</h2>}
+          {!compact && <h2 className="text-heading-lg text-text-primary">Inspector</h2>}
           <Tabs
             aria-label="Inspector view"
             idPrefix="inspector"
-            size="sm"
             value={tab}
             onChange={onTabChange}
             className={cn(!compact && 'ml-auto')}
@@ -84,11 +85,22 @@ export function Inspector({ turn, tab, onTabChange, focus, indexType, compact, c
               { value: 'trace', label: 'Trace' },
             ]}
           />
+          {onCollapse && (
+            <Button
+              variant="ghost"
+              size="sm"
+              iconOnly
+              aria-label="Hide inspector"
+              title="Hide inspector"
+              onClick={onCollapse}
+              icon={<PanelRightClose size={16} aria-hidden />}
+            />
+          )}
         </div>
         {summary}
       </div>
 
-      <div ref={scroller} {...tabPanelProps('inspector', tab)} className="relative min-h-0 flex-1 overflow-y-auto px-4 py-4 outline-none">
+      <div ref={scroller} {...tabPanelProps('inspector', tab)} className="relative min-h-0 flex-1 overflow-y-auto px-5 py-4 outline-none">
         {!turn ? (
           <EmptyState
             icon={<Search aria-hidden />}

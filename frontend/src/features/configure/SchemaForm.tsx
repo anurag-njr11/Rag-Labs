@@ -54,7 +54,7 @@ export function SchemaForm({ node, slot, value, onChange, errors, changed, idPre
 
   return (
     <div className="flex flex-col gap-5">
-      {basic.length > 0 && <div className="grid grid-cols-1 gap-x-6 gap-y-5 md:grid-cols-2">{basic.map(render)}</div>}
+      {basic.length > 0 && <div className="grid grid-cols-1 gap-x-10 gap-y-6 md:grid-cols-2">{basic.map(render)}</div>}
       {advanced.length > 0 && (
         <Disclosure
           label="Advanced"
@@ -68,7 +68,7 @@ export function SchemaForm({ node, slot, value, onChange, errors, changed, idPre
           open={advOpen || advancedHasError}
           onOpenChange={setAdvOpen}
         >
-          <div className="grid grid-cols-1 gap-x-6 gap-y-5 md:grid-cols-2">{advanced.map(render)}</div>
+          <div className="grid grid-cols-1 gap-x-10 gap-y-6 md:grid-cols-2">{advanced.map(render)}</div>
         </Disclosure>
       )}
     </div>
@@ -112,7 +112,7 @@ function SchemaField({ field: f, node, slot, nodeValue, value, onChange, error, 
     </span>
   )
   const badge = <EffectBadge effect={effect} />
-  const common = { label, badge, help: f.help, error, id, className: wide(f) ? 'md:col-span-2' : undefined }
+  const common = { label, badge, help: f.help, error, id, size: 'lg' as const, className: wide(f) ? 'md:col-span-2' : undefined }
 
   switch (f.kind) {
     case 'boolean':

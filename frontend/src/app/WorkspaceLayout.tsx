@@ -1,6 +1,9 @@
 import { Suspense, useLayoutEffect, useRef, useState } from 'react'
 import { Link, Outlet, useLocation, useParams } from 'react-router-dom'
-import { ChevronRight, Database, FolderX, GitCommitHorizontal, RefreshCw } from 'lucide-react'
+import {
+  ChevronRight, Code2, Database, FileText, FlaskConical, FolderX, GitCommitHorizontal, History, MessageSquare, RefreshCw,
+  SlidersHorizontal,
+} from 'lucide-react'
 import { ApiError, errorMessage, useBuildVersion, useProject } from '@/api/hooks'
 import { formatNumber, storeLabel } from '@/api/format'
 import type { IndexStatus, Project } from '@/api/types'
@@ -107,14 +110,14 @@ function WorkspaceHeader({ project }: { project: Project }) {
 
       <TabLinks
         aria-label="Project sections"
-        className="mt-3"
+        className="mt-4"
         items={[
-          { to: `${base}/documents`, label: 'Documents' },
-          { to: `${base}/configure`, label: 'Configure' },
-          { to: `${base}/versions`, label: 'Versions' },
-          { to: `${base}/playground`, label: 'Playground' },
-          { to: `${base}/evaluate`, label: 'Evaluate' },
-          { to: `${base}/api`, label: 'API' },
+          { to: `${base}/documents`, label: 'Documents', icon: <FileText aria-hidden /> },
+          { to: `${base}/configure`, label: 'Configure', icon: <SlidersHorizontal aria-hidden /> },
+          { to: `${base}/versions`, label: 'Versions', icon: <History aria-hidden /> },
+          { to: `${base}/playground`, label: 'Playground', icon: <MessageSquare aria-hidden /> },
+          { to: `${base}/evaluate`, label: 'Evaluate', icon: <FlaskConical aria-hidden /> },
+          { to: `${base}/api`, label: 'API', icon: <Code2 aria-hidden /> },
         ]}
       />
     </div>

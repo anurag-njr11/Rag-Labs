@@ -139,11 +139,12 @@ export default function ConfigureTab() {
 
   return (
     <div className="flex flex-1 flex-col">
-      <div className="flex-1 px-4 pb-10 pt-6 sm:px-8">
-        <div className="mb-5 flex flex-wrap items-baseline justify-between gap-2 lg:pl-[272px]">
-          <div className="max-w-[880px]">
-            <h1 className="text-title text-text-primary">Pipeline configuration</h1>
-            <p className="text-body text-text-secondary">
+      <div className="@container mx-auto w-full max-w-[1440px] flex-1 px-4 pb-12 pt-8 sm:px-8">
+        {/* Left padding = stage nav (w-64) + gap-10, so the heading lines up with the stage cards. */}
+        <div className="mb-6 flex flex-wrap items-baseline justify-between gap-2 @min-[900px]:pl-[296px]">
+          <div>
+            <h1 className="text-display text-text-primary">Pipeline configuration</h1>
+            <p className="mt-1 text-body-lg text-text-secondary">
               {active ? `Editing a draft based on v${active.version} (active).` : 'Editing a draft based on the recommended pipeline.'}{' '}
               <EffectBadge effect="instant" className="align-middle" /> changes apply at query time;{' '}
               <EffectBadge effect="rebuild" className="align-middle" /> changes re-index your documents.

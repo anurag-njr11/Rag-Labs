@@ -115,26 +115,33 @@ export interface TabLinkItem {
   end?: boolean
 }
 
-/** Underline tabs that are router links (workspace navigation). Scrolls horizontally on mobile. */
+/**
+ * Underline tabs that are router links (workspace navigation). Centered when they fit; scrolls horizontally
+ * on narrow screens (the inner `mx-auto` collapses to 0 on overflow, so the first tab is never clipped).
+ */
 export function TabLinks({ items, className, 'aria-label': ariaLabel }: { items: TabLinkItem[]; className?: string; 'aria-label'?: string }) {
   return (
-    <nav aria-label={ariaLabel} className={cn('flex gap-5 overflow-x-auto scrollbar-none', className)}>
-      {items.map((it) => (
-        <NavLink
-          key={it.to}
-          to={it.to}
-          end={it.end}
-          className={({ isActive }) =>
-            cn(
-              'focus-ring -mb-px inline-flex h-10 shrink-0 items-center gap-1.5 whitespace-nowrap rounded-t-sm border-b-2 px-0.5 text-label transition-colors [&_svg]:size-3.5',
-              isActive ? 'border-text-primary text-text-primary' : 'border-transparent text-text-secondary hover:text-text-primary',
-            )
-          }
-        >
-          {it.icon}
-          {it.label}
-        </NavLink>
-      ))}
+    <nav aria-label={ariaLabel} className={cn('flex overflow-x-auto scrollbar-none', className)}>
+      <div className="mx-auto flex gap-2 sm:gap-4">
+        {items.map((it) => (
+          <NavLink
+            key={it.to}
+            to={it.to}
+            end={it.end}
+            className={({ isActive }) =>
+              cn(
+                'focus-ring -mb-px inline-flex h-12 shrink-0 items-center gap-2 whitespace-nowrap rounded-t-md border-b-2 px-3 text-heading-lg transition-colors [&_svg]:size-4',
+                isActive
+                  ? 'border-accent-default text-text-primary'
+                  : 'border-transparent font-medium text-text-secondary hover:border-border-strong hover:text-text-primary',
+              )
+            }
+          >
+            {it.icon}
+            {it.label}
+          </NavLink>
+        ))}
+      </div>
     </nav>
   )
 }

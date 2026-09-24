@@ -17,6 +17,8 @@ export interface FieldProps {
   inline?: boolean
   /** Optional explicit id for the control. */
   id?: string
+  /** 'lg' = roomier label/help text for full-page editors (e.g. Configure). */
+  size?: 'md' | 'lg'
 }
 
 /**
@@ -26,14 +28,14 @@ export interface FieldProps {
  *     {(f) => <Input id={f.id} aria-describedby={f.describedBy} invalid={f.invalid} />}
  *   </Field>
  */
-export function Field({ label, badge, help, error, aside, children, className, inline, id: idProp }: FieldProps) {
+export function Field({ label, badge, help, error, aside, children, className, inline, id: idProp, size = 'md' }: FieldProps) {
   const auto = useId()
   const id = idProp ?? `f${auto}`
   const helpId = `${id}-help`
   const hasHelp = !!(error || help)
   const ids = { id, describedBy: hasHelp ? helpId : undefined, invalid: !!error }
   const helpEl = hasHelp && (
-    <p id={helpId} className={cn('text-body-sm', error ? 'text-danger-fg' : 'text-text-tertiary')}>
+    <p id={helpId} className={cn(size === 'lg' ? 'text-body' : 'text-body-sm', error ? 'text-danger-fg' : 'text-text-tertiary')}>
       {error || help}
     </p>
   )
@@ -43,7 +45,7 @@ export function Field({ label, badge, help, error, aside, children, className, i
       <div className={cn('flex items-start justify-between gap-4', className)}>
         <div className="flex min-w-0 flex-col gap-1">
           <div className="flex flex-wrap items-center gap-2">
-            <label htmlFor={id} className="text-label text-text-primary">{label}</label>
+            <label htmlFor={id} className={cn(size === 'lg' ? 'text-heading' : 'text-label', 'text-text-primary')}>{label}</label>
             {badge}
           </div>
           {helpEl}
@@ -56,7 +58,7 @@ export function Field({ label, badge, help, error, aside, children, className, i
     <div className={cn('flex min-w-0 flex-col gap-1.5', className)}>
       <div className="flex items-center justify-between gap-2">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <label htmlFor={id} className="text-label text-text-primary">{label}</label>
+          <label htmlFor={id} className={cn(size === 'lg' ? 'text-heading' : 'text-label', 'text-text-primary')}>{label}</label>
           {badge}
         </div>
         {aside}
