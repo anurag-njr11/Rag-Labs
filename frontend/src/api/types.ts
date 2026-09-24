@@ -19,7 +19,7 @@ export interface PipelineFieldError {
   message: string
 }
 
-/** Loose JSON Schema shape (Pydantic output + RAG Builder extensions). */
+/** Loose JSON Schema shape (Pydantic output + RAGLabs extensions). */
 export interface JSONSchemaProperty {
   title?: string
   description?: string

@@ -1,4 +1,4 @@
-# RAG Builder — Backend API contract (Phase 1)
+# RAGLabs — Backend API contract (Phase 1)
 
 Base URL: `/api` (the Vite dev server proxies `/api` → `http://127.0.0.1:8000`).
 No authentication. JSON everywhere except uploads (multipart) and streams (SSE).

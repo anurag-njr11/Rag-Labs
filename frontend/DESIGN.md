@@ -1,7 +1,7 @@
-# RAG Builder — Phase 1 UI design spec
+# RAGLabs — Phase 1 UI design spec
 
 **Figma file:** https://www.figma.com/design/HcaaarGMNWovr8K7fQkEfX
-File name: "RAG Builder — Phase 1 UI". Pages: `Screens` (id `0:1`) and `Components` (id `2:4`).
+File name: "RAGLabs — Phase 1 UI". Pages: `Screens` (id `0:1`) and `Components` (id `2:4`).
 
 Fetch any node with `get_design_context` using fileKey `HcaaarGMNWovr8K7fQkEfX` and the node id below.
 
@@ -256,7 +256,7 @@ Score chips in the Inspector use the path colors: `dense 0.82` (dense-*), `keywo
 
 ## 5. Layout system
 
-- **Desktop frame:** 1440×900. The top bar is 52px (logo mark 24px `bg-inverse` rounded-md + "RAG Builder" heading + "Phase 1" neutral badge; right side: Ghost "Docs", 28px avatar).
+- **Desktop frame:** 1440×900. The top bar is 52px (logo mark 24px `bg-inverse` rounded-md + "RAGLabs" heading + "Phase 1" neutral badge; right side: Ghost "Docs", 28px avatar).
 - **Page gutters:** 48px (Projects), 32px (workspace). Content max width is 1344px (Projects grid), or full width minus gutters in the workspace.
 - **Projects grid:** 4 columns at 1440 (`grid-cols-4 gap-4`, card ≈ 324px wide); 3 below 1280px, 2 below 1024px, 1 below 640px.
 - **Wizard:** centered 880px column. The stepper sits in a white header band. A sticky footer (white, top hairline) holds "Step n of 4" or a hint on the left and actions on the right.

@@ -215,7 +215,7 @@ function VersionDetail({ version, all, onSelect }: { version: Version; all: Vers
               href={`${API_BASE}/projects/${project.id}/versions/${v.id}/export`}
               download
               className={buttonClasses({ variant: 'secondary', className: 'gap-1.5' })}
-              title="Download a standalone Python project with this version's index and pipeline — runs without RAG Builder"
+              title="Download a standalone Python project with this version's index and pipeline — runs without RAGLabs"
             >
               <Download size={14} aria-hidden />
               Export RAG

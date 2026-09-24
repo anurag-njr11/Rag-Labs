@@ -30,11 +30,11 @@ export function AppLayout() {
         Skip to content
       </a>
       <header className="sticky top-0 z-30 flex h-[52px] shrink-0 items-center justify-between border-b border-border-default bg-bg-surface px-4 sm:px-8">
-        <Link to="/" className="focus-ring flex items-center gap-2.5 rounded-md" aria-label="RAG Builder — all projects">
+        <Link to="/" className="focus-ring flex items-center gap-2.5 rounded-md" aria-label="RAGLabs — all projects">
           <span className="flex size-6 items-center justify-center rounded-md bg-bg-inverse text-text-inverse">
             <Layers size={14} aria-hidden />
           </span>
-          <span className="text-heading text-text-primary">RAG Builder</span>
+          <span className="text-heading text-text-primary">RAGLabs</span>
           <Badge tone="neutral" className="hidden sm:inline-flex">Phase 1</Badge>
         </Link>
         <div className="flex items-center gap-1.5">

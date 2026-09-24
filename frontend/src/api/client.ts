@@ -1,4 +1,4 @@
-/** Minimal fetch wrapper for the RAG Builder API. Surfaces FastAPI `detail` errors as ApiError. */
+/** Minimal fetch wrapper for the RAGLabs API. Surfaces FastAPI `detail` errors as ApiError. */
 import type { PipelineFieldError } from './types'
 
 export const API_BASE = '/api'
