@@ -147,3 +147,47 @@ CREATE TABLE IF NOT EXISTS trace_events (
     payload    TEXT NOT NULL DEFAULT '{}'
 );
 CREATE INDEX IF NOT EXISTS ix_trace_run ON trace_events(run_id, seq);
+
+-- Auto-generated eval sets. Gold labels are build-independent (document + evidence
+-- quote), so one set scores any pipeline version.
+CREATE TABLE IF NOT EXISTS eval_sets (
+    id             TEXT PRIMARY KEY,
+    project_id     TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    version_id     TEXT,
+    build_id       TEXT,
+    status         TEXT NOT NULL DEFAULT 'running',   -- running | ready | failed
+    size_requested INTEGER NOT NULL,
+    stats          TEXT,                              -- JSON
+    error          TEXT,
+    created_at     TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_eval_sets_project ON eval_sets(project_id, created_at);
+
+CREATE TABLE IF NOT EXISTS eval_items (
+    id                 TEXT PRIMARY KEY,
+    eval_set_id        TEXT NOT NULL REFERENCES eval_sets(id) ON DELETE CASCADE,
+    ordinal            INTEGER NOT NULL,
+    question           TEXT NOT NULL,
+    gold_answer        TEXT NOT NULL,
+    evidence           TEXT NOT NULL,
+    document_id        TEXT NOT NULL,
+    gold_chunk_id      TEXT NOT NULL,
+    valid              INTEGER NOT NULL DEFAULT 1,
+    reject_reason      TEXT,
+    closed_book_answer TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_eval_items_set ON eval_items(eval_set_id, ordinal);
+
+CREATE TABLE IF NOT EXISTS eval_runs (
+    id          TEXT PRIMARY KEY,
+    eval_set_id TEXT NOT NULL REFERENCES eval_sets(id) ON DELETE CASCADE,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    version_id  TEXT NOT NULL,
+    build_id    TEXT,
+    status      TEXT NOT NULL DEFAULT 'running',      -- running | ready | failed
+    metrics     TEXT,                                 -- JSON
+    results     TEXT,                                 -- JSON: per-item rank/diagnosis
+    error       TEXT,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_eval_runs_set ON eval_runs(eval_set_id, created_at);

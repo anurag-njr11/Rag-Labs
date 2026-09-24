@@ -12,6 +12,10 @@ export const STAGE_LABELS: Record<JobStage, string> = {
   store: 'Write vector store',
   keywords: 'Build keyword index',
   ready: 'Ready',
+  index: 'Update index',
+  generate: 'Write questions',
+  validate: 'Filter generic questions',
+  evaluate: 'Score retrieval',
 }
 
 export interface JobProgressProps {

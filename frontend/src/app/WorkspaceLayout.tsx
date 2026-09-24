@@ -113,6 +113,7 @@ function WorkspaceHeader({ project }: { project: Project }) {
           { to: `${base}/configure`, label: 'Configure' },
           { to: `${base}/versions`, label: 'Versions' },
           { to: `${base}/playground`, label: 'Playground' },
+          { to: `${base}/evaluate`, label: 'Evaluate' },
           { to: `${base}/api`, label: 'API' },
         ]}
       />

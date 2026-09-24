@@ -14,6 +14,7 @@ const ConfigureTab = lazy(() => import('@/features/configure/ConfigureTab'))
 const VersionsTab = lazy(() => import('@/features/versions/VersionsTab'))
 const PlaygroundTab = lazy(() => import('@/features/playground/PlaygroundTab'))
 const ApiTab = lazy(() => import('@/features/api/ApiTab'))
+const EvaluateTab = lazy(() => import('@/features/evaluate/EvaluateTab'))
 
 function NotFound() {
   return (
@@ -59,6 +60,7 @@ export const router = createBrowserRouter([
           { path: 'configure', element: <ConfigureTab /> },
           { path: 'versions', element: <VersionsTab /> },
           { path: 'playground', element: <PlaygroundTab /> },
+          { path: 'evaluate', element: <EvaluateTab /> },
           { path: 'api', element: <ApiTab /> },
         ],
       },

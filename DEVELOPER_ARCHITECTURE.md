@@ -8,7 +8,7 @@ Stack: **FastAPI + SQLite (aiosqlite)** backend under `backend/app/`, **React 19
 
 ## 1. System Overview
 
-RAG Builder lets a user create a **project**, upload documents, configure an 8-stage **RAG pipeline** (parse → chunk → embed → vector_store → retrieve → rerank → prompt → generate) through a schema-driven UI, build a vector index, and chat against it in a **Playground** with a retrieval **Inspector** and per-turn cost/latency **trace**. Every saved pipeline configuration is an immutable **version**; only one version per project is "active" at a time (a mutable pointer). Rebuild-relevant configuration is deduplicated into shared **index builds**, and both parsed documents/chunks and embedding vectors are content-addressed and cached so that re-running a pipeline with the same effective inputs does no work.
+RAG Builder lets a user create a **project**, upload documents, configure an 8-stage **RAG pipeline** (parse → chunk → embed → vector_store → retrieve → rerank → prompt → generate) through a schema-driven UI, build a vector index, chat against it in a **Playground** with a retrieval **Inspector** and per-turn cost/latency **trace**, and **measure** any pipeline version on the **Evaluate** tab against an auto-generated, zero-labelling eval set (Part 37). Every saved pipeline configuration is an immutable **version**; only one version per project is "active" at a time (a mutable pointer). Rebuild-relevant configuration is deduplicated into shared **index builds**, and both parsed documents/chunks and embedding vectors are content-addressed and cached so that re-running a pipeline with the same effective inputs does no work.
 
 There is **no separate backend server process for vector search** — NumPy, FAISS, Chroma, Qdrant and LanceDB all run **embedded in-process** (Qdrant and Chroma use their local/embedded client modes, not a networked server). There is **no background worker/queue** (no Celery/Redis) — background work (index builds, URL fetch) runs as plain `asyncio.Task`s tracked by an in-memory job registry (`backend/app/ingest/jobs.py`), which does not survive a process restart.
 
@@ -22,7 +22,7 @@ flowchart TB
     end
     subgraph BE["backend/app"]
         API["FastAPI routers (api/*.py)"]
-        Engine["engine/ (chat.py, retrieval.py, stores.py, sync.py)"]
+        Engine["engine/ (chat.py, retrieval.py, stores.py, sync.py, evaluate.py)"]
         Nodes["nodes/ (parse, chunk, embed, retrieve, rerank, prompt, generate)"]
         Ingest["ingest/ (builder.py, jobs.py, loaders.py, lookup.py, document_analyzer.py)"]
         Core["core/ (pipeline.py, node.py, cache.py, runs.py, recommender.py)"]
@@ -61,6 +61,7 @@ Where things live:
 - **Configuration**: `pipeline_versions` rows (immutable JSON blobs) plus `projects.active_version_id` (the one mutable pointer that decides "current" config).
 - **A project** = one row in `projects`, N `documents`, N `pipeline_versions` (its edit history), N `index_builds` (its distinct index configurations), and N `runs` (its chat history).
 - **A pipeline** = a `dict[slot_name -> {"type": node_type, **params}]` for the fixed 8 slots — not a distinct dataclass, just a validated dict shape (`backend/app/core/pipeline.py`).
+- **An evaluation** = one `eval_sets` row (LLM-written questions, each anchored to a document + verbatim evidence quote, in `eval_items`) scored by N `eval_runs` rows (one per pipeline version evaluated). Gold labels never reference build-scoped chunk ids for scoring, so one set compares versions with different chunking/parsing/stores (Part 37).
 - **A chat request** flows: browser → `POST /api/projects/{id}/chat` (SSE) → `engine/chat.py:answer()` → retrieve → rerank → prompt → generate (streamed token-by-token) → citation extraction → `runs`/`trace_events` persisted → SSE `done` event → React renders the answer with citation chips wired to the Inspector.
 
 ---
@@ -85,7 +86,7 @@ frontend/src/
   api/            Typed fetch client, SSE helpers, React Query hooks, response types, formatters
   app/            Router, app shell, workspace layout, theme, query client, job-progress UI
   components/ui/  Design-system primitives (Button, Field, Slider, Dialog, Toast, OptionCardGroup, ...)
-  features/       One folder per page/feature: projects, wizard, documents, configure, versions, playground, api
+  features/       One folder per page/feature: projects, wizard, documents, configure, versions, playground, evaluate, api
 ```
 
 **What should NOT be placed where:**
@@ -105,6 +106,8 @@ frontend/src/
 | `backend/app/core/cache.py` | `ArtifactCache`, `stable_hash`, `canonical_json`, `sha256_bytes/text` | Content-addressed JSON cache for parsed docs + chunk lists (sharded by first 2 hex chars, atomic write-then-rename) | `ingest/builder.py` |
 | `backend/app/core/runs.py` | `start_run`, `finish_run`, `get_run`, `list_runs` | Persists one `runs` row + bulk `trace_events` per chat turn | `engine/chat.py` |
 | `backend/app/core/recommender.py` | `Recommender.recommend()` | Rule-based (no ML) corpus-aware pipeline suggestion | `api/projects.py:recommend` |
+| `backend/app/core/evalmetrics.py` | `is_hit`, `first_hit_rank`, `contains_evidence`, `coverage`, `token_f1`, `summarize`, `percentile`, `sample_chunks` | Pure (no I/O) eval scoring: evidence-based hit rule, Hit@k/MRR, closed-book F1, deterministic stratified chunk sampling | `engine/evaluate.py`, tests |
+| `backend/app/engine/evaluate.py` | `generate_set`, `run_eval`, `score_item`, `check_candidate`, `ready_build`, `complete`, `parse_json`, `final_k`, `deep_config`, `EvalError` | Eval-set generation (LLM) + retrieval scoring (no LLM) as background jobs | `api/eval.py` |
 | `backend/app/engine/sync.py` | `start_sync`, `active_version` | Starts/dedupes background index-build jobs, resolves a project's active pipeline version | `api/projects.py`, `api/documents.py`, `engine/chat.py:ensure_ready` |
 | `backend/app/engine/stores.py` | `open_store`, `store_path`, `store_config`, `close_all` | Opens/caches one live `VectorStore` instance per `build_id` | `engine/retrieval.py`, `ingest/builder.py` |
 | `backend/app/engine/retrieval.py` | `retrieve`, `rerank`, `keyword_search`, `exact_search`, `chunk_vectors` | Runs dense/keyword/exact search concurrently, fuses, pins, MMRs, reranks | `engine/chat.py` |
@@ -125,7 +128,7 @@ frontend/src/
 - `api/sse.ts` — **two different SSE strategies**, because one endpoint needs POST and native `EventSource` can't POST:
   - `streamChat()` — `fetch` POST with `Accept: text/event-stream`, piped through a hand-rolled `SseParser` (chunk-boundary-safe line/message parser) — used for `POST /api/projects/{id}/chat`.
   - `subscribeJobEvents()` — a real `EventSource` against `GET /api/jobs/{id}/events`, with custom reconnect/backoff (`min(1000*attempts, 5000)`ms) and a `onLost()` callback for a 404'd (evicted) job.
-- `api/hooks.ts` — every server-state read/write goes through a React Query hook here, keyed under a hierarchical `qk.*` key namespace (e.g. `qk.project(id)`, `qk.versions(id)`). Polling hooks (`useProjects`, `useProject`, `useVersions`, `useProjectJobs`) self-adjust `refetchInterval` to 3000ms while something is `building`/`pending`, else `false`. `useJobEvents(jobId, ...)` is a pure reducer (`reduceJob`) over the job SSE event stream.
+- `api/hooks.ts` — every server-state read/write goes through a React Query hook here, keyed under a hierarchical `qk.*` key namespace (e.g. `qk.project(id)`, `qk.versions(id)`; eval keys `qk.evalSets/evalSet/evalRuns/evalRun` all live under `['projects', id, 'eval', …]`, so the `invalidateProject()` that `useJobEvents` fires on job end refreshes them too). Polling hooks (`useProjects`, `useProject`, `useVersions`, `useProjectJobs`) self-adjust `refetchInterval` to 3000ms while something is `building`/`pending`, else `false`. `useJobEvents(jobId, ...)` is a pure reducer (`reduceJob`) over the job SSE event stream.
 - `api/types.ts` — hand-written TypeScript types mirroring backend Pydantic/JSON shapes 1:1 (per `frontend/API.md`, verified accurate against source — one exception, see below).
 - `app/queryClient.ts` — `staleTime: 10_000`, `refetchOnWindowFocus: false`, retries only on non-4xx errors (max 2).
 - `app/workspace.ts` — `useWorkspace()` reads the current `Project` from route `Outlet` context; `useProjectId()` reads the `:id` route param.
@@ -142,6 +145,7 @@ frontend/src/
   configure                              ConfigureTab
   versions                               VersionsTab
   playground                             PlaygroundTab
+  evaluate                               EvaluateTab   (Part 37)
   api                                    ApiTab
 *                                        NotFound
 ```
@@ -707,6 +711,10 @@ erDiagram
     index_builds ||--o{ lookup_index : "exact-match keys for"
     runs ||--o{ trace_events : "has"
     pipeline_versions }o--|| projects : "active_version_id (unenforced)"
+    projects ||--o{ eval_sets : "has"
+    eval_sets ||--o{ eval_items : "has"
+    eval_sets ||--o{ eval_runs : "scored by"
+    projects ||--o{ eval_runs : "has"
 
     projects {
         text id PK
@@ -827,9 +835,45 @@ erDiagram
         real cost_usd
         text payload "JSON"
     }
+    eval_sets {
+        text id PK
+        text project_id FK
+        text version_id "not FK-enforced; version used to generate"
+        text build_id "not FK-enforced; build chunks were sampled from"
+        text status "running|ready|failed"
+        int size_requested
+        text stats "JSON: sampled, generated, kept, too_generic, bad_evidence, other"
+        text error
+        text created_at
+    }
+    eval_items {
+        text id PK
+        text eval_set_id FK
+        int ordinal
+        text question
+        text gold_answer
+        text evidence "verbatim quote from the source chunk"
+        text document_id "gold label part 1"
+        text gold_chunk_id "provenance only, build-scoped"
+        int valid "0 = rejected by the filter"
+        text reject_reason
+        text closed_book_answer
+    }
+    eval_runs {
+        text id PK
+        text eval_set_id FK
+        text project_id FK
+        text version_id "not FK-enforced"
+        text build_id "not FK-enforced"
+        text status "running|ready|failed"
+        text metrics "JSON: n, k, hit_at_1/3/k, mrr, p50_ms, diagnoses, config"
+        text results "JSON: per-item rank, hit, diagnosis, deep_rank, ms, top-5"
+        text error
+        text created_at
+    }
 ```
 
-**Notable fragility** (flagged by research, confirmed against `schema.sql`): `active_version_id`, `pipeline_versions.parent_id`, `runs.version_id`, `runs.build_id` are plain `TEXT` columns with **no `REFERENCES` constraint** — referential integrity there is app-enforced only. `lookup_index` and `vector_cache` have no FK to `index_builds`/`chunks` and no cascading delete — no delete path for builds was found in the researched code, so stale rows could in principle accumulate (not currently exercised by any UI action).
+**Notable fragility** (flagged by research, confirmed against `schema.sql`): `active_version_id`, `pipeline_versions.parent_id`, `runs.version_id`, `runs.build_id` (and likewise `eval_sets.version_id/build_id`, `eval_runs.version_id/build_id`) are plain `TEXT` columns with **no `REFERENCES` constraint** — referential integrity there is app-enforced only. `lookup_index` and `vector_cache` have no FK to `index_builds`/`chunks` and no cascading delete — no delete path for builds was found in the researched code, so stale rows could in principle accumulate (not currently exercised by any UI action).
 
 ---
 
@@ -898,6 +942,17 @@ erDiagram
 | GET | `/projects/{id}/runs?limit=50` | List past runs |
 | GET | `/runs/{run_id}` | Get one run's full trace |
 
+### `backend/app/api/eval.py` (`prefix="/api/projects/{project_id}/eval"`)
+Registered in `main.py` as `eval_api` (imported under that alias so the module name doesn't shadow the `eval` builtin).
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/sets` | Body `{size: 5–100 = 30, version_id?}`. Inserts an `eval_sets` row (`running`), starts a `jobs.start("evalset", …)` job → `201 {eval_set, job_id}`. `409` if the project has no documents, `404` unknown project/version |
+| GET | `/sets` | List sets, newest first |
+| GET | `/sets/{set_id}` | Set + all `items` (rejected included, `valid:false` + `reject_reason`), each joined to `documents.filename` as `document` |
+| POST | `/sets/{set_id}/runs` | Body `{version_id?}` (default active). Inserts an `eval_runs` row, starts a `jobs.start("eval", …)` job → `201 {run, job_id}`. `409` if the set isn't `ready` |
+| GET | `/runs?set_id=` | Runs oldest first, joined to `pipeline_versions.version`; `metrics` only (no `results`) |
+| GET | `/runs/{run_id}` | One run incl. per-item `results` |
+
 ### `backend/app/main.py`
 | Method | Path | Purpose |
 |---|---|---|
@@ -915,9 +970,11 @@ Real, but **in-memory only** (`backend/app/ingest/jobs.py`) — no Celery/Redis/
 
 `engine/sync.py:start_sync(project_id, cfg, before=None)` dedupes concurrent requests for the same `(project_id, index_config_hash)` — a second request while one is running just returns the already-running `Job` instead of starting a duplicate.
 
-**Everywhere a build can be triggered**: document upload (`build=true`), URL add, document reindex, version create/activate/rollback/manual-build, and — notably — a chat request itself, via `engine/chat.py:ensure_ready()`, which can transparently kick off a sync and stream a `status` event before answering.
+**Everywhere a build can be triggered**: document upload (`build=true`), URL add, document reindex, version create/activate/rollback/manual-build, and — notably — a chat request itself, via `engine/chat.py:ensure_ready()`, which can transparently kick off a sync and stream a `status` event before answering. Eval generation and eval runs reuse `ensure_ready()` too (via `engine/evaluate.py:ready_build()`), so evaluating a version whose index isn't built yet builds it first.
 
-**No resume across restart**: `main.py`'s lifespan marks any `index_builds` row stuck `'building'` as `'failed'` on startup (and any `runs` stuck `'running'` as `'aborted'`) — there is no persistence of the in-memory `Job`/`_running` state to resume from.
+**Job kinds**: `sync` (index build / URL fetch), `evalset` (eval-set generation), `eval` (eval run). All share the same `Job` bus and `GET /api/jobs/{id}/events` stream. Eval jobs emit `progress` stages `index` (only when a build is needed) → `generate` → `validate` for `evalset`, and `index` → `evaluate` for `eval`, plus `log` warnings when one LLM batch fails. The frontend `JobStage` union and `STAGE_LABELS` (`app/JobProgress.tsx`) include these stages; `features/evaluate/EvalJobProgress.tsx` renders them as a one-line bar (the full `JobProgress` component's stage list is build-specific).
+
+**No resume across restart**: `main.py`'s lifespan marks any `index_builds` row stuck `'building'` as `'failed'` on startup (any `runs` stuck `'running'` as `'aborted'`, and any `eval_sets`/`eval_runs` stuck `'running'` as `'failed'`) — there is no persistence of the in-memory `Job`/`_running` state to resume from.
 
 ⚠ **Discrepancy**: `USER_GUIDE.md` describes build progress stages as "Parse → Embed → Store → Keywords" while `PRD.md` FR-1.4 says "Parse → chunk → embed → index" — actual stage names emitted by `progress()` calls in `ingest/builder.py` are `parse`, `embed`, `store`, `keywords`, plus a terminal `ready` — closer to USER_GUIDE's wording (chunking is folded into the "parse" progress stage from the UI's point of view, not a separately reported stage).
 
@@ -935,7 +992,8 @@ Real, but **in-memory only** (`backend/app/ingest/jobs.py`) — no Celery/Redis/
 | LLM/provider errors | `llm.friendly_error()` maps SDK exception types to human messages (`ProviderError`); SDK's own `max_retries=2` handles transient 429/5xx |
 | Chat-turn errors | `ChatError(message, code)` — `code` drives HTTP status in non-streaming mode (409 for `no_documents`/`build_failed`, 502 otherwise) or is delivered as an SSE `error` event in streaming mode (no HTTP status change possible once the stream is open) |
 | Timeout/missing project/version | `_version_for()` 404s explicitly; `assert final is not None` in the non-streaming chat path is an **unguarded** assumption (would surface as an unhandled 500 `AssertionError` rather than a graceful error if `answer()` ever returned without a `done` event) |
-| Crash/restart recovery | Any `index_builds` row `'building'` → `'failed'`; any `runs` row `'running'` → `'aborted'`, both with `error='Interrupted by a server restart'`, on every startup |
+| Eval generation / scoring | `EvalError(message)` for user-facing conditions (index not ready, no usable chunks, no valid questions); `ChatError` from `ensure_ready` is re-raised as `EvalError`. LLM errors are mapped by `llm.friendly_error()`. Generation is **batch-tolerant**: a failed LLM batch is logged as a job warning and skipped; the job fails only if *no* candidates come back. Both `generate_set`/`run_eval` wrappers set the row's `status='failed'` + `error` before re-raising, so the job and the DB agree |
+| Crash/restart recovery | Any `index_builds` row `'building'` → `'failed'`; any `runs` row `'running'` → `'aborted'`; any `eval_sets`/`eval_runs` row `'running'` → `'failed'`; all with `error='Interrupted by a server restart'`, on every startup |
 | Frontend | `ApiError` (status/detail/code/fieldErrors) is the single error type surfaced everywhere; components branch on `.status` (404 → "not found", 409 → "no documents", etc.) and `.code` (chat-specific); network failures get a synthetic "Cannot reach the backend" message |
 
 ---
@@ -951,6 +1009,7 @@ Backend only — run via `cd backend && uv run pytest -q` (`pyproject.toml`: `te
 | `test_pipeline.py` | `validate_pipeline` rejects unknowns/bad combos and fills defaults; `index_config_hash` changes exactly on rebuild-effect fields and not on instant ones; `diff_pipelines` effect labeling; old-version-missing-fields diffs cleanly | Pure/in-memory, real node registry via `import app.nodes` |
 | `test_provider.py` | LLM error-message translation (410/overloaded), `_pick_default` fallback | Fully synthetic `httpx`/`openai` objects — **no real network calls anywhere in the suite** |
 | `test_retrieval.py` | Exact-match normalization/key extraction, RRF/weighted math, MMR relevance-vs-diversity, table-atomicity across all 4 chunkers, citation extraction, end-to-end retrieval determinism across `numpy/faiss/lancedb/qdrant` (Chroma excluded from that specific test), cache reuse on vector-store swap, defining-section-vs-incidental-mention ranking, `pin_definitions` behavior | Uses a synthetic deterministic `HashEmbedder` (MD5-based, 64-dim) specifically to avoid downloading real embedding models |
+| `test_eval.py` | `summarize`/MRR math; evidence hit rule incl. a chunk-boundary cut and wrong-document rejection; `token_f1`; `sample_chunks` round-robin + determinism + tiny-chunk skip; `parse_json` fence tolerance; `check_candidate` reject reasons; `generate_set` end-to-end with `evaluate.complete` monkeypatched (asserts generic and bad-evidence questions are rejected); `run_eval` on two builds with **different chunk sizes** scoring the same items (asserts cross-chunking hits and a `not_retrieved` diagnosis) | Imports `test_retrieval` for the deterministic `HashEmbedder` + `_cfg`; no real LLM calls |
 | `test_vectorstores.py` | Contract compliance for all 5 stores × 8 index configs: upsert/search/delete/reopen-from-disk persistence; exact-store cross-agreement on cosine/dot/l2; `is_exact()` flags | Hits real FAISS/Chroma/Qdrant/LanceDB libraries with synthetic random vectors (seeded, no real embedding model) |
 
 **Gaps** (confirmed absent from the suite): no FastAPI endpoint/HTTP tests (`api/*.py` untested via `TestClient`), no real-file-type ingestion tests (PDF/DOCX/HTML — only synthetic in-memory markdown), no real embedding-model test (fastembed never actually loaded in tests), no real LLM call test, no reranker test, no background-job/SSE test, no version diff/rollback API test, no project CRUD test. **No frontend tests exist at all** — `frontend/package.json` has no vitest/jest/testing-library; `npm run build` (type-check + Vite build) is what README/USER_GUIDE call "tests," which is a mislabeling — it's a build/typecheck, not a test run.
@@ -1087,13 +1146,14 @@ There is no formal migration tool. The established pattern (per `schema.sql`'s e
 
 Per `PRD.md`/`IDEAS.md`, Phase 1 (this codebase) explicitly excludes evaluation, sweeps, agentic retrieval, multi-tenancy, auth, and server-based vector DBs. Based on the actual Phase 1 code:
 
-- **Evaluation / regression testing**: The `runs` + `trace_events` tables already capture everything a per-question eval harness would need (retrieved chunks, citations, tokens, cost, latency, per-step trace) — a Phase 2 eval set could reuse `engine/chat.py:answer()` directly (it's already a pure async generator over `(project_id, version, question)`) and just add a scoring layer on top of `runs.result`. No eval-specific tables/code exist yet.
-- **Multiple configurations / sweeps**: `pipeline_versions` already supports many configs per project with full diffing (`diff_pipelines`) and independent builds (`index_builds` keyed by hash) — a sweep runner could create N versions programmatically and reuse the existing build-sharing/caching so sweeps over instant-only params (e.g. `top_k`, `rerank.top_n`) cost nothing extra, and sweeps that vary rebuild params benefit from the existing parse/chunk cache. There is currently **no** sweep orchestration, Pareto leaderboard, or cost-comparison UI/code.
+- **Evaluation — BUILT (Part 37)**: auto-generated eval sets + deterministic retrieval scoring + per-miss diagnosis + version comparison now exist (`eval_sets`/`eval_items`/`eval_runs`, `engine/evaluate.py`, `/api/projects/{id}/eval/*`, Evaluate tab). It deliberately does **not** go through `engine/chat.py:answer()`: it calls `retrieval.retrieve()` + `retrieval.rerank()` directly (no generation, no `runs` rows), so scoring costs no LLM calls. What's still missing: answer-quality scoring (LLM judge / citation support) on top, and a regression guard that auto-runs the set on every new version.
+- **Multiple configurations / sweeps**: `pipeline_versions` already supports many configs per project with full diffing (`diff_pipelines`) and independent builds (`index_builds` keyed by hash), and `engine/evaluate.py:run_eval` already scores any version against a chunking-independent eval set — a sweep runner could create N versions programmatically, call `run_eval` per version and reuse the existing build-sharing/caching so sweeps over instant-only params (e.g. `top_k`, `rerank.top_n`) cost nothing extra, and sweeps that vary rebuild params benefit from the existing parse/chunk cache. There is currently **no** sweep orchestration, Pareto leaderboard, or cost-comparison UI/code.
 - **Deterministic metrics / LLM judging**: `extract_citations()`'s heuristic span-matching (Part 20) is the closest thing to an existing "grounding" signal, but it's not exposed as a metric — Phase 2 could compute citation-coverage/precision from the same data already in `runs.result` without new instrumentation.
 - **Corpus analysis**: `ingest/document_analyzer.py`'s `DocumentMetadata`/`aggregate_corpus_metadata()` (Part 11) already computes per-document and per-corpus signals (code density, structure density, language, domain, OCR-need) — this is real, working infrastructure a "Corpus Health" Phase 2 feature could extend directly rather than build from scratch.
-- **Regression guard**: none exists; would need a stored baseline `runs` set + comparison logic, which is not present.
+- **Regression guard**: half-built — the Evaluate tab's runs table already shows ▲/▼ deltas of each run vs. the previous one on the same set; what's missing is running it automatically on version save.
+- **Corpus health / coverage gaps**: the `not_retrieved` diagnosis (evidence not in the top 50 at all) is the seed of IDEAS.md's "lack of content" detection; aggregating it by document/topic would give the content-gap report.
 
-Do not assume any of `eval_sets`, `eval_items`, `eval_results`, `sweeps`, `sweep_cells`, `diagnostics`, `corpus_findings`, or `sweep_fingerprints` (mentioned as *future* additions in `PRD.md`) exist in the current `schema.sql` — they do not.
+`eval_sets`, `eval_items` and `eval_runs` **do** exist now (Part 37). Do not assume any of `eval_results` (results live in `eval_runs.results` JSON instead), `sweeps`, `sweep_cells`, `diagnostics`, `corpus_findings`, or `sweep_fingerprints` (mentioned as *future* additions in `PRD.md`) exist in `schema.sql` — they do not.
 
 ---
 
@@ -1111,6 +1171,15 @@ Do not assume any of `eval_sets`, `eval_items`, `eval_results`, `sweeps`, `sweep
 - **No schema migration tooling** (Part 33): adding a column to an existing table has no established pattern in this codebase. Practical consequence: any future schema change to an already-shipped table needs bespoke `ALTER TABLE` + `PRAGMA table_info` guard code written from scratch.
 - **In-memory-only background jobs** (Part 28): a backend restart mid-build loses all job/progress history (though the underlying DB build status is correctly marked `failed`, so data isn't corrupted — just the live progress UI). Practical consequence: a user watching a long build during a backend redeploy sees the job simply vanish (404 from `GET /api/jobs/{id}`) rather than reconnecting to real progress.
 - **`assert final is not None`** in the non-streaming chat endpoint (Part 20/29) — an unguarded assumption rather than a handled error path.
+- **Eval scores are optimistic in absolute terms** (Part 37): LLM-written questions tend to reuse the source chunk's wording (the prompt forbids copying >4 consecutive words, but this isn't measured), which favors keyword/exact paths. Practical consequence: use eval runs to *compare* versions on the same set, not as an absolute quality claim; with ~20–30 questions, differences under ~10 points are within noise.
+- **Evidence hit rule is a heuristic, not human-validated**: exact normalized substring match, else ≥70% evidence-token coverage within a same-document chunk (`EVIDENCE_COVERAGE`). Practical consequence: short or boilerplate-heavy evidence can false-positive, and an answer that also exists in a *different* document counts as a miss (single gold passage per item).
+- **`eval_items.document_id` has no FK**: deleting a document leaves its eval items in place; they can never hit again and show up as misses (`document` renders as `—`). Practical consequence: regenerate the eval set after removing documents.
+
+**LOW (evaluation)**
+- `engine/evaluate.py:_llm_slots` is a module-level `asyncio.Semaphore(3)` shared by every eval job in the process — two concurrent generations share 3 LLM slots.
+- Eval runs call `retrieval.retrieve/rerank` directly and write no `runs`/`trace_events` rows, so they never appear in Playground history or the API tab; per-item latency is kept only in `eval_runs.results[].ms`.
+- Scoring is a sequential per-item loop (plus one extra `top_k=50` retrieval per miss for diagnosis) — fine for 5–100 questions; with an API embedder each question costs one provider embedding call.
+- The Evaluate tab shows only the newest `ready` set (plus a newer running/failed one); older sets stay in the DB but can't be browsed in the UI.
 
 **LOW**
 - **`NoRerank.rerank()` is dead code** (Part 17) — harmless, but a maintenance trap if the short-circuit in `engine/retrieval.py:rerank()` is ever refactored without updating this method's now-load-bearing `return None`.
@@ -1149,6 +1218,7 @@ Do not assume any of `eval_sets`, `eval_items`, `eval_results`, `sweeps`, `sweep
 | `ChatError` | `engine/chat.py` | Chat-turn error with a UI-facing `code` |
 | `Provider` | `llm/provider.py` | Gemini/NVIDIA OpenAI-compatible client config |
 | `Recommender` | `core/recommender.py` | Corpus-aware pipeline suggestion engine |
+| `EvalError` | `engine/evaluate.py` | User-facing eval generation/scoring failure (surfaced as the job's `failed` error and the row's `error`) |
 
 ### Important functions
 | Function | File | Called by | Purpose |
@@ -1160,6 +1230,9 @@ Do not assume any of `eval_sets`, `eval_items`, `eval_results`, `sweeps`, `sweep
 | `answer` | `engine/chat.py` | `api/chat.py` | One full chat turn |
 | `open_store` | `engine/stores.py` | `engine/retrieval.py`, `ingest/builder.py` | Cached vector-store instance per build |
 | `start_sync` | `engine/sync.py` | `api/*.py`, `engine/chat.py` | Starts/dedupes an index build job |
+| `generate_set` | `engine/evaluate.py` | `api/eval.py` (as an `evalset` job) | Sample chunks → LLM questions + evidence → closed-book filter → persist items |
+| `run_eval` / `score_item` | `engine/evaluate.py` | `api/eval.py` (as an `eval` job) | Retrieve+rerank each valid question for one version, rank-of-first-hit, diagnose misses, persist metrics |
+| `is_hit` / `summarize` | `core/evalmetrics.py` | `engine/evaluate.py` | Evidence-based hit rule; Hit@1/3/k + MRR |
 
 ### API endpoints
 See Part 27 for the full table.
@@ -1173,7 +1246,7 @@ See Part 23's table for the complete, verified classification.
 ### Data stores
 | Store | Data |
 |---|---|
-| `data/app.db` (SQLite) | Everything relational: projects, documents, versions, builds, chunks, FTS index, lookup index, vector cache, runs, traces |
+| `data/app.db` (SQLite) | Everything relational: projects, documents, versions, builds, chunks, FTS index, lookup index, vector cache, runs, traces, eval sets/items/runs |
 | `data/raw/<doc_id>/` | Original uploaded/fetched files |
 | `data/cache/artifacts/{parsed,chunks}/` | Content-addressed parse/chunk JSON cache |
 | `data/cache/models/` | Downloaded fastembed/cross-encoder ONNX models |
@@ -1187,7 +1260,81 @@ See Part 23's table for the complete, verified classification.
 | New API endpoint | `backend/app/api/<router>.py` + `frontend/src/api/{types,hooks,client}.ts` |
 | New frontend page | `frontend/src/features/<name>/` + `frontend/src/app/router.tsx` |
 | New trace/inspector field | `ctx.emit(...)` call site in `engine/retrieval.py`/`engine/chat.py` — no schema change needed |
+| New eval metric | Pure function in `core/evalmetrics.py` → add to `summarize()` or to `metrics` in `engine/evaluate.py:_run_eval` → `EvalMetrics` in `frontend/src/api/types.ts` → a `Stat`/column in `features/evaluate/RunsPanel.tsx` |
+| New miss diagnosis | `engine/evaluate.py:score_item` (set `diagnosis`) + `metrics["diagnoses"]` keys → `EvalDiagnosis` type + `DIAGNOSIS` label/fix map in `RunsPanel.tsx` |
 | New DB table/column | `backend/app/schema.sql` (no migration tool — see Part 34) |
+
+---
+
+## 37. Evaluation — Auto-generated Eval Sets and Retrieval Scoring
+
+**Files**: `backend/app/core/evalmetrics.py` (pure scoring), `backend/app/engine/evaluate.py` (orchestration), `backend/app/api/eval.py` (routes), `backend/app/schema.sql` (`eval_sets`, `eval_items`, `eval_runs`), `frontend/src/features/evaluate/*` (UI), `backend/tests/test_eval.py`. Implements IDEAS.md §2.1 (zero-labelling eval set) plus the deterministic slice of §2.5 (failure diagnosis).
+
+**What it does**: writes test questions from the project's own chunks, drops the ones a model can answer without the documents, then scores any pipeline version by where the passage containing the answer lands in its retrieval results. Scoring makes **no LLM calls** — only generation does.
+
+```mermaid
+flowchart LR
+    A["chunks of the version's build"] --> B["sample_chunks()<br/>round-robin per document"]
+    B --> C["LLM: question, answer,<br/>evidence (5 chunks/call)"]
+    C --> D["closed-book LLM answers<br/>(10 questions/call)"]
+    D --> E["check_candidate():<br/>evidence in chunk? generic?"]
+    E --> F[("eval_items<br/>valid / rejected")]
+    F --> G["run_eval(version):<br/>retrieve + rerank per item"]
+    G --> H["first_hit_rank()<br/>+ miss diagnosis"]
+    H --> I[("eval_runs<br/>metrics + results")]
+```
+
+### Gold labels — why they are build-independent
+Chunk ids are `sha256(build_id:doc_id:ordinal)` (Part 15/25), so a chunk id means nothing once chunking, parsing or the vector store changes. Each `eval_items` row therefore stores `document_id` + **`evidence`** (a verbatim sentence the LLM quoted from the source chunk). `gold_chunk_id` is kept for provenance only and is never used in scoring.
+
+**Hit rule** (`evalmetrics.is_hit`): a retrieved chunk is a hit iff `chunk.document_id == item.document_id` **and** `contains_evidence(chunk.text, evidence)` — the normalized evidence (lowercased, punctuation stripped, whitespace collapsed via `tokens()`/`normalize()`) is a whole-word substring of the normalized chunk text, **or** ≥ `EVIDENCE_COVERAGE` = 0.7 of the evidence's tokens (with multiplicity) appear in the chunk (covers evidence split across a chunk boundary and markdown the LLM dropped when quoting). `first_hit_rank(results, item)` = 1-indexed position of the first hit, else `None`. This is what lets one eval set compare versions with different chunking — asserted by `test_run_eval_scores_across_chunkings`.
+
+### Generation — `generate_set(job, set_id, project_id, version, size)` (job kind `evalset`)
+1. `cfg = sync.version_config(version)`; `ready_build()` runs `chat.ensure_ready()` (may trigger an index build, reported as stage `index`) and loads the `index_builds` row; `ChatError` → `EvalError`.
+2. Loads every chunk of that build (joined to `documents.filename`), then `sample_chunks(chunks, ceil(size*1.5))`: skips tables and chunks with `token_count < 40`, sorts by `(document_id, ordinal)`, shuffles each document's pool with `random.Random(0)`, and deals round-robin across documents — deterministic, and every document is represented. The 1.5× oversample absorbs filter rejections.
+3. **Question writing** — batches of `GEN_BATCH=5` chunks per LLM call (`GEN_SYSTEM` prompt): one question per passage, answerable from that passage alone, ≤4 consecutive words copied, never "the passage/text", `answer` ≤30 words, `evidence` copied character-for-character; boilerplate passages return an empty question (skipped). Progress stage `generate`.
+4. De-duplicates questions by `normalize(question)`.
+5. **Closed-book filter** — batches of `VAL_BATCH=10` questions per call (`VAL_SYSTEM`: answer from general knowledge, ≤25 words, else "unknown"). Progress stage `validate`.
+6. `check_candidate(cand, closed_book)` reject reasons, in order: `"evidence not found in source"` (evidence < `MIN_EVIDENCE_TOKENS=4` tokens or < 0.9 token coverage of *its own* chunk — catches paraphrased/hallucinated quotes), `"no answer"`, `"too generic: answerable without the documents"` (`token_f1(closed_book, gold_answer) ≥ GENERIC_F1=0.6`, stopwords removed). If a closed-book batch failed, its questions skip only the generic check.
+7. Persists up to `size` valid items plus every rejected item (`valid=0` + `reject_reason` + `closed_book_answer`, shown in the UI as proof the filter works); valid candidates beyond `size` are discarded. Updates `eval_sets.status='ready'`, `build_id`, and `stats = {sampled, generated, kept, too_generic, bad_evidence, other}`.
+
+**LLM calls** (`complete()`): non-streaming `llm.client(provider).chat.completions.create(...)` with the *version's* `generate` slot provider and model (empty → `llm.resolve_model(provider, "chat")`), `temperature=0.3`, `max_tokens=4096`, and `reasoning_effort` forwarded unless `"default"`. No `response_format` is sent (not reliably supported across Gemini/NVIDIA); `parse_json()` strips code fences and falls back to the outermost `{…}`. Concurrency is capped by the module-level `asyncio.Semaphore(3)`. Failures go through `llm.friendly_error()`. `_gather_tolerant()` runs batches concurrently, logs a failed batch as a job warning and continues; the job fails only if zero candidates come back. A 30-question set ≈ 9 generation + 5 validation calls.
+
+### Scoring — `run_eval(job, run_id, project_id, set_id, version)` (job kind `eval`)
+1. `ready_build()` for the version being evaluated (its own build — may differ from the build the set was generated from).
+2. For each `valid=1` item, in `ordinal` order (sequential), `score_item()`:
+   - `retrieved = retrieval.retrieve(RunContext(), build, cfg, question)`, `final = retrieval.rerank(...)` — exactly the chat path's retrieval (Part 16/17), timed end-to-end into `ms`.
+   - `rank = first_hit_rank(final, item)`.
+   - **Miss diagnosis** (deterministic, IDEAS §2.5 failure points 2–3): hit in `retrieved` but not `final` → `dropped_by_rerank`; otherwise one more `retrieve` with `deep_config(cfg)` (`top_k=50`, `candidates=max(candidates,50)`, `mmr=False`, no rerank) → found at `deep_rank` → `ranked_below_k`, else `not_retrieved`.
+   - Result: `{item_id, rank, hit, diagnosis, deep_rank, ms, top: first 5 of final as {id, document, heading_path, hit}}`. Progress stage `evaluate`.
+3. `k = final_k(cfg)` = `retrieve.top_k`, or `min(top_k, rerank.top_n)` when a reranker is on — i.e. the number of chunks that actually reach the prompt packer.
+4. `metrics = summarize(ranks, k)` → `{n, k, hit_at_1, hit_at_3, hit_at_k, mrr}` (MRR over all items, misses contribute 0) + `p50_ms` + `diagnoses` counts + `config` (`config_summary()`: parse type, chunk type/size/unit, embed model, store, retriever, top_k, rerank). Persisted with per-item `results` JSON; `status='ready'`.
+
+Determinism: generation is not deterministic (LLM), but **scoring is** for a fixed set and version — retrieval is deterministic on exact stores with `(score desc, chunk_id asc)` tie-breaks (Part 15), and the hit rule is pure arithmetic. No `temperature` or LLM judge is involved.
+
+### Design decisions
+- **Doesn't reuse `engine/chat.py:answer()`**: that path always generates (LLM cost + latency per question) and writes a `runs` row; scoring needs only retrieval, so it calls `retrieval.retrieve/rerank` directly.
+- **No LLM judge**: retrieval-level metrics are reproducible and free to re-run across many versions; answer-quality judging is a later layer.
+- **Rejected items are stored, not dropped**: the UI shows them with the model's closed-book answer, which is the visible evidence that the validity filter works.
+
+### Frontend (`frontend/src/features/evaluate/`)
+- `EvaluateTab.tsx` — route `/projects/:id/evaluate`, tab between Playground and API. Empty state (pitch + size select 10/20/30/50 + "Generate eval set", disabled with no documents); otherwise the newest `ready` set, with "Regenerate" and a progress/failure card for a newer running/failed set.
+- `EvalSetCard.tsx` — stats badges (kept / too generic / bad evidence, sampled count, "0 labelled by hand"); "Questions (n)" and "Rejected by the filter (n)" disclosures; each row expands to gold answer, highlighted evidence, and the no-documents answer.
+- `RunsPanel.tsx` — version `Select` (default active) + "Run evaluation"; runs table (oldest first; config summary, Hit@1 / Hit@k / MRR / p50, ▲/▼ point deltas vs. the previous ready run); selected run detail with stat tiles (Hit@1, Hit@3, Hit@k, MRR, retrieval p50), a misses banner by diagnosis, and a per-question table (rank badge or Miss, diagnosis label + suggested fix, "Only misses" filter).
+- `EvalJobProgress.tsx` — one-line `useJobEvents` progress for `evalset`/`eval` jobs.
+- Hooks (`api/hooks.ts`): `useEvalSets`, `useEvalSet`, `useGenerateEvalSet`, `useEvalRuns`, `useEvalRun`, `useRunEval` — all poll every 3 s while any returned row is `running`; types in `api/types.ts` (`EvalSet`, `EvalSetDetail`, `EvalItem`, `EvalRun`, `EvalRunDetail`, `EvalMetrics`, `EvalItemResult`, `EvalDiagnosis`, `EvalConfigSummary`). Endpoint contract documented in `frontend/API.md` → "Evaluation".
+
+### Flow G — Evaluate a configuration change
+```
+Evaluate tab: Generate eval set -> POST /eval/sets {size} -> evalset job (index? -> generate -> validate)
+  -> set ready: questions + rejected shown
+Run evaluation (active vN) -> POST /eval/sets/{sid}/runs -> eval job -> metrics row in runs table
+Configure: change e.g. rerank none -> cross_encoder (instant) or chunk size (rebuild) -> save vN+1
+Evaluate: pick vN+1 -> Run evaluation (builds vN+1's index first if needed)
+  -> second row with ▲/▼ deltas vs vN, same questions, scored against a possibly different chunking
+```
+
+Limitations are listed under Part 35 (MEDIUM/LOW evaluation entries).
 
 ---
 

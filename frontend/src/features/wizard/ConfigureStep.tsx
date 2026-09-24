@@ -24,12 +24,6 @@ export function ConfigureStep({
   // The active config may arrive after first render (recommended fallback).
   const value = config ?? initial
 
-  const applySmartRecommend = () => {
-    if (smartRec.data?.config) {
-      setConfig(smartRec.data.config)
-    }
-  }
-
   // Auto-apply recommendation when entering auto mode
   if (autoMode && smartRec.data?.config && !config) {
     setConfig(smartRec.data.config)

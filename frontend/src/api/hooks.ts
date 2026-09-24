@@ -21,6 +21,10 @@ import type {
   CreateVersionResult,
   Document,
   EstimateResult,
+  EvalRun,
+  EvalRunDetail,
+  EvalSet,
+  EvalSetDetail,
   Health,
   Job,
   JobDoneResult,
@@ -66,6 +70,10 @@ export const qk = {
   runs: (id: string, limit: number) => ['projects', id, 'runs', limit] as const,
   job: (jobId: string) => ['jobs', jobId] as const,
   run: (runId: string) => ['runs', runId] as const,
+  evalSets: (id: string) => ['projects', id, 'eval', 'sets'] as const,
+  evalSet: (id: string, setId: string) => ['projects', id, 'eval', 'sets', setId] as const,
+  evalRuns: (id: string, setId: string) => ['projects', id, 'eval', 'runs', setId] as const,
+  evalRun: (id: string, runId: string) => ['projects', id, 'eval', 'run', runId] as const,
 }
 
 /** Invalidate everything under a project (project, versions, documents, builds, jobs, runs) + the list. */
@@ -499,3 +507,62 @@ export const useRun = (runId: string | null | undefined, o?: QOpts<RunDetail>) =
     staleTime: Infinity,
     ...o,
   })
+
+// ------------------------------------------------------------------------------------------ evaluation
+
+const evalBase = (projectId: string) => `/projects/${projectId}/eval`
+const pollWhileRunning = (running: boolean) => (running ? 3000 : false)
+
+export const useEvalSets = (projectId: string | undefined, o?: QOpts<EvalSet[]>) =>
+  useQuery({
+    queryKey: qk.evalSets(projectId ?? ''),
+    queryFn: () => api.get<EvalSet[]>(`${evalBase(projectId!)}/sets`),
+    enabled: !!projectId,
+    refetchInterval: (q) => pollWhileRunning(!!q.state.data?.some((s) => s.status === 'running')),
+    ...o,
+  })
+
+export const useEvalSet = (projectId: string | undefined, setId: string | null | undefined, o?: QOpts<EvalSetDetail>) =>
+  useQuery({
+    queryKey: qk.evalSet(projectId ?? '', setId ?? ''),
+    queryFn: () => api.get<EvalSetDetail>(`${evalBase(projectId!)}/sets/${setId}`),
+    enabled: !!projectId && !!setId,
+    refetchInterval: (q) => pollWhileRunning(q.state.data?.status === 'running'),
+    ...o,
+  })
+
+export function useGenerateEvalSet(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { size?: number; version_id?: string }) =>
+      api.post<{ eval_set: EvalSet; job_id: string }>(`${evalBase(projectId)}/sets`, body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.evalSets(projectId) }),
+  })
+}
+
+export const useEvalRuns = (projectId: string | undefined, setId: string | null | undefined, o?: QOpts<EvalRun[]>) =>
+  useQuery({
+    queryKey: qk.evalRuns(projectId ?? '', setId ?? ''),
+    queryFn: () => api.get<EvalRun[]>(`${evalBase(projectId!)}/runs`, { set_id: setId }),
+    enabled: !!projectId && !!setId,
+    refetchInterval: (q) => pollWhileRunning(!!q.state.data?.some((r) => r.status === 'running')),
+    ...o,
+  })
+
+export const useEvalRun = (projectId: string | undefined, runId: string | null | undefined, o?: QOpts<EvalRunDetail>) =>
+  useQuery({
+    queryKey: qk.evalRun(projectId ?? '', runId ?? ''),
+    queryFn: () => api.get<EvalRunDetail>(`${evalBase(projectId!)}/runs/${runId}`),
+    enabled: !!projectId && !!runId,
+    refetchInterval: (q) => pollWhileRunning(q.state.data?.status === 'running'),
+    ...o,
+  })
+
+export function useRunEval(projectId: string, setId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { version_id?: string }) =>
+      api.post<{ run: EvalRun; job_id: string }>(`${evalBase(projectId)}/sets/${setId}/runs`, body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.evalRuns(projectId, setId) }),
+  })
+}

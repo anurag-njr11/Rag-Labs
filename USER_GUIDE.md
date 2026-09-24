@@ -1,6 +1,6 @@
 # RAG Builder User Guide
 
-**Phase 1 — Build & Chat:** Upload documents, tune every pipeline parameter, chat with cited answers, and inspect retrieval.
+**Build, Chat & Evaluate:** Upload documents, tune every pipeline parameter, chat with cited answers, inspect retrieval — and measure how well each configuration retrieves, with test questions generated from your own documents (no labelling).
 
 ---
 
@@ -11,8 +11,9 @@
 3. [Step-by-Step Tutorial](#step-by-step-tutorial)
 4. [Pipeline Configuration Guide](#pipeline-configuration-guide)
 5. [Using the Playground](#using-the-playground)
-6. [Debugging & Tuning Strategies](#debugging--tuning-strategies)
-7. [API Reference](#api-reference)
+6. [Evaluating Your Pipeline](#evaluating-your-pipeline)
+7. [Debugging & Tuning Strategies](#debugging--tuning-strategies)
+8. [API Reference](#api-reference)
 
 ---
 
@@ -91,6 +92,10 @@ The system caches at every stage:
 - Vectors are keyed by (chunks + embedding config)
 
 **Result**: Switching vector stores never re-embeds. Changing `top_k` doesn't rebuild.
+
+### Eval Sets
+
+An **eval set** is a list of test questions written automatically from your documents. Each question comes with the correct answer and an **exact quote** from the source that contains it. A version is scored by where the passage containing that quote lands in its search results. Because questions are tied to a quote, not to a particular chunk, one eval set can compare versions that chunk the documents differently. See [Evaluating Your Pipeline](#evaluating-your-pipeline).
 
 ---
 
@@ -334,6 +339,65 @@ Generate:  temperature=0.3, max_tokens=2048
 
 ---
 
+## Evaluating Your Pipeline
+
+The **Evaluate** tab (between Playground and API) answers "is this configuration any good?" with numbers instead of a few hand-picked test questions. You don't write or label any questions.
+
+### How It Works
+
+1. **Sample**: passages are picked evenly from every document in the index. Very short passages and tables are skipped.
+2. **Write questions**: your configured LLM (the Generate stage's provider and model) writes one question per passage, along with the answer and an exact quote from the passage.
+3. **Filter**: a question is dropped if:
+   - its quote isn't really in the passage, or
+   - the model can answer it with **no documents at all**. That question would test the model's memory, not your retrieval.
+4. **Score**: each remaining question is run through a version's Retrieve and Rerank stages. The score is where the first passage containing the quote lands. No LLM is used for scoring, so it's free and gives the same numbers every time.
+
+### Step by Step
+
+1. Open a project with a built index → **Evaluate** tab.
+2. Choose a size (10, 20, 30 or 50 questions; 30 is a good default) → click **Generate eval set**.
+   - Progress shows *Write questions* → *Filter generic questions*. If the index is out of date, it's rebuilt first.
+3. Review the set:
+   - The badges show how many questions were **kept**, and how many were rejected as **too generic** or for **bad evidence**.
+   - Expand **Questions** and click any question to see its answer, the quoted evidence, and what the model said without documents.
+   - Expand **Rejected by the filter** to see what was dropped and why.
+4. Under **Retrieval quality**, pick a version (the active one by default) → **Run evaluation**.
+5. Change the configuration on the Configure tab and save a new version. Then come back, pick that version, and run again. Each run adds a row to the comparison table.
+
+### Reading the Results
+
+| Metric | Meaning | Good sign |
+|---|---|---|
+| **Hit@1** | Share of questions where the right passage was ranked **first** | High |
+| **Hit@3** | ...ranked in the top 3 | High |
+| **Hit@k** | ...made it into the final **k** results, the ones that reach the prompt. k = `top_k`, or reranker `top_n` when reranking is on | As close to 100% as possible |
+| **MRR** | Average of 1 / rank; 1.0 means always first, 0 means never found | Closer to 1.0 |
+| **Retrieval p50** | Median time to retrieve (and rerank) one question | Low |
+
+In the runs table, **▲ / ▼** show the change from the previous run in percentage points. Click a row to see its details.
+
+### Why a Question Missed
+
+Every miss gets a diagnosis and a suggested fix:
+
+| Diagnosis | What happened | Try |
+|---|---|---|
+| **Dropped by reranker** | Retrieval found the passage, but the reranker cut it | Raise the reranker's **Keep top N** (`top_n`) |
+| **Ranked below top-k (#n)** | The passage was found at rank *n*, below your cut-off | Raise `top_k`, or add a reranker to lift it |
+| **Not retrieved** | The passage isn't in the top 50 at all | Try another retriever (e.g. `fused`), a better embedding model, or different chunking |
+
+Tick **Only misses** to list just the failures.
+
+### Tips
+
+- **Compare, don't brag.** Generated questions often reuse the document's wording, so absolute scores run a little optimistic. The real value is comparing versions on the **same** eval set.
+- **Mind the sample size.** With 20–30 questions, a difference under about 10 points may be noise. Use 50 questions for closer calls.
+- **Instant changes are cheap to test.** Retriever type, `top_k`, weights and the reranker don't need a rebuild, so you can compare them right away. Rebuild changes like chunking or the embedding model build the new index automatically on the first run.
+- **Regenerate after big document changes.** Questions whose source document was deleted will always miss.
+- **Cost and privacy.** Generating 30 questions takes about 14 LLM calls, and document passages are sent to your LLM provider. Scoring runs entirely on your machine.
+
+---
+
 ## Debugging & Tuning Strategies
 
 ### When Latency Is Too High
@@ -355,8 +419,9 @@ Generate:  temperature=0.3, max_tokens=2048
 
 ### When Quality Is Poor
 
-1. **Check retrieval first** (80% of problems are here):
-   - Open the inspector. Are the right chunks in top-5?
+1. **Check retrieval first** (if the right passage never reaches the prompt, nothing later can fix the answer):
+   - Run an evaluation on the **Evaluate** tab to measure this across many questions at once. The miss diagnoses tell you which fix below applies.
+   - For a single question, open the inspector. Are the right chunks in top-5?
    - If no: retrieval is failing. Try:
      - Larger `top_k` (more shots on goal)
      - Better embedding model (bge-small → bge-base → Gemini)
@@ -490,6 +555,31 @@ curl -X POST http://127.0.0.1:8000/api/projects/abc123/chat \
   }'
 ```
 
+### Evaluation Endpoints
+
+All paths are under `/api/projects/{project_id}/eval`. Generating a set and running an evaluation start background jobs. Follow their progress at `GET /api/jobs/{job_id}/events` (SSE), or poll the set or run until `status` is `ready` or `failed`.
+
+| Method & path | Body | Returns |
+|---|---|---|
+| `POST /sets` | `{"size": 30, "version_id": "optional"}` | `{eval_set, job_id}` |
+| `GET /sets` | | All eval sets, newest first |
+| `GET /sets/{set_id}` | | The set plus its `items` (question, answer, evidence, `valid`, `reject_reason`) |
+| `POST /sets/{set_id}/runs` | `{"version_id": "optional, default active"}` | `{run, job_id}` |
+| `GET /runs?set_id=...` | | Runs with `metrics` (`hit_at_1`, `hit_at_3`, `hit_at_k`, `mrr`, `p50_ms`, `diagnoses`, `config`) |
+| `GET /runs/{run_id}` | | One run plus per-question `results` (`rank`, `hit`, `diagnosis`, `deep_rank`) |
+
+```bash
+# Generate a 30-question eval set
+curl -X POST http://127.0.0.1:8000/api/projects/abc123/eval/sets \
+  -H "content-type: application/json" -d '{"size": 30}'
+
+# Score the active version against it
+curl -X POST http://127.0.0.1:8000/api/projects/abc123/eval/sets/SET_ID/runs \
+  -H "content-type: application/json" -d '{}'
+```
+
+Full response shapes are in [frontend/API.md](frontend/API.md) under "Evaluation".
+
 ---
 
 ## Troubleshooting
@@ -501,15 +591,20 @@ curl -X POST http://127.0.0.1:8000/api/projects/abc123/chat \
 | **Vector store errors after switching** | Vector store type change requires rebuild. Click "Build Index" on Configure page. Old vectors cached; switch back and they're re-used. |
 | **"Document failed to index"** | Check the Documents tab for error. May be: unsupported format, corrupted file, or OCR failure. Try re-uploading or converting to PDF. |
 | **Slow indexing on large corpus** | Increase embedding `batch_size` (e.g., 32 → 64). Use local embeddings (`fastembed`) instead of APIs. Use exact vector stores (FAISS Flat > HNSW). |
+| **"Could not generate an eval set" / rate limit** | Generation calls your LLM about 14 times for 30 questions. On a free tier, wait a minute and retry, pick a smaller size, or switch the Generate provider. |
+| **Few questions kept** | Your documents may cover general knowledge the model already knows (rejected as *too generic*), or be mostly short or table-only passages. Add more specific documents or generate a larger set. |
+| **Eval set or run shows "Interrupted by a server restart"** | Restarting the backend cancels running jobs. Click **Generate** or **Run evaluation** again. |
+| **A question always misses and its source shows "—"** | Its source document was deleted. Regenerate the eval set. |
 
 ---
 
 ## Next Steps
 
-- **Phase 2** (future): Auto-generate eval sets, run parameter sweeps, see a Pareto leaderboard of best configs, identify corpus gaps
+- **Available now**: auto-generated eval sets, repeatable retrieval scoring, a diagnosis for every miss, and side-by-side version comparison (Evaluate tab)
+- **Phase 2** (next): automatic sweeps over many configurations, a leaderboard of quality against cost, answer-quality scoring, and reports of gaps and contradictions in your documents
 - **Phase 3** (future): Agentic retrieval, query decomposition, injection resistance testing, embed adapters
 
-For now, focus on **upload → configure → chat → inspect**. Use the Versions tab to track what works.
+The recommended loop is **upload → configure → chat → inspect → evaluate**. Use the Versions tab to keep what works, and the Evaluate tab to prove it.
 
 ---
 

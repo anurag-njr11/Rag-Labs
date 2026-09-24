@@ -181,6 +181,35 @@ type JobEvent =
 ```
 Stage order for the progress UI: fetch (URL jobs only) → parse → embed → store → keywords → ready.
 `total: 0` means indeterminate. Close the EventSource on `done`/`failed`.
+Eval jobs (`kind: 'evalset' | 'eval'`, see Evaluation) report stages `index` → `generate` → `validate`
+(eval set) or `index` → `evaluate` (run) on the same stream; their `done.result` is a small summary.
+
+## Evaluation (auto-generated eval sets, retrieval scoring)
+
+Prefix `/api/projects/{id}/eval`. Gold labels are `document_id` + a verbatim `evidence` quote, so one
+set scores any version, whatever its chunking. Status is `running | ready | failed` for sets and runs.
+
+| Method & path | Body | Returns |
+|---|---|---|
+| `POST /sets` | `{size?: 5–100 = 30, version_id?}` | 201 `{eval_set: EvalSet, job_id}` · 409 no documents |
+| `GET /sets` | | `EvalSet[]` newest first |
+| `GET /sets/{set_id}` | | `EvalSet & {items: EvalItem[]}` (rejected items included, `valid: false` + `reject_reason`) |
+| `POST /sets/{set_id}/runs` | `{version_id?}` (default active) | 201 `{run: EvalRun, job_id}` · 409 set not ready |
+| `GET /runs?set_id=` | | `EvalRun[]` oldest first (no `results`) |
+| `GET /runs/{run_id}` | | `EvalRun & {results: EvalItemResult[]}` |
+
+```ts
+EvalSet = {id, project_id, version_id, build_id, status, size_requested, error, created_at,
+           stats: {sampled, generated, kept, too_generic, bad_evidence, other}}
+EvalItem = {id, ordinal, question, gold_answer, evidence, document_id, document, gold_chunk_id,
+            valid, reject_reason, closed_book_answer}
+EvalRun = {id, eval_set_id, version_id, version, build_id, status, error, created_at,
+           metrics: {n, k, hit_at_1, hit_at_3, hit_at_k, mrr, p50_ms,
+                     diagnoses: {dropped_by_rerank, ranked_below_k, not_retrieved},
+                     config: {parse, chunk, embed, store, retrieve, top_k, rerank}} | null}
+EvalItemResult = {item_id, rank: number | null, hit, diagnosis: 'dropped_by_rerank' | 'ranked_below_k' | 'not_retrieved' | null,
+                  deep_rank, ms, top: {id, document, heading_path, hit}[]}
+```
 
 ## Chat
 

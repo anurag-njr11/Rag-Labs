@@ -252,7 +252,9 @@ export const ACCEPTED_EXTENSIONS = ['.pdf', '.docx', '.md', '.markdown', '.mdx',
 export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 
 // ---- jobs --------------------------------------------------------------
-export type JobStage = 'fetch' | 'parse' | 'embed' | 'store' | 'keywords' | 'ready'
+export type JobStage =
+  | 'fetch' | 'parse' | 'embed' | 'store' | 'keywords' | 'ready'
+  | 'index' | 'generate' | 'validate' | 'evaluate'
 export const JOB_STAGES: readonly JobStage[] = ['fetch', 'parse', 'embed', 'store', 'keywords', 'ready']
 
 export interface JobDoneResult {
@@ -413,3 +415,88 @@ export interface ModelList {
   models: string[]
 }
 export type ModelKind = 'chat' | 'embed'
+
+// ---- evaluation ------------------------------------------------------------
+export type EvalStatus = 'running' | 'ready' | 'failed'
+
+export interface EvalSetStats {
+  sampled: number
+  generated: number
+  kept: number
+  too_generic: number
+  bad_evidence: number
+  other: number
+}
+export interface EvalItem {
+  id: string
+  ordinal: number
+  question: string
+  gold_answer: string
+  evidence: string
+  document_id: string
+  document: string | null
+  gold_chunk_id: string
+  valid: boolean
+  reject_reason: string | null
+  closed_book_answer: string | null
+}
+export interface EvalSet {
+  id: string
+  project_id: string
+  version_id: string | null
+  build_id: string | null
+  status: EvalStatus
+  size_requested: number
+  stats: Partial<EvalSetStats>
+  error: string | null
+  created_at: string
+}
+export interface EvalSetDetail extends EvalSet {
+  items: EvalItem[]
+}
+
+export type EvalDiagnosis = 'dropped_by_rerank' | 'ranked_below_k' | 'not_retrieved'
+
+export interface EvalConfigSummary {
+  parse: string
+  chunk: string
+  embed: string
+  store: string
+  retrieve: string
+  top_k: number
+  rerank: string
+}
+export interface EvalMetrics {
+  n: number
+  k: number
+  hit_at_1: number
+  hit_at_3: number
+  hit_at_k: number
+  mrr: number
+  p50_ms: number
+  diagnoses: Record<EvalDiagnosis, number>
+  config: EvalConfigSummary
+}
+export interface EvalItemResult {
+  item_id: string
+  rank: number | null
+  hit: boolean
+  diagnosis: EvalDiagnosis | null
+  deep_rank: number | null
+  ms: number
+  top: { id: string; document: string; heading_path: string; hit: boolean }[]
+}
+export interface EvalRun {
+  id: string
+  eval_set_id: string
+  version_id: string
+  version: number | null
+  build_id: string | null
+  status: EvalStatus
+  error: string | null
+  created_at: string
+  metrics: EvalMetrics | null
+}
+export interface EvalRunDetail extends EvalRun {
+  results: EvalItemResult[]
+}
