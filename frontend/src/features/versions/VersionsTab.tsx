@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { GitCommitHorizontal, Play, RotateCcw, CircleCheck } from 'lucide-react'
-import { errorMessage } from '@/api/client'
+import { CircleCheck, Download, GitCommitHorizontal, Play, RotateCcw } from 'lucide-react'
+import { API_BASE, errorMessage } from '@/api/client'
 import { formatDateTime, formatNumber, formatRelative, shortHash, storeLabel } from '@/api/format'
 import {
   useActivateVersion, useBuildVersion, useEstimate, useNodes, useRollbackVersion, useVersion, useVersionDiff, useVersions,
@@ -10,7 +10,7 @@ import type { Change, EstimateResult, Version } from '@/api/types'
 import { JobProgress } from '@/app/JobProgress'
 import { useWorkspace } from '@/app/workspace'
 import {
-  Badge, Banner, Button, Card, CodeBlock, Dialog, Disclosure, EmptyState, Select, Spinner, StatusBadge, cn, useToast,
+  Badge, Banner, Button, Card, CodeBlock, Dialog, Disclosure, EmptyState, Select, Spinner, StatusBadge, buttonClasses, cn, useToast,
 } from '@/components/ui'
 import { DiffTable } from './DiffTable'
 
@@ -210,6 +210,17 @@ function VersionDetail({ version, all, onSelect }: { version: Version; all: Vers
           </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
+          {idx?.status === 'ready' && (
+            <a
+              href={`${API_BASE}/projects/${project.id}/versions/${v.id}/export`}
+              download
+              className={buttonClasses({ variant: 'secondary', className: 'gap-1.5' })}
+              title="Download a standalone Python project with this version's index and pipeline — runs without RAG Builder"
+            >
+              <Download size={14} aria-hidden />
+              Export RAG
+            </a>
+          )}
           {canBuild && (
             <Button variant="secondary" icon={<Play size={14} aria-hidden />} loading={build.isPending} onClick={doBuild}>
               Build
