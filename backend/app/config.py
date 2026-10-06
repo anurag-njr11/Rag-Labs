@@ -16,15 +16,13 @@ class Settings(BaseSettings):
 
     data_dir: Path = REPO_DIR / "data"
 
-    gemini_api_key: str = ""
-    gemini_base_url: str = "https://generativelanguage.googleapis.com/v1beta/openai/"
-    gemini_default_model: str = "gemini-3.5-flash"
-    gemini_default_embed_model: str = "gemini-embedding-001"
+    # LLM providers are configured via <NAME>_API_KEY etc. (see app/llm/provider.py),
+    # which pydantic-settings can't enumerate ahead of time.
 
-    nvidia_api_key: str = ""
-    nvidia_base_url: str = "https://integrate.api.nvidia.com/v1"
-    nvidia_default_model: str = "nvidia/nemotron-3-super-120b-a12b"
-    nvidia_default_embed_model: str = "nvidia/llama-3.2-nv-embedqa-1b-v1"
+    # Host headers the API answers to. Blocks DNS-rebinding attacks, where a web
+    # page re-points its own domain at 127.0.0.1 to drive this API (and its stored
+    # keys) from the browser. Comma-separated; "*" disables the check.
+    allowed_hosts: str = "localhost,127.0.0.1,::1,[::1],testserver"
 
     # Upper bounds that keep a runaway sitemap or upload from eating the machine.
     max_upload_mb: int = 100

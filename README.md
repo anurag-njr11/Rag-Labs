@@ -34,7 +34,7 @@ and [`IDEAS.md`](IDEAS.md) the idea catalogue.
 | Retrieve | dense, keyword (BM25), hybrid, fused (+ exact error-message/code-symbol matching); RRF or weighted fusion, MMR, thresholds; query expansion (multi-query, HyDE); neighbouring-chunk context window |
 | Rerank | off, or local cross-encoders |
 | Prompt | cited answer, concise, detailed, or your own template; context budget |
-| Generate | Google Gemini or NVIDIA (free tiers); model, temperature, top-p, max tokens |
+| Generate | any OpenAI-compatible LLM: Gemini, NVIDIA, OpenAI, Anthropic, Groq, Mistral, OpenRouter, Together, DeepSeek, Ollama, LM Studio, or your own endpoint (vLLM, LiteLLM, a gateway…); model, temperature, top-p, max tokens |
 
 Every parameter is labelled **⚡ instant** (applies at query time) or **🔁 rebuild** (needs
 re-indexing). Rebuilds reuse cached work: switching vector store never re-embeds.
@@ -44,13 +44,28 @@ Every saved configuration is an immutable version you can diff and switch back t
 
 - [uv](https://docs.astral.sh/uv/) (Python is fetched automatically — the backend uses 3.12)
 - Node.js 20+
-- A free LLM key for chatting (retrieval and the inspector work without one):
-  [Gemini](https://aistudio.google.com/apikey) or [NVIDIA](https://build.nvidia.com)
+- An LLM for chatting (retrieval and the inspector work without one): a free
+  [Gemini](https://aistudio.google.com/apikey) or [NVIDIA](https://build.nvidia.com) key, a key for
+  any other supported provider, or a local server such as Ollama. Connect it in the app under
+  **LLM providers**, or via `.env`.
+
+## Security of API keys
+
+- Keys entered in the app are encrypted at rest (AES-256-GCM). The master key is created
+  on first run in your user config directory, **not** in `data/`, so a copied database
+  can't be read on its own. Back it up, or supply your own via `RAGLABS_SECRET_KEY`
+  (see `.env.example`).
+- Keys are never returned by the API (only `…abcd`), are scrubbed from logs, error
+  messages and run history, and are never written into exports.
+- A stored key is only ever sent to the base URL it was saved with. Changing the URL
+  means re-entering the key.
+- The backend only answers to `localhost`/`127.0.0.1` Host headers (`ALLOWED_HOSTS`),
+  which blocks DNS-rebinding attacks from web pages.
 
 ## Run it
 
 ```bash
-cp .env.example .env          # then paste GEMINI_API_KEY and/or NVIDIA_API_KEY
+cp .env.example .env          # optional: paste e.g. GEMINI_API_KEY / OPENAI_API_KEY (or add keys in the UI)
 
 # terminal 1 — backend (http://127.0.0.1:8000)
 cd backend

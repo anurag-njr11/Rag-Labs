@@ -425,9 +425,31 @@ With `stream: false` the response is JSON:
 
 | Method & path | Returns |
 |---|---|
-| `GET /api/health` | `{status: 'ok', providers: {gemini: boolean, nvidia: boolean}}` |
-| `GET /api/providers` | `{name, title, available, reason, signup_url, default_model}[]` |
+Providers back the **Generate** slot: each enabled provider is a Generate node type named after
+it (so the catalog in `GET /api/nodes` changes when providers are added or removed — refetch it).
+The Embed slot's `api` type still only accepts `gemini` / `nvidia`.
+
+| Method & path | Returns |
+|---|---|
+| `GET /api/health` | `{status: 'ok', providers: {[name]: boolean}}` |
+| `GET /api/providers` | `Provider[]` — the enabled providers (Gemini, NVIDIA + every configured one) |
+| `GET /api/providers/presets` | `Provider[]` — every built-in preset with its current state |
+| `POST /api/providers` | create a custom endpoint (or connect a preset): `ProviderInput` with `name` → `Provider` (201; 409 if it exists, 422 invalid) |
+| `PATCH /api/providers/{name}` | update: `ProviderInput` (omitted fields kept; empty `api_key` keeps the stored key) → `Provider` |
+| `DELETE /api/providers/{name}` | forget UI settings (a preset falls back to `.env`; a custom one disappears) → 204 |
+| `POST /api/providers/{name}/test` | `{ok, error?, models?, sample?, ms}` — calls the endpoint's `/models` |
+| `POST /api/providers/test` | same, for unsaved settings (`ProviderInput`; missing fields fall back to `name`'s) |
 | `GET /api/providers/{name}/models?kind=chat\|embed` | `{models: string[]}` (default first) |
 
-If no provider is available, show a banner: "No LLM API key configured — add GEMINI_API_KEY or
-NVIDIA_API_KEY to .env" with the signup links; chat will fail with an `error` event until then.
+`Provider`: `{name, title, description, base_url, default_model, signup_url, key_required,
+supports_reasoning, headers: string[] (names only), source: 'preset'|'env'|'ui'|'custom-env'|'custom-ui',
+preset: string|null, custom, key_set, key_hint ('…abcd'), key_env, available, reason, enabled}`.
+The API key and header values are never returned (they're encrypted at rest); credentials in
+`base_url` are masked. Saving refuses a `base_url` that contains credentials, and refuses a
+`base_url` change unless `api_key` (and `headers`, if any were set) are sent again (422).
+
+`ProviderInput`: `{name?, title?, base_url?, api_key?, default_model?, supports_reasoning?,
+key_required?, headers?: {[name]: value}}`.
+
+If no provider is available, show a banner linking to the LLM providers page
+(`/settings/providers`); chat will fail with an `error` event until then.

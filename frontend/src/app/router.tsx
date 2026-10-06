@@ -16,6 +16,7 @@ const PlaygroundTab = lazy(() => import('@/features/playground/PlaygroundTab'))
 const ApiTab = lazy(() => import('@/features/api/ApiTab'))
 const EvaluateTab = lazy(() => import('@/features/evaluate/EvaluateTab'))
 const HealthTab = lazy(() => import('@/features/health/HealthTab'))
+const ProvidersPage = lazy(() => import('@/features/settings/ProvidersPage'))
 
 function NotFound() {
   return (
@@ -51,6 +52,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <ProjectsPage /> },
       { path: 'new', element: <CreateWizard /> },
+      { path: 'settings/providers', element: <ProvidersPage /> },
       {
         path: 'projects/:id',
         element: <WorkspaceLayout />,

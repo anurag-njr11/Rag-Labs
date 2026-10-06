@@ -1,7 +1,7 @@
 import { Suspense, useRef } from 'react'
-import { Link, Outlet, useLocation } from 'react-router-dom'
-import { Moon, Sun } from 'lucide-react'
-import { Badge, Button, Spinner, useSwapTransition } from '@/components/ui'
+import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
+import { Moon, Plug, Sun } from 'lucide-react'
+import { Badge, Button, Spinner, cn, useSwapTransition } from '@/components/ui'
 import { BrandMark } from './BrandMark'
 import { useTheme } from './theme'
 
@@ -44,6 +44,19 @@ export function AppLayout() {
           <Badge tone="neutral" className="ml-1 hidden sm:inline-flex">Phase 2</Badge>
         </Link>
         <div className="flex items-center gap-1.5">
+          <NavLink
+            to="/settings/providers"
+            className={({ isActive }) =>
+              cn(
+                'focus-ring inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-label hover:bg-bg-subtle hover:text-text-primary',
+                isActive ? 'text-text-primary' : 'text-text-secondary',
+              )
+            }
+          >
+            <Plug size={14} aria-hidden />
+            <span className="hidden sm:inline">LLM providers</span>
+            <span className="sr-only sm:hidden">LLM providers</span>
+          </NavLink>
           <a
             href={BACKEND_DOCS_URL}
             target="_blank"

@@ -19,7 +19,7 @@ from typing import Any
 
 import numpy as np
 
-from .. import db
+from .. import db, vault
 from ..core.node import build_node
 from ..core.pipeline import PipelineConfig, with_defaults
 from ..llm import provider as llm
@@ -106,18 +106,49 @@ def _requirements(cfg: PipelineConfig) -> str:
     pkgs: dict[str, str] = {"numpy": "numpy>=2.5.3", "fastapi": "fastapi>=0.141.1", "uvicorn": "uvicorn>=0.53.0"}
     if cfg["embed"]["type"] == "fastembed" or cfg["rerank"]["type"] == "cross_encoder":
         pkgs["fastembed"] = "fastembed>=0.8.1"
-    if cfg["embed"]["type"] == "api" or cfg["generate"]["type"] in ("gemini", "nvidia"):
+    if cfg["embed"]["type"] == "api" or cfg["generate"]["type"] in llm.PROVIDERS:
         pkgs["openai"] = "openai>=3.19.0"
     return "\n".join(sorted(pkgs.values())) + "\n"
 
 
-def _env_example(cfg: PipelineConfig) -> str:
-    providers: set[str] = set()
+def _used_providers(cfg: PipelineConfig) -> list[str]:
+    names: set[str] = set()
     if cfg["embed"]["type"] == "api":
-        providers.add(cfg["embed"]["provider"])
-    if cfg["generate"]["type"] in ("gemini", "nvidia"):
-        providers.add(cfg["generate"]["type"])
-    lines = [f"{p.upper()}_API_KEY=" for p in sorted(providers)]
+        names.add(cfg["embed"]["provider"])
+    if cfg["generate"]["type"] in llm.PROVIDERS:
+        names.add(cfg["generate"]["type"])
+    return sorted(names)
+
+
+def _providers_section(cfg: PipelineConfig) -> dict[str, dict[str, Any]]:
+    """Connection details rag.py needs for each provider the pipeline calls.
+    Keys are never exported, only the env var to read them from; header values
+    may be secrets too, so only header names are listed; credentials inside a
+    base URL are masked."""
+    out = {}
+    for name in _used_providers(cfg):
+        p = llm.get(name)
+        # A URL with embedded credentials (only possible via .env) is exported masked;
+        # rag.py then needs the real one in <NAME>_BASE_URL.
+        out[name] = {"title": p.title, "base_url": vault.redact_url(p.base_url),
+                     "base_url_env": llm.env_prefix(name) + "_BASE_URL",
+                     "base_url_has_credentials": vault.url_has_credentials(p.base_url),
+                     "api_key_env": p.key_env,
+                     "key_required": p.key_required, "default_model": p.default_model,
+                     "default_embed_model": p.default_embed_model,
+                     "extra_header_names": sorted(p.headers)}
+    return out
+
+
+def _env_example(cfg: PipelineConfig) -> str:
+    lines = []
+    for name, info in _providers_section(cfg).items():
+        lines.append(f"{info['api_key_env']}=" + ("" if info["key_required"] else "  # optional for this endpoint"))
+        if info["base_url_has_credentials"]:
+            lines.append(f"{info['base_url_env']}=  # required: the full {info['title']} URL (exported masked)")
+        if info["extra_header_names"]:
+            lines.append(f"# {info['title']} also needs these HTTP headers (set them in rag.py's generate()): "
+                         + ", ".join(info["extra_header_names"]))
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -242,7 +273,8 @@ async def build_export_zip(project: dict[str, Any], version: dict[str, Any], bui
         zf.writestr("README.md", _readme(project, version, cfg))
         zf.writestr("requirements.txt", _requirements(cfg))
         zf.writestr(".env.example", _env_example(cfg))
-        zf.writestr("config.json", json.dumps(cfg, indent=2, ensure_ascii=False))
+        zf.writestr("config.json", json.dumps({**cfg, "providers": _providers_section(cfg)},
+                                              indent=2, ensure_ascii=False))
         zf.writestr("data/chunks.jsonl", "\n".join(chunk_lines) + ("\n" if chunk_lines else ""))
         zf.writestr("data/vectors.npy", vectors_buf.getvalue())
         zf.write(_RAG_TEMPLATE_PATH, "rag.py")

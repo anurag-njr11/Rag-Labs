@@ -52,8 +52,12 @@ async def connect(path: Path) -> aiosqlite.Connection:
     await conn.execute("PRAGMA journal_mode=WAL")
     await conn.execute("PRAGMA foreign_keys=ON")
     await conn.execute("PRAGMA busy_timeout=5000")
+    # Overwrite deleted/updated content with zeros, so a replaced API key (or a
+    # plaintext one from before encryption) doesn't survive in free pages.
+    await conn.execute("PRAGMA secure_delete=ON")
     await conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
     await _add_columns(conn)
+    _restrict_permissions(path)
     _conn = conn
     return conn
 
@@ -74,6 +78,16 @@ async def _add_columns(conn: aiosqlite.Connection) -> None:
             have = {r[1] for r in await cur.fetchall()}
         if column not in have:
             await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
+
+
+def _restrict_permissions(path: Path) -> None:
+    """Owner-only access to the database and its WAL/SHM files (POSIX; a no-op elsewhere)."""
+    for p in (path, path.with_name(path.name + "-wal"), path.with_name(path.name + "-shm")):
+        try:
+            if p.exists():
+                p.chmod(0o600)
+        except OSError:
+            pass
 
 
 async def close() -> None:

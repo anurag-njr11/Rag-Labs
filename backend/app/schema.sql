@@ -260,3 +260,21 @@ CREATE TABLE IF NOT EXISTS sweep_fingerprints (
     n_questions INTEGER NOT NULL,
     created_at  TEXT NOT NULL
 );
+
+-- Generate-slot LLM providers added or edited in Settings → Providers. A row named after a
+-- built-in preset overrides that preset's fields; any other row is a custom
+-- OpenAI-compatible endpoint. Empty/NULL columns mean "inherit".
+-- api_key and headers are AES-256-GCM ciphertext ("enc:v1:…", see app/vault.py); the
+-- master key lives outside the data directory.
+CREATE TABLE IF NOT EXISTS llm_providers (
+    name                TEXT PRIMARY KEY,
+    title               TEXT NOT NULL DEFAULT '',
+    base_url            TEXT NOT NULL DEFAULT '',
+    api_key             TEXT NOT NULL DEFAULT '',     -- encrypted
+    default_model       TEXT NOT NULL DEFAULT '',
+    supports_reasoning  INTEGER,                      -- NULL = inherit
+    key_required        INTEGER,                      -- NULL = inherit
+    headers             TEXT NOT NULL DEFAULT '{}',   -- encrypted JSON of extra HTTP headers
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);

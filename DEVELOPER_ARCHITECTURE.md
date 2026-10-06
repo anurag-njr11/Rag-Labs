@@ -2,7 +2,7 @@
 
 This document explains how RAGLabs actually works, as implemented in this repository, so a developer can trace any request end-to-end and make changes safely. **The source code is the source of truth.** Where `README.md`, `PRD.md`, `USER_GUIDE.md` or `IDEAS.md` describe something that does not match the code, that is called out explicitly (see Part 29, and inline "⚠ Discrepancy" notes). Nothing in this document is invented — every class, function and file path below was read from source.
 
-Stack: **FastAPI + SQLite (aiosqlite)** backend under `backend/app/`, **React 19 + TypeScript + Vite + Tailwind v4** frontend under `frontend/src/`, five embedded/local vector store engines, two LLM providers (Gemini, NVIDIA) reached through one OpenAI-compatible client.
+Stack: **FastAPI + SQLite (aiosqlite)** backend under `backend/app/`, **React 19 + TypeScript + Vite + Tailwind v4** frontend under `frontend/src/`, five embedded/local vector store engines, pluggable LLM providers for generation (built-in presets + custom endpoints) reached through one OpenAI-compatible client.
 
 ---
 
@@ -26,7 +26,7 @@ flowchart TB
         Nodes["nodes/ (parse, chunk, embed, retrieve, rerank, prompt, generate)"]
         Ingest["ingest/ (builder.py, jobs.py, loaders.py, lookup.py, document_analyzer.py)"]
         Core["core/ (pipeline.py, node.py, cache.py, runs.py, recommender.py)"]
-        LLM["llm/provider.py (Gemini / NVIDIA via OpenAI SDK)"]
+        LLM["llm/provider.py (provider registry via OpenAI SDK)"]
     end
     subgraph Data["data/ (DATA_DIR)"]
         DB[("app.db — SQLite, WAL")]
@@ -76,7 +76,7 @@ backend/app/
   engine/         Runtime orchestration for retrieval and chat, vector-store instance lifecycle, version/build sync
   nodes/          Concrete pipeline-stage implementations (parse/chunk/embed/retrieve/rerank/prompt/generate) — registered into core/node.py's registry
   vectorstores/   One adapter module per vector-store engine + shared base contract + Sidecar helper
-  llm/            LLM provider abstraction (Gemini/NVIDIA via one OpenAI-compatible client)
+  llm/            LLM provider registry (presets.py + env + DB) behind one OpenAI-compatible client
   config.py       Settings (env vars, paths)
   db.py           aiosqlite connection, schema bootstrap, helpers (new_id, now_iso, tx, loads/dumps)
   schema.sql      All table DDL (idempotent, IF NOT EXISTS — no separate migration system)
@@ -542,7 +542,9 @@ No escaping anywhere (question and chunk text are interpolated verbatim) — not
 
 **Files**: `backend/app/nodes/generate.py` (node wrapper) + `backend/app/llm/provider.py` (provider abstraction). Slot `"generate"` (`instant`).
 
-**Provider abstraction**: not an ABC — a single `Provider` frozen dataclass with computed `base_url`/`api_key`/`default_model`/`default_embed_model` properties reading from `Settings`. `PROVIDERS = {"gemini": ..., "nvidia": ...}` — exactly two, both reached through **one shared `AsyncOpenAI` client type** since both expose OpenAI-compatible endpoints (`gemini_base_url` default `https://generativelanguage.googleapis.com/v1beta/openai/`; `nvidia_base_url` default `https://integrate.api.nvidia.com/v1`). No direct OpenAI/Anthropic/Azure support exists.
+**Provider registry**: not an ABC — a single `Provider` frozen dataclass (base URL, key, default model, `key_required`, `supports_reasoning`, extra headers, `source`), all reached through **one shared `AsyncOpenAI` client type**, so any OpenAI-compatible endpoint works. Providers are merged field by field from three sources: built-in presets (`llm/presets.py`: Gemini, NVIDIA, OpenAI, Anthropic, Groq, Mistral, OpenRouter, Together, DeepSeek, Ollama, LM Studio) → environment/.env (`<NAME>_API_KEY`, `<NAME>_BASE_URL`, `<NAME>_DEFAULT_MODEL`, plus `LLM_PROVIDERS` JSON for custom endpoints) → the `llm_providers` table (Settings → Providers UI, `POST/PATCH/DELETE /api/providers`). `PROVIDERS` holds the offered ones (Gemini and NVIDIA always, others once configured) and is mutated in place by `refresh()`; `nodes/generate.py:sync_providers` (registered via `llm.on_change`) re-registers one Generate node type per provider, so adding a provider makes it selectable without a restart. Providers that don't declare `supports_reasoning` default `reasoning_effort` to `"default"` (send nothing). The Embed slot's `api` type still only uses Gemini/NVIDIA (see IDEAS.md §10.6).
+
+**Secrets** (`app/vault.py`): `api_key` and `headers` in `llm_providers` are AES-256-GCM ciphertext (`enc:v1:`, AAD = `llm_providers:<name>:<column>`, so ciphertexts can't be swapped between rows). Master key: `RAGLABS_SECRET_KEY`, else an owner-only key file in the user config dir (`RAGLABS_SECRET_KEY_FILE` overrides) — never in `data/`. Plaintext rows from before encryption are re-encrypted on `load()`; an undecryptable row disables only that provider (its ciphertext is kept until the key is re-entered). `vault.redact()` scrubs every configured secret plus credential-shaped strings and is applied to `friendly_error`, stored run/eval/job errors, and every log record (`RedactingFilter`). `Provider` hides secrets from `repr`; `public()` masks URL credentials. Saving refuses credentials inside `base_url`, and refuses a base-URL change unless the key/headers are re-entered (so a stored key can't be redirected); `/api/providers/test` only reuses stored secrets for the provider's own URL. SQLite runs with `secure_delete=ON` and owner-only file permissions; `TrustedHostMiddleware` (`ALLOWED_HOSTS`) blocks DNS rebinding.
 
 **Config** (`GenerateConfig`): `model` (empty ⇒ resolved dynamically), `temperature` (0.2 default, 0–2), `top_p` (1.0, 0.01–1, advanced), `max_tokens` (4096, 16–32768, "includes any hidden reasoning"), `reasoning_effort` (`default|none|low|medium|high`, advanced — source comment records a measured benchmark: `"none"` cut first-token time ~5x on gemini-2.5-flash).
 
@@ -922,6 +924,9 @@ erDiagram
 | POST | `/api/pipelines/validate` | Validate an arbitrary pipeline config (body `{"config": ...}`) |
 | GET | `/api/providers` | LLM provider list + availability |
 | GET | `/api/providers/{name}/models?kind=chat\|embed` | Model list for a provider |
+| GET | `/api/providers/presets` | Every built-in preset + state |
+| POST/PATCH/DELETE | `/api/providers[/{name}]` | Add / edit / forget a UI-managed provider |
+| POST | `/api/providers/{name}/test`, `/api/providers/test` | Connection check (saved / draft settings) |
 | GET | `/api/jobs/{job_id}` | Poll a background job's status |
 | GET | `/api/jobs/{job_id}/events` | **SSE** job progress stream |
 | GET | `/api/projects/{project_id}/jobs` | List active jobs for a project |
@@ -1150,7 +1155,7 @@ Field changed in ConfigEditor
 1. Add an entry to `FASTEMBED_MODELS` (and optionally `DEFAULT_PREFIXES`) in `backend/app/nodes/embed.py` — dimension is whatever the model reports at runtime (`embedder.embed_documents()` returns its actual shape; `builder.py` guards dimension consistency per build with a hard `RuntimeError` if it changes mid-build).
 2. No separate "register dimension" step — `dim` is derived from the first embedding computed, not declared in config.
 3. Because `embed.model` is already a rebuild-effect field, this automatically forces re-embedding for anyone who selects it — no extra cache-invalidation code needed.
-4. For a new **API provider**, add it to `PROVIDERS` in `backend/app/llm/provider.py` (needs an OpenAI-compatible `/chat/completions` and `/embeddings` endpoint) plus `PREFERRED` fallback entries and new `.env` settings in `config.py`.
+4. For a new built-in **LLM provider**, add a `Preset` to `backend/app/llm/presets.py` (needs an OpenAI-compatible `/chat/completions`; `/models` is used for listing) and optionally `PREFERRED` fallback entries in `provider.py`. Users can add any other endpoint themselves (Settings → Providers or `LLM_PROVIDERS`).
 
 ### Add a new vector store
 1. Subclass `VectorStore` in a new `backend/app/vectorstores/<name>_store.py`, implement `open/upsert/delete_documents/search/count/close/info`, set `_exact` or `exact_when`, define a `Config(StoreConfig)`.
@@ -1273,7 +1278,7 @@ Per `PRD.md`/`IDEAS.md`, Phase 1 (this codebase) explicitly excludes evaluation,
 | `Job` | `ingest/jobs.py` | In-memory background task + SSE event history |
 | `ArtifactCache` | `core/cache.py` | Content-addressed JSON cache (parse/chunk output) |
 | `ChatError` | `engine/chat.py` | Chat-turn error with a UI-facing `code` |
-| `Provider` | `llm/provider.py` | Gemini/NVIDIA OpenAI-compatible client config |
+| `Provider` | `llm/provider.py` | One OpenAI-compatible LLM endpoint (preset or custom) |
 | `Recommender` | `core/recommender.py` | Corpus-aware pipeline suggestion engine |
 | `cluster` / `similar_pairs` | `engine/health.py` | Deterministic greedy question clustering; blockwise cross-document cosine pairs |
 | `SweepError` | `engine/sweep.py` | Invalid sweep grid (unknown axis/type, over `MAX_CELLS`, nothing valid) → HTTP 422 |

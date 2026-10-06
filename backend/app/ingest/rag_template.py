@@ -39,7 +39,9 @@ MODELS_DIR = Path(os.environ.get("FASTEMBED_CACHE_PATH") or HERE / "models")
 # Windows without Developer Mode can't symlink; huggingface_hub warns about it on every download.
 os.environ.setdefault("HF_HUB_DISABLE_SYMLINKS_WARNING", "1")
 
-# --- provider defaults (mirrors RAGLabs's app/config.py Settings) -------
+# --- provider defaults ------------------------------------------------------
+# config.json's "providers" section (written by the exporter) carries each
+# provider's base URL and key variable; these are fallbacks for older exports.
 
 PROVIDER_BASE_URL = {
     "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/",
@@ -53,7 +55,6 @@ PROVIDER_DEFAULT_EMBED_MODEL = {
     "gemini": "gemini-embedding-001",
     "nvidia": "nvidia/llama-3.2-nv-embedqa-1b-v1",
 }
-PROVIDER_API_KEY_ENV = {"gemini": "GEMINI_API_KEY", "nvidia": "NVIDIA_API_KEY"}
 
 
 # --- .env loading (no python-dotenv dependency) -----------------------------
@@ -75,14 +76,34 @@ def _load_dotenv() -> None:
 _load_dotenv()
 
 
-def _require_key(provider: str) -> str:
-    env = PROVIDER_API_KEY_ENV[provider]
+def _provider(name: str) -> dict[str, Any]:
+    info = dict(load_config().get("providers", {}).get(name, {}))
+    info.setdefault("base_url", PROVIDER_BASE_URL.get(name, ""))
+    info.setdefault("api_key_env", re.sub(r"[^A-Z0-9]", "_", name.upper()) + "_API_KEY")
+    info.setdefault("key_required", True)
+    info.setdefault("default_model", PROVIDER_DEFAULT_MODEL.get(name, ""))
+    info.setdefault("default_embed_model", PROVIDER_DEFAULT_EMBED_MODEL.get(name, ""))
+    env_url = os.environ.get(info.get("base_url_env") or re.sub(r"[^A-Z0-9]", "_", name.upper()) + "_BASE_URL")
+    if env_url:
+        info["base_url"] = env_url
+    elif info.get("base_url_has_credentials"):
+        raise RuntimeError(f"Set {info['base_url_env']} in .env: the {name} URL holds credentials, "
+                           "so it was not exported.")
+    if not info["base_url"]:
+        raise RuntimeError(f"No base URL for provider {name!r} in config.json.")
+    return info
+
+
+def _client(name: str):
+    import openai
+
+    info = _provider(name)
+    env = info["api_key_env"]
     key = os.environ.get(env, "")
-    if not key:
-        raise RuntimeError(
-            f"Missing {env}. Copy .env.example to .env and add your {provider} API key."
-        )
-    return key
+    if not key and info["key_required"]:
+        raise RuntimeError(f"Missing {env}. Copy .env.example to .env and add your {name} API key.")
+    # Local servers ignore the key, but the SDK insists on one.
+    return openai.OpenAI(api_key=key or "not-needed", base_url=info["base_url"]), info
 
 
 # =============================================================================
@@ -473,12 +494,9 @@ def embed_query(question: str, as_passage: bool = False) -> np.ndarray:
         return _l2_normalize(vec[None, :])[0] if cfg.get("normalize", True) else vec
 
     if cfg["type"] == "api":
-        import openai
-
         provider = cfg["provider"]
-        key = _require_key(provider)
-        client = openai.OpenAI(api_key=key, base_url=PROVIDER_BASE_URL[provider])
-        model = cfg.get("model") or PROVIDER_DEFAULT_EMBED_MODEL[provider]
+        client, info = _client(provider)
+        model = cfg.get("model") or info["default_embed_model"]
         input_type = "passage" if as_passage else "query"
         extra = {"input_type": input_type, "truncate": "END"} if provider == "nvidia" else None
         resp = client.embeddings.create(model=model, input=[question], extra_body=extra)
@@ -788,19 +806,13 @@ def extract_citations(answer_text: str, included: list[dict[str, Any]]) -> list[
 
 
 # =============================================================================
-# Generate — mirrors app/llm/provider.py's OpenAI-compatible call path
+# Generate — mirrors app/llm/provider.py's OpenAI-compatible call path (any provider)
 # =============================================================================
 
 def _chat(messages: list[dict[str, str]], **params: Any) -> str:
     cfg = load_config()["generate"]
-    provider = cfg["type"]
-    if provider not in PROVIDER_BASE_URL:
-        raise RuntimeError(f"Unsupported generate type for standalone export: {provider!r}")
-    import openai
-
-    key = _require_key(provider)
-    client = openai.OpenAI(api_key=key, base_url=PROVIDER_BASE_URL[provider])
-    model = cfg.get("model") or PROVIDER_DEFAULT_MODEL[provider]
+    client, info = _client(cfg["type"])
+    model = cfg.get("model") or info["default_model"]
     extra = {} if cfg.get("reasoning_effort") == "default" else {"reasoning_effort": cfg.get("reasoning_effort")}
     resp = client.chat.completions.create(model=model, messages=messages, **params, **extra)
     return resp.choices[0].message.content or ""

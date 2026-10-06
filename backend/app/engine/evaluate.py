@@ -17,7 +17,7 @@ import re
 import time
 from typing import Any
 
-from .. import db
+from .. import db, vault
 from ..core import evalmetrics as M
 from ..core.node import RunContext, TraceEvent, build_node
 from ..core.pipeline import index_config_hash
@@ -215,7 +215,8 @@ async def generate_set(job: Job, set_id: str, project_id: str, version: dict[str
         return await _generate_set(job, set_id, project_id, version, size)
     except Exception as e:
         async with db.tx() as c:
-            await c.execute("UPDATE eval_sets SET status='failed', error=? WHERE id=?", (str(e), set_id))
+            await c.execute("UPDATE eval_sets SET status='failed', error=? WHERE id=?",
+                            (vault.redact(str(e)), set_id))
         raise
 
 
@@ -409,7 +410,8 @@ async def run_eval(job: Job, run_id: str, project_id: str, set_id: str, version:
         return await _run_eval(job, run_id, project_id, set_id, version, answers, judge)
     except Exception as e:
         async with db.tx() as c:
-            await c.execute("UPDATE eval_runs SET status='failed', error=? WHERE id=?", (str(e), run_id))
+            await c.execute("UPDATE eval_runs SET status='failed', error=? WHERE id=?",
+                            (vault.redact(str(e)), run_id))
         raise
 
 

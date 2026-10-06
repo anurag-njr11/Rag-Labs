@@ -10,7 +10,7 @@ import re
 import time
 from typing import Any, AsyncIterator
 
-from .. import db
+from .. import db, vault
 from ..core import runs
 from ..core.node import RunContext, build_node
 from ..core.pipeline import index_config_hash
@@ -133,7 +133,12 @@ async def answer(project_id: str, version: dict[str, Any], question: str) -> Asy
         result = {"retrieved": results, "messages": built["messages"]}
         yield {"type": "retrieval", "results": results, "trace": list(trace)}
 
-        gen = build_node("generate", cfg["generate"])
+        try:
+            gen = build_node("generate", cfg["generate"])
+        except KeyError:  # its provider was removed from Settings → Providers
+            raise llm.ProviderError(
+                f"LLM provider {cfg['generate']['type']!r} is no longer configured. Re-add it in "
+                "Settings → Providers, or pick another model in Configure → Generate.") from None
         usage: dict[str, Any] = {}
         t_gen = time.perf_counter()
         first_token_ms = None
@@ -169,6 +174,7 @@ async def answer(project_id: str, version: dict[str, Any], question: str) -> Asy
         raise
     except Exception as e:
         msg = str(e) if isinstance(e, (llm.ProviderError, ChatError, ModelLoadError)) else f"{type(e).__name__}: {e}"
+        msg = vault.redact(msg)
         await runs.finish_run(run_id, ctx, status="error", answer=answer_text, error=msg, result=result,
                               latency_ms=(time.perf_counter() - t0) * 1000)
         raise ChatError(msg) from e

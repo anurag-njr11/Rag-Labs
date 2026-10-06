@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from .. import db
+from .. import db, vault
 from .node import RunContext
 
 
@@ -45,7 +45,7 @@ async def finish_run(
             "UPDATE runs SET status=?, answer=?, error=?, result=?, latency_ms=?,"
             " tokens_in=?, tokens_out=?, cost_usd=? WHERE id=?",
             (
-                status, answer, error, db.dumps(result or {}),
+                status, answer, vault.redact(error) if error else error, db.dumps(result or {}),
                 latency_ms if latency_ms is not None else totals["ms"],
                 totals["tokens_in"], totals["tokens_out"], totals["cost_usd"], run_id,
             ),

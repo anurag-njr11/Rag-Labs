@@ -205,10 +205,15 @@ class Recommender:
         else:
             gen_temp = 0.2
             gen_reasoning = "low"
-            reasoning["generate"] = "Temperature=0.2 balances focus + diversity. Low reasoning effort (~0.5x overhead) for speed. Gemini default model."
+            reasoning["generate"] = "Temperature=0.2 balances focus + diversity. Low reasoning effort (~0.5x overhead) for speed. The first configured provider's default model."
 
+        from ..llm import provider as llm
+
+        gen_type = next((p for p in llm.PROVIDERS if llm.availability(p)[0]), "gemini")
+        if gen_type in llm.PROVIDERS and not llm.PROVIDERS[gen_type].supports_reasoning:
+            gen_reasoning = "default"  # the endpoint may reject reasoning_effort
         generate_config = {
-            "type": "gemini",
+            "type": gen_type,
             "model": "",  # empty = use provider default
             "temperature": gen_temp,
             "top_p": 1.0,

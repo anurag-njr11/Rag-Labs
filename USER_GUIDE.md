@@ -23,9 +23,12 @@
 
 - [uv](https://docs.astral.sh/uv/) (Python fetched automatically)
 - Node.js 20+
-- A free LLM key (optional for retrieval; required for chat):
-  - [Gemini API](https://aistudio.google.com/apikey) or
-  - [NVIDIA](https://build.nvidia.com)
+- An LLM (optional for retrieval; required for chat), any of:
+  - a free [Gemini API](https://aistudio.google.com/apikey) or [NVIDIA](https://build.nvidia.com) key
+  - a key for OpenAI, Anthropic, Groq, Mistral, OpenRouter, Together or DeepSeek
+  - a local server (Ollama, LM Studio) or any OpenAI-compatible endpoint (vLLM, LiteLLM, a gateway)
+
+  Connect it in the app via **LLM providers** (top bar), or in `.env` — see `.env.example`.
 
 ### Run Locally
 

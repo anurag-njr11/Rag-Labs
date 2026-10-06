@@ -224,6 +224,11 @@ def register(
     return deco
 
 
+def unregister(slot: str, type_: str) -> None:
+    """Remove a node type (for types registered at runtime, e.g. LLM providers)."""
+    _REGISTRY[slot].pop(type_, None)
+
+
 def get_spec(slot: str, type_: str) -> NodeSpec:
     try:
         return _REGISTRY[slot][type_]
