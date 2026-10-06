@@ -100,6 +100,21 @@ def test_front_matter_okf_fields():
     assert front_matter("---\nJust a rule\n---\n") == {}  # no key: value line, not front matter
 
 
+async def test_front_matter_is_metadata_not_a_chunk(project):  # noqa: F811
+    from app.ingest.loaders import strip_front_matter
+
+    assert strip_front_matter("---\nJust a rule\n---\nBody") == "---\nJust a rule\n---\nBody"  # same rules
+    assert strip_front_matter("\n---\na: b\n---\nBody") == "\n---\na: b\n---\nBody"
+    doc, _ = await create_document("p", "fm.md", b"---\nstatus: draft\nstale_after: 2025-01-31\n---\n"
+                                              b"# Front matter test\n\nThe quarterly zebra audit runs on Fridays.\n")
+    await builder.sync_build(project, _cfg("numpy"))
+    texts = [r["text"] for r in await db.fetch_all("SELECT text FROM chunks WHERE document_id=?", (doc["id"],))]
+    assert texts and any("zebra audit" in t for t in texts)
+    assert not any("stale_after:" in t or "status: draft" in t for t in texts)
+    okf = await db.fetch_one("SELECT metadata FROM document_okf WHERE document_id=?", (doc["id"],))
+    assert db.loads(okf["metadata"]) == {"status": "draft", "stale_after": "2025-01-31"}
+
+
 def test_staleness_reasons_and_order():
     from datetime import date
 

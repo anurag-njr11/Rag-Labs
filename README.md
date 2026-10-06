@@ -8,8 +8,6 @@ passages were found, by which search path, and what each step cost.
 **Measure it, too:** test questions written from your own documents, sweeps into a
 quality-vs-cost leaderboard, and a content backlog of what your documents can't answer.
 
-![Auto-Optimize on the Pydantic Docs demo: the sweep runs, the leaderboard ranks 8 configurations on a Pareto chart, and the winner is promoted](docs/phase2-demo.gif)
-
 **v2.0** — **Phase 1 (Build & Chat)** and **Phase 2 (Measure & Optimize)** are complete; see
 [`CHANGELOG.md`](CHANGELOG.md). [`PRD.md`](PRD.md) has the full plan (§7.0: what Phase 2 built)
 and [`IDEAS.md`](IDEAS.md) the idea catalogue.
@@ -30,10 +28,10 @@ and [`IDEAS.md`](IDEAS.md) the idea catalogue.
 | Stage | Options |
 |---|---|
 | Parse | PyMuPDF4LLM (Markdown + tables), PyMuPDF (plain text, optional OCR), pypdf |
-| Chunk | fixed, recursive, sentence packing, structure-aware (headings) — size, overlap, unit… Tables are never split. |
+| Chunk | fixed, recursive, sentence packing, structure-aware (headings), semantic (embedding breakpoints) — size, overlap, unit… Tables are never split. |
 | Embed | local fastembed models (bge-small/base, MiniLM, arctic, nomic, mxbai) or Gemini / NVIDIA APIs |
 | Vector store | NumPy (exact), FAISS (Flat / IVF / HNSW), Chroma, Qdrant (local mode), LanceDB (none / IVF / PQ / HNSW) |
-| Retrieve | dense, keyword (BM25), hybrid, fused (+ exact error-message/code-symbol matching); RRF or weighted fusion, MMR, thresholds |
+| Retrieve | dense, keyword (BM25), hybrid, fused (+ exact error-message/code-symbol matching); RRF or weighted fusion, MMR, thresholds; query expansion (multi-query, HyDE); neighbouring-chunk context window |
 | Rerank | off, or local cross-encoders |
 | Prompt | cited answer, concise, detailed, or your own template; context budget |
 | Generate | Google Gemini or NVIDIA (free tiers); model, temperature, top-p, max tokens |
@@ -94,7 +92,7 @@ http://127.0.0.1:8000/docs.
 ## Tests
 
 ```bash
-cd backend && uv run pytest -q     # 85 tests: contracts, all vector stores, pipeline rules, retrieval, eval, answer grading, sweeps, corpus health, eval-set editing
+cd backend && uv run pytest -q     # 110+ tests: contracts, all vector stores, pipeline rules, retrieval, eval, answer grading, sweeps, corpus health, eval-set editing
 cd frontend && npm run build       # type-check + production build
 ```
 

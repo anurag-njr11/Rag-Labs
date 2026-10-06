@@ -11,10 +11,12 @@ matches the live system for the same pipeline configuration.
 Usage:
     python rag.py "your question"
     python rag.py                  # interactive REPL
+    uvicorn app.main:app           # HTTP API (POST /chat, GET /health)
 
 Also importable:
-    from rag import answer
-    answer("your question")
+    from rag import answer, ask
+    answer("your question")        # formatted text
+    ask("your question")           # {"answer": ..., "sources": [...]}
 """
 
 from __future__ import annotations
@@ -134,7 +136,8 @@ class KeywordIndex:
     """In-memory SQLite FTS5 table over the exported chunk text (stdlib only)."""
 
     def __init__(self, chunks: list[dict[str, Any]]):
-        self.conn = sqlite3.connect(":memory:")
+        # Read-only after construction, so the HTTP server's worker threads can share it.
+        self.conn = sqlite3.connect(":memory:", check_same_thread=False)
         self.conn.execute("CREATE VIRTUAL TABLE chunks_fts USING fts5(text, chunk_id UNINDEXED)")
         self.conn.executemany(
             "INSERT INTO chunks_fts (text, chunk_id) VALUES (?, ?)",
@@ -284,13 +287,15 @@ def query_keys(question: str) -> list[tuple[str, str]]:
 
 class ExactIndex:
     """Mirrors the `lookup_index` table: key -> [(chunk_id, kind)], matched by
-    key alone (any kind), same as `exact_search`'s `WHERE key IN (...)`."""
+    key alone, same as `exact_search`'s `WHERE kind != 'symbol' AND key IN (...)`.
+    Chunk-side symbols are incidental mentions that keyword search already ranks."""
 
     def __init__(self, chunks: list[dict[str, Any]]):
         self.by_key: dict[str, list[tuple[str, str]]] = {}
         for c in chunks:
             for kind, key in extract_keys(c["text"], c.get("heading_path") or ""):
-                self.by_key.setdefault(key, []).append((c["id"], kind))
+                if kind != "symbol":
+                    self.by_key.setdefault(key, []).append((c["id"], kind))
 
     def search(self, question: str, limit: int) -> tuple[list[tuple[str, float]], dict[str, list[str]]]:
         keys = query_keys(question)
@@ -455,12 +460,14 @@ def _fastembed_model(name: str):
     return TextEmbedding(model_name=name, cache_dir=str(MODELS_DIR))
 
 
-def embed_query(question: str) -> np.ndarray:
+def embed_query(question: str, as_passage: bool = False) -> np.ndarray:
+    """Embed a question; `as_passage` embeds it like a document instead (HyDE's hypothetical answer)."""
     cfg = load_config()["embed"]
     if cfg["type"] == "fastembed":
         model_name = cfg["model"]
-        dq, _ = DEFAULT_PREFIXES.get(model_name, ("", ""))
-        prefix = cfg.get("query_prefix") if cfg.get("query_prefix") is not None else dq
+        dq, dd = DEFAULT_PREFIXES.get(model_name, ("", ""))
+        field, default = ("doc_prefix", dd) if as_passage else ("query_prefix", dq)
+        prefix = cfg.get(field) if cfg.get(field) is not None else default
         model = _fastembed_model(model_name)
         vec = np.array(list(model.embed([prefix + question])), dtype=np.float32)[0]
         return _l2_normalize(vec[None, :])[0] if cfg.get("normalize", True) else vec
@@ -472,7 +479,8 @@ def embed_query(question: str) -> np.ndarray:
         key = _require_key(provider)
         client = openai.OpenAI(api_key=key, base_url=PROVIDER_BASE_URL[provider])
         model = cfg.get("model") or PROVIDER_DEFAULT_EMBED_MODEL[provider]
-        extra = {"input_type": "query", "truncate": "END"} if provider == "nvidia" else None
+        input_type = "passage" if as_passage else "query"
+        extra = {"input_type": input_type, "truncate": "END"} if provider == "nvidia" else None
         resp = client.embeddings.create(model=model, input=[question], extra_body=extra)
         vec = np.array(resp.data[0].embedding, dtype=np.float32)
         return _l2_normalize(vec[None, :])[0] if cfg.get("normalize", True) else vec
@@ -520,31 +528,84 @@ MODE_PATHS = {
 }
 
 
+MULTI_QUERY_PROMPT = ("Rewrite this search question {n} different ways: same meaning, different words. "
+                      "One rewrite per line, no numbering, nothing else.\n\nQuestion: {q}")
+HYDE_PROMPT = ("Write a short passage (3-5 sentences) that answers this question the way the product's "
+               "documentation would. Plain text, no preamble.\n\nQuestion: {q}")
+_BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
+
+
+def expand_query(question: str, rc: dict[str, Any], paths: tuple[str, ...]) -> tuple[list[str], str | None]:
+    """-> (rewrites for multi_query, hypothetical passage for hyde). ([], None) = plain question,
+    including when the LLM call fails. Ported from app/engine/retrieval.py `expand_query`."""
+    mode = rc.get("query_expansion", "none")
+    if mode == "none" or (mode == "hyde" and "dense" not in paths):
+        return [], None
+    n = rc.get("expansion_queries", 3)
+    prompt = MULTI_QUERY_PROMPT.format(n=n, q=question) if mode == "multi_query" else HYDE_PROMPT.format(q=question)
+    try:
+        text = complete(prompt, max_tokens=512)
+    except Exception:
+        return [], None
+    if mode == "hyde":
+        return [], text.strip() or None
+    lines = (_BULLET.sub("", ln).strip() for ln in text.splitlines())
+    rewrites = list(dict.fromkeys(ln for ln in lines if ln and ln.lower() != question.lower()))
+    return rewrites[:n], None
+
+
+@lru_cache(maxsize=1)
+def chunks_by_position() -> dict[tuple[str, int], dict[str, Any]]:
+    return {(c["document_id"], c["ordinal"]): c for c in load_chunks()}
+
+
+def add_neighbours(results: list[dict[str, Any]], window: int) -> None:
+    """Set each result's `window_text`: itself plus `window` chunks either side (same document,
+    chunk order). Only the prompt packer reads it; `text` stays the hit's own, so rerank still
+    scores the chunk that was actually retrieved. Ported from app/engine/retrieval.py."""
+    pos = chunks_by_position()
+    for r in results:
+        rows = [pos[k] for o in range(r["ordinal"] - window, r["ordinal"] + window + 1)
+                if (k := (r["document_id"], o)) in pos]
+        r["window_text"] = "\n\n".join(x["text"] for x in rows)
+        r["window"] = [x["ordinal"] for x in rows]
+
+
 def retrieve(question: str) -> list[dict[str, Any]]:
     cfg = load_config()
     rc = cfg["retrieve"]
-    paths = MODE_PATHS[cfg["retrieve"]["type"]]
-    lists: dict[str, Ranked] = {}
+    paths = MODE_PATHS[rc["type"]]
+    lists: dict[str, Ranked] = {}  # "dense", "keyword", "exact"; "dense~1"… = multi_query rewrite 1…
     exact_keys: dict[str, list[str]] = {}
     query_vec: np.ndarray | None = None
+    rewrites, passage = expand_query(question, rc, paths)
+    queries = [question, *rewrites]
+
+    def key(path: str, i: int) -> str:
+        return path if i == 0 else f"{path}~{i}"
 
     if "dense" in paths or rc["mmr"]:
-        query_vec = embed_query(question)
+        # HyDE: the hypothetical answer is a passage, so embed it like one.
+        query_vec = embed_query(passage, as_passage=True) if passage else embed_query(question)
     if "dense" in paths:
-        lists["dense"] = dense_index().search(query_vec, rc["candidates"], rc["min_score"])
+        for i, vec in enumerate([query_vec, *(embed_query(q) for q in rewrites)]):
+            lists[key("dense", i)] = dense_index().search(vec, rc["candidates"], rc["min_score"])
     if "keyword" in paths:
-        lists["keyword"] = keyword_index().search(question, rc["candidates"])
+        for i, q in enumerate(queries):
+            lists[key("keyword", i)] = keyword_index().search(q, rc["candidates"])
     if "exact" in paths:
         lists["exact"], found = exact_index().search(question, rc["candidates"])
         exact_keys.update(found)
 
-    weights = {"dense": rc["dense_weight"], "keyword": rc["keyword_weight"], "exact": rc["exact_weight"]}
-    if len(paths) == 1:
-        fused = lists.get(paths[0], [])
+    base = {"dense": rc["dense_weight"], "keyword": rc["keyword_weight"], "exact": rc["exact_weight"]}
+    ordered = {k: lists[k] for k in sorted(lists)}  # sorted: float sums independent of path order
+    weights = {k: base[k.split("~")[0]] for k in ordered}
+    if len(ordered) == 1:
+        fused = next(iter(ordered.values()))
     elif rc["fusion"] == "rrf":
-        fused = rrf(lists, weights, rc["rrf_k"])
+        fused = rrf(ordered, weights, rc["rrf_k"])
     else:
-        fused = weighted(lists, weights)
+        fused = weighted(ordered, weights)
 
     pinned: list[str] = []
     if rc["pin_definitions"] and "exact" in lists:
@@ -565,8 +626,13 @@ def retrieve(question: str) -> list[dict[str, Any]]:
         top = fused[: rc["top_k"]]
 
     by_id = chunks_by_id()
-    per_path = {p: {cid: (rank, score) for rank, (cid, score) in enumerate(lst, start=1)}
-                for p, lst in lists.items()}
+    # Per base path, a chunk's best rank over the question and its rewrites.
+    per_path: dict[str, dict[str, tuple[int, float]]] = {}
+    for k, lst in ordered.items():
+        best = per_path.setdefault(k.split("~")[0], {})
+        for rank, (cid, score) in enumerate(lst, start=1):
+            if cid not in best or rank < best[cid][0]:
+                best[cid] = (rank, score)
     results = []
     for rank, (cid, score) in enumerate(top, start=1):
         c = by_id.get(cid)
@@ -577,6 +643,8 @@ def retrieve(question: str) -> list[dict[str, Any]]:
             **c, "rank": rank, "score": round(score, 6), "scores": scores,
             "found_by": sorted(scores), "exact_keys": exact_keys.get(cid, []), "pinned": cid in pinned,
         })
+    if rc.get("context_window") and results:
+        add_neighbours(results, rc["context_window"])
     return results
 
 
@@ -625,10 +693,15 @@ def source_label(c: dict[str, Any]) -> str:
     return " · ".join(parts)
 
 
+def packed_text(c: dict[str, Any]) -> str:
+    """What the prompt carries for a chunk: its neighbour window (retrieve.context_window) if set."""
+    return c.get("window_text") or c["text"]
+
+
 def _pack(chunks: list[dict[str, Any]], budget: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
     used, included, dropped = 0, [], []
     for c in chunks:
-        t = approx_tokens(c["text"])
+        t = approx_tokens(packed_text(c))
         if included and used + t > budget:
             dropped.append(c)
             continue
@@ -641,7 +714,7 @@ def _context_text(included: list[dict[str, Any]], source_labels: bool) -> str:
     blocks = []
     for i, c in enumerate(included, start=1):
         head = f"[{i}] ({source_label(c)})" if source_labels else f"[{i}]"
-        blocks.append(f"{head}\n{c['text']}")
+        blocks.append(f"{head}\n{packed_text(c)}")
     return "\n\n".join(blocks)
 
 
@@ -718,7 +791,7 @@ def extract_citations(answer_text: str, included: list[dict[str, Any]]) -> list[
 # Generate — mirrors app/llm/provider.py's OpenAI-compatible call path
 # =============================================================================
 
-def generate(messages: list[dict[str, str]]) -> str:
+def _chat(messages: list[dict[str, str]], **params: Any) -> str:
     cfg = load_config()["generate"]
     provider = cfg["type"]
     if provider not in PROVIDER_BASE_URL:
@@ -729,36 +802,53 @@ def generate(messages: list[dict[str, str]]) -> str:
     client = openai.OpenAI(api_key=key, base_url=PROVIDER_BASE_URL[provider])
     model = cfg.get("model") or PROVIDER_DEFAULT_MODEL[provider]
     extra = {} if cfg.get("reasoning_effort") == "default" else {"reasoning_effort": cfg.get("reasoning_effort")}
-    resp = client.chat.completions.create(
-        model=model, messages=messages, temperature=cfg["temperature"], top_p=cfg["top_p"],
-        max_tokens=cfg["max_tokens"], **extra,
-    )
+    resp = client.chat.completions.create(model=model, messages=messages, **params, **extra)
     return resp.choices[0].message.content or ""
+
+
+def generate(messages: list[dict[str, str]]) -> str:
+    cfg = load_config()["generate"]
+    return _chat(messages, temperature=cfg["temperature"], top_p=cfg["top_p"], max_tokens=cfg["max_tokens"])
+
+
+def complete(prompt: str, max_tokens: int) -> str:
+    """One short call at temperature 0 (query expansion)."""
+    return _chat([{"role": "user", "content": prompt}], temperature=0, max_tokens=max_tokens)
 
 
 # =============================================================================
 # Public entry points
 # =============================================================================
 
-def answer(question: str) -> str:
-    """Retrieve, rerank, build the prompt, and generate an answer for `question`."""
+def ask(question: str) -> dict[str, Any]:
+    """Retrieve, rerank, build the prompt, and generate an answer for `question`.
+    -> {"answer": str, "sources": [{n, chunk_id, document, source_url, page_start, page_end,
+    heading_path, cited, spans}]}: the chunks the prompt carried, numbered as the answer cites them."""
     question = question.strip()
     if not question:
-        return "Ask a question."
+        return {"answer": "Ask a question.", "sources": []}
 
     results = retrieve(question)
     results = rerank(question, results)
     built = build_prompt(question, results)
     text = generate(built["messages"])
-    citations = extract_citations(text, built["included"])
+    cites = {c["n"]: c for c in extract_citations(text, built["included"])}
+    sources = [{
+        "n": i, "chunk_id": c["id"], "document": c["document"], "source_url": c.get("source_url"),
+        "page_start": c["page_start"], "page_end": c["page_end"], "heading_path": c["heading_path"],
+        "cited": i in cites, "spans": cites[i]["spans"] if i in cites else [],
+    } for i, c in enumerate(built["included"], start=1)]
+    return {"answer": text, "sources": sources}
 
-    lines = [text]
-    if built["included"]:
+
+def answer(question: str) -> str:
+    """`ask`, formatted for the terminal: the answer, then the numbered sources (* = cited)."""
+    res = ask(question)
+    lines = [res["answer"]]
+    if res["sources"]:
         lines.append("\nSources:")
-        cited_ns = {c["n"] for c in citations}
-        for i, c in enumerate(built["included"], start=1):
-            mark = "*" if i in cited_ns else " "
-            lines.append(f" [{i}]{mark} {source_label(c)}")
+        for s in res["sources"]:
+            lines.append(f" [{s['n']}]{'*' if s['cited'] else ' '} {source_label(s)}")
     return "\n".join(lines)
 
 

@@ -1,10 +1,11 @@
-"""Standalone export: bundle a built version into a plug-and-play zip.
+"""Standalone export: bundle a built version into a plug-and-play zip (FR-2.34).
 
 The zip is self-contained — README, requirements.txt, .env.example,
-config.json, the build's chunks/vectors, and a `rag.py` runtime ported from
+config.json, the build's chunks/vectors, a `rag.py` runtime ported from
 the live engine (`app/ingest/rag_template.py`) that imports nothing from the
-`app` package and never requires whichever vector-store library the project
-happened to use (retrieval is brute-force NumPy over the exported vectors).
+RAGLabs `app` package and never requires whichever vector-store library the
+project happened to use (retrieval is brute-force NumPy over the exported
+vectors), and a FastAPI server around it (`app/main.py`, Dockerfile, compose).
 """
 
 from __future__ import annotations
@@ -47,8 +48,62 @@ async def resolved_config(version: dict[str, Any]) -> PipelineConfig:
     return cfg
 
 
+SERVER_MAIN = '''"""HTTP API for this export: `uvicorn app.main:app` from the export folder (see README)."""
+
+from fastapi import FastAPI, HTTPException
+from pydantic import BaseModel, Field
+
+import rag
+
+app = FastAPI(title="RAGLabs export")
+
+
+class ChatRequest(BaseModel):
+    question: str = Field(min_length=1, max_length=4000)
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok"}
+
+
+@app.post("/chat")
+def chat(req: ChatRequest) -> dict:
+    """-> {"answer": str, "sources": [...]}. Sync, so FastAPI runs it in a worker thread."""
+    try:
+        return rag.ask(req.question)
+    except Exception as e:  # missing API key, provider error: say what, not a bare 500
+        raise HTTPException(502, str(e)) from e
+'''
+
+DOCKERFILE = """FROM python:3.12-slim
+WORKDIR /srv
+COPY requirements.txt .
+RUN pip install --no-cache-dir -r requirements.txt
+COPY . .
+EXPOSE 8000
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"]
+"""
+
+COMPOSE = """services:
+  rag:
+    build: .
+    ports:
+      - "8000:8000"
+    env_file:
+      - path: .env
+        required: false
+    volumes:
+      - ./models:/srv/models  # local models downloaded on first run survive rebuilds
+    restart: unless-stopped
+"""
+
+# Keys stay out of the image (compose passes .env at run time); local caches stay out of the build context.
+DOCKERIGNORE = ".env\n.venv/\nmodels/\n__pycache__/\n"
+
+
 def _requirements(cfg: PipelineConfig) -> str:
-    pkgs: dict[str, str] = {"numpy": "numpy>=2.5.3"}
+    pkgs: dict[str, str] = {"numpy": "numpy>=2.5.3", "fastapi": "fastapi>=0.141.1", "uvicorn": "uvicorn>=0.53.0"}
     if cfg["embed"]["type"] == "fastembed" or cfg["rerank"]["type"] == "cross_encoder":
         pkgs["fastembed"] = "fastembed>=0.8.1"
     if cfg["embed"]["type"] == "api" or cfg["generate"]["type"] in ("gemini", "nvidia"):
@@ -96,16 +151,35 @@ search over the vectors in `data/vectors.npy`, which is fine at this corpus's ch
 Copy `.env.example` to `.env` and fill in the API key(s) it lists (only needed if this
 pipeline uses an API embedder or generator).
 
-## Run
+## Run from the command line
 
     python rag.py "your question here"
 
 With no arguments, `rag.py` starts an interactive prompt (empty line or Ctrl+C to quit).
-It's also importable: `from rag import answer; answer("...")`.
+It's also importable: `from rag import answer, ask` (`ask` returns `{{answer, sources}}`).
 {first_run}
+## Run as an HTTP API
+
+    uvicorn app.main:app --port 8000
+
+Or with Docker (reads `.env` at run time; it is not copied into the image):
+
+    docker compose up --build
+
+Endpoints:
+
+- `GET /health` → `{{"status": "ok"}}`
+- `POST /chat` with `{{"question": "..."}}` → `{{"answer": "...", "sources": [{{n, chunk_id, document,
+  source_url, page_start, page_end, heading_path, cited, spans}}]}}` — `sources` are the passages the
+  model saw, numbered as the answer cites them (`[1]`, `[2]`…). A provider error (e.g. a missing
+  API key) returns 502 with the message in `detail`.
+
 ## Contents
 
-- `rag.py` — the standalone runtime (retrieval, fusion, rerank, prompt, generate).
+- `rag.py` — the standalone runtime (query expansion, retrieval, fusion, context window, rerank,
+  prompt, generate).
+- `app/main.py` — the FastAPI server (`/health`, `/chat`) around `rag.ask`.
+- `Dockerfile`, `docker-compose.yml`, `.dockerignore` — container build and one-service compose file.
 - `config.json` — the resolved pipeline configuration this was exported from.
 - `data/chunks.jsonl` — one JSON object per indexed chunk.
 - `data/vectors.npy` — float32 embedding matrix, row-aligned with `chunks.jsonl`.
@@ -118,7 +192,8 @@ async def build_export_zip(project: dict[str, Any], version: dict[str, Any], bui
     embed_key = embedder.embed_key()
 
     rows = await db.fetch_all(
-        "SELECT c.id, c.text, c.text_sha, c.page_start, c.page_end, c.heading_path, c.is_table,"
+        "SELECT c.id, c.document_id, c.ordinal, c.text, c.text_sha, c.page_start, c.page_end, c.heading_path,"
+        " c.is_table,"
         " d.filename AS document, d.source_url"
         " FROM chunks c JOIN documents d ON d.id = c.document_id"
         " WHERE c.build_id = ? ORDER BY d.filename, c.ordinal",
@@ -149,7 +224,8 @@ async def build_export_zip(project: dict[str, Any], version: dict[str, Any], bui
             continue
         matrix[i] = vec
         chunk_lines.append(json.dumps({
-            "id": r["id"], "document": r["document"], "source_url": r["source_url"],
+            "id": r["id"], "document_id": r["document_id"], "ordinal": r["ordinal"],  # context_window
+            "document": r["document"], "source_url": r["source_url"],
             "page_start": r["page_start"], "page_end": r["page_end"],
             "heading_path": r["heading_path"], "is_table": bool(r["is_table"]), "text": r["text"],
         }, ensure_ascii=False))
@@ -170,4 +246,9 @@ async def build_export_zip(project: dict[str, Any], version: dict[str, Any], bui
         zf.writestr("data/chunks.jsonl", "\n".join(chunk_lines) + ("\n" if chunk_lines else ""))
         zf.writestr("data/vectors.npy", vectors_buf.getvalue())
         zf.write(_RAG_TEMPLATE_PATH, "rag.py")
+        zf.writestr("app/__init__.py", "")
+        zf.writestr("app/main.py", SERVER_MAIN)
+        zf.writestr("Dockerfile", DOCKERFILE)
+        zf.writestr("docker-compose.yml", COMPOSE)
+        zf.writestr(".dockerignore", DOCKERIGNORE)
     return buf.getvalue()

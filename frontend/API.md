@@ -120,6 +120,7 @@ interface Change { slot: Slot; field: string; before: unknown; after: unknown; e
 | `GET /api/projects/{id}/suggestions` | | `{source: 'eval'\|'headings'\|'recent'\|'none', questions: string[]}` — up to 3 starter questions from the latest eval set, else section headings of the active build, else recent questions |
 | `POST /api/projects/{id}/versions/{vid}/activate` | | `{version, job_id}` — also logged in `activations` |
 | `POST /api/projects/{id}/versions/{vid}/build` | | `{job_id}` (409 if no documents) |
+| `GET /api/projects/{id}/versions/{vid}/export` | | `application/zip` download `{slug}-v{n}-rag.zip` (409 until the version has a ready, synced build): `rag.py`, `app/main.py` (FastAPI: `POST /chat {question}` → `{answer, sources}`, `GET /health`), `requirements.txt`, `Dockerfile`, `docker-compose.yml`, `.dockerignore`, `README.md`, `.env.example`, `config.json`, `data/chunks.jsonl`, `data/vectors.npy` |
 | `GET /api/projects/{id}/builds` | | `Build[]` (id, index_config_hash, config, store_type, status, dim, chunk_count, error, stats, started_at, finished_at) |
 
 ```ts

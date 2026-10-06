@@ -336,7 +336,9 @@ Shared output contract (`BaseParser.parse(path, kind) -> dict`):
 
 **Errors**: a parse exception fails only that one document (`documents.status='failed'`, `build_documents.error` set); the rest of the build continues. Retrying requires `POST .../documents/{doc_id}/reindex` (resets status to `uploaded`).
 
-**Caching**: content-addressed on `(document.content_sha, parse-slot rebuild-effect config)` — see Part 11's trace and Part 22 (Caching).
+**Markdown front matter**: `BaseParser.parse` drops a leading front-matter block from `.md` text (`loaders.strip_front_matter`, same detection as `loaders.front_matter`: first line only, ≥1 `key: value`), so it never becomes a chunk; its OKF fields are read from the raw bytes at upload (`documents.okf_from_front_matter`).
+
+**Caching**: content-addressed on `(document.content_sha, parse-slot rebuild-effect config)` plus the parser's `revision` — bump `BaseParser.revision` (and any subclass that sets its own) when shared parse output changes, so cached parses and indexes are redone — see Part 11's trace and Part 22 (Caching).
 
 ---
 
@@ -481,7 +483,7 @@ Plain slice `fused[:top_k]` after pin/MMR — final count **before** reranking.
 - Expansions are cached in-process per `(mode, n, provider, model, question)` (`_expansions`, cleared at 2048 entries), so eval's deep pass and every sweep cell search with the same rewrites, and repeat questions cost nothing. Eval/sweep scoring with expansion on **does** make LLM calls (one per question per process).
 
 ### Context window (`context_window`, 0–3, default 0)
-The sentence-window / auto-merging equivalent, without a parent-child index: after the top-k is chosen, `add_neighbours()` replaces each hit's `text` with its own chunk plus `context_window` chunks either side from the same document (`chunks.ordinal`, same build), joined with blank lines; `token_count` is summed and `window` lists the ordinals. Ranking, ids and `ordinal` are unchanged; rerank, the prompt packer, citations and eval's evidence check all see the merged text (eval counts a hit when the evidence sits in a neighbour that reaches the prompt). Known ceiling: chunk overlap repeats at each seam, and adjacent hits repeat each other's neighbours.
+The sentence-window / auto-merging equivalent, without a parent-child index: after the top-k is chosen, `add_neighbours()` sets each hit's `window_text` to its own chunk plus `context_window` chunks either side from the same document (`chunks.ordinal`, same build), joined with blank lines, and `window` to the ordinals. `text` stays the hit's own, so ranking, rerank, hit checks and judges score the retrieved chunk; only the prompt packer (`nodes/prompt.py:packed_text`) carries the window. Known ceiling: chunk overlap repeats at each seam, and adjacent hits repeat each other's neighbours.
 
 All `RetrieveConfig` fields (`top_k`, `fusion`, `rrf_k`, `dense_weight`, `keyword_weight`, `exact_weight`, `candidates`, `min_score`, `pin_definitions`, `mmr`, `mmr_lambda`, `query_expansion`, `expansion_queries`, `context_window`) are `instant`-effect — none ever appear in `rebuild_part()`.
 
@@ -941,6 +943,9 @@ erDiagram
 | POST | `/{id}/estimate` | Estimate rebuild cost of a candidate config |
 | POST | `/{id}/recommend` | Smart auto-configuration (corpus-aware) |
 | GET | `/{id}/builds` | List index builds |
+| GET | `/{id}/versions/{vid}/export` | Repo export zip (FR-2.34); 409 until the version has a ready, synced build |
+
+**Repo export** (`ingest/export.py:build_export_zip`): writes `config.json` (resolved: an empty model becomes the concrete id available at export time), `data/chunks.jsonl` (id, `document_id`, `ordinal`, document, source_url, pages, heading_path, is_table, text) + row-aligned `data/vectors.npy` from `vector_cache`, `rag.py` (a verbatim copy of `ingest/rag_template.py`), and the server bundle: `app/main.py` (FastAPI, `POST /chat {question}` → `rag.ask()` = `{answer, sources}`, `GET /health`, provider errors → 502), `Dockerfile`, `docker-compose.yml`, `.dockerignore` (keeps `.env` out of the image), `requirements.txt` (numpy, fastapi, uvicorn, plus fastembed/openai only when the pipeline needs them), `.env.example`, `README.md`. `rag_template.py` must never import `app`; it ports the live engine — fusion, pinning, MMR, `query_expansion` (`complete()` at temperature 0, fail-soft) and `context_window` (`window_text` from `(document_id, ordinal)` neighbours, prompt only) — and `tests/test_export.py` asserts its rankings equal `engine/retrieval.retrieve` on the same build.
 
 ### `backend/app/api/documents.py` (`prefix="/api/projects/{project_id}/documents"`)
 | Method | Path | Purpose |

@@ -60,6 +60,11 @@ phases map to releases (`PRD.md` §5).
   the Playground offers starter questions.
 - The exact-match path no longer counts incidental code-symbol mentions as exact hits (they tied
   and RRF turned the tie order into noise).
+- Markdown front matter is read as document metadata and no longer indexed as a chunk. The parser
+  revision changed, so existing projects re-parse and rebuild once on their next sync (vectors
+  are cached by text, so only changed chunks are re-embedded).
+- Repo export now ships a FastAPI server (`app/main.py`: `GET /health`, `POST /chat`), Dockerfile
+  and compose file next to the `rag.py` CLI, and honours query expansion and the context window.
 - Default Gemini chat model is now `gemini-3.5-flash`: `gemini-2.5-flash` and `-flash-lite` return
   404 "no longer available to new users" for new API keys.
 

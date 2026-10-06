@@ -28,6 +28,10 @@ def tesseract_available() -> bool:
 
 
 class BaseParser(Node):
+    # Every parser inherits `parse`, so a change here re-parses for all of them; a subclass with
+    # its own `revision` must bump it too. 1: Markdown front matter stripped.
+    revision = 1
+
     def parse(self, path: Path, kind: str) -> dict[str, Any]:
         warnings: list[str] = []
         ocr_used = False
@@ -39,6 +43,8 @@ class BaseParser(Node):
             pages = loaders.load_html(path)
         elif kind in ("markdown", "text"):
             pages = loaders.load_text(path)
+            if kind == "markdown":
+                pages[0]["text"] = loaders.strip_front_matter(pages[0]["text"])
         else:
             raise ValueError(f"unsupported document kind {kind!r}")
 
@@ -69,7 +75,7 @@ class Pymupdf4llmConfig(NodeConfig):
 )
 class Pymupdf4llmParser(BaseParser):
     Config = Pymupdf4llmConfig
-    revision = 1  # 1: strip <sup>/<mark>/<br>… inline HTML from the Markdown
+    revision = 2  # 1: strip <sup>/<mark>/<br>… inline HTML from the Markdown; 2: BaseParser rev 1
 
     def parse_pdf(self, path: Path):
         import pymupdf4llm

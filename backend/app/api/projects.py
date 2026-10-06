@@ -335,8 +335,8 @@ async def recommend(project_id: str) -> dict[str, Any]:
 @router.get("/{project_id}/versions/{version_id}/export")
 async def export_version(project_id: str, version_id: str) -> Response:
     """A plug-and-play standalone bundle: unzip, `pip install -r requirements.txt`,
-    `python rag.py "question"` — no RAGLabs backend, no `app` import, no vector-store
-    dependency (brute-force NumPy search over the exported vectors)."""
+    `python rag.py "question"`, or serve it (`uvicorn app.main:app` / `docker compose up`) — no
+    RAGLabs backend, no vector-store dependency (brute-force NumPy search over the exported vectors)."""
     p = await _project(project_id)
     v = await _version(project_id, version_id)
     cfg = with_defaults(db.loads(v["config"], {}))

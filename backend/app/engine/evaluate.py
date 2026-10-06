@@ -32,7 +32,7 @@ VAL_BATCH = 10
 GRADE_BATCH = 5
 GRADE_CONTEXT_CHARS = 800
 GENERIC_F1 = 0.6
-DEEP_K = 50
+DEEP_K = 50  # deep pass: top_k and candidates >= this; RunsPanel.tsx "not_retrieved" copy says "top 50"
 _llm_slots = asyncio.Semaphore(3)
 
 
