@@ -611,6 +611,24 @@ Wrap model providers behind one spec so hosted → local swaps don't break anyth
 Supports starting on a hosted model and moving in-house later — and supports the
 local-Qwen/Ollama idea.
 
+**Status (2026-10-06):** done for the **Generate** slot. Any OpenAI-compatible endpoint can be
+the answering LLM: built-in presets (Gemini, NVIDIA, OpenAI, Anthropic, Groq, Mistral,
+OpenRouter, Together, DeepSeek, Ollama, LM Studio) enabled by a key, plus custom endpoints
+(vLLM, LiteLLM proxy, Azure, a corporate gateway) defined in `.env` (`LLM_PROVIDERS`) or added
+in Settings → Providers. See `backend/app/llm/provider.py`.
+
+**Later enhancements:**
+- **Custom embedding providers.** The Embed slot's `api` type still only takes Gemini or
+  NVIDIA. Extend it to any registered provider (OpenAI `text-embedding-3`, Mistral, Together,
+  Ollama, …): `provider` becomes a free choice from the registry, per-provider request quirks
+  (NVIDIA's `input_type`) move into the provider record, and the standalone export carries
+  the embed provider's base URL. Mind that changing the embed provider is a rebuild.
+- **Custom rerank providers** (Cohere, Jina, Voyage rerank APIs) on the same registry.
+- **Non-OpenAI-compatible APIs** (native Anthropic features, Bedrock, Vertex) via an optional
+  LiteLLM adapter behind the same `Provider` record.
+- **Per-model pricing** so `cost_usd` is real for paid providers.
+- **Encrypted key storage** (OS keychain) instead of plain text in the local SQLite.
+
 ### 10.7 Vector store: use what you already have
 **Value: high · Cost: — · Phase: 1–2 · Source: Infosys**
 

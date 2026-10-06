@@ -19,7 +19,7 @@ for the idea catalogue.
 | Retrieve | dense, keyword (BM25), hybrid, fused (+ exact error-message/code-symbol matching); RRF or weighted fusion, MMR, thresholds |
 | Rerank | off, or local cross-encoders |
 | Prompt | cited answer, concise, detailed, or your own template; context budget |
-| Generate | Google Gemini or NVIDIA (free tiers); model, temperature, top-p, max tokens |
+| Generate | any OpenAI-compatible LLM: Gemini, NVIDIA, OpenAI, Anthropic, Groq, Mistral, OpenRouter, Together, DeepSeek, Ollama, LM Studio, or your own endpoint (vLLM, LiteLLM, a gateway…); model, temperature, top-p, max tokens |
 
 Every parameter is labelled **⚡ instant** (applies at query time) or **🔁 rebuild** (needs
 re-indexing). Rebuilds reuse cached work: switching vector store never re-embeds.
@@ -29,13 +29,15 @@ Every saved configuration is an immutable version you can diff and switch back t
 
 - [uv](https://docs.astral.sh/uv/) (Python is fetched automatically — the backend uses 3.12)
 - Node.js 20+
-- A free LLM key for chatting (retrieval and the inspector work without one):
-  [Gemini](https://aistudio.google.com/apikey) or [NVIDIA](https://build.nvidia.com)
+- An LLM for chatting (retrieval and the inspector work without one): a free
+  [Gemini](https://aistudio.google.com/apikey) or [NVIDIA](https://build.nvidia.com) key, a key for
+  any other supported provider, or a local server such as Ollama. Connect it in the app under
+  **LLM providers**, or via `.env`.
 
 ## Run it
 
 ```bash
-cp .env.example .env          # then paste GEMINI_API_KEY and/or NVIDIA_API_KEY
+cp .env.example .env          # optional: paste e.g. GEMINI_API_KEY / OPENAI_API_KEY (or add keys in the UI)
 
 # terminal 1 — backend (http://127.0.0.1:8000)
 cd backend

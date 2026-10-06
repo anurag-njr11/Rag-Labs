@@ -1,11 +1,16 @@
-"""Generate slot: the language model that writes the answer. Gemini and
-NVIDIA are both reached through their OpenAI-compatible endpoints."""
+"""Generate slot: the language model that writes the answer.
+
+Every LLM provider (built-in preset or custom endpoint, see app/llm/provider.py)
+becomes one Generate node type named after it, all reached through their
+OpenAI-compatible endpoints. Types are (un)registered whenever the provider
+list changes, so adding a provider in Settings makes it selectable at once.
+"""
 
 from __future__ import annotations
 
 from typing import Any, AsyncIterator, Literal
 
-from ..core.node import Node, NodeConfig, register, ui_field
+from ..core.node import Node, NodeConfig, register, ui_field, unregister
 from ..llm import provider as llm
 
 Reasoning = Literal["default", "none", "low", "medium", "high"]
@@ -49,7 +54,7 @@ class ProviderGenerator(Node):
 
     @property
     def model_name(self) -> str:
-        return self.config.model or self.resolved_model or llm.PROVIDERS[self.provider].default_model
+        return self.config.model or self.resolved_model or llm.get(self.provider).default_model
 
     async def stream(self, messages: list[dict[str, str]], usage: dict[str, Any]) -> AsyncIterator[str]:
         """Yield answer text as it arrives; fills `usage` with token counts at the end."""
@@ -82,6 +87,18 @@ class ProviderGenerator(Node):
             raise llm.friendly_error(self.provider, e) from e
 
 
+class GenericGenerateConfig(GenerateConfig):
+    # Many OpenAI-compatible servers reject `reasoning_effort`, so send nothing by default.
+    reasoning_effort: Reasoning = ui_field("default", advanced=True, title="Reasoning effort",
+                                           description=REASONING_HELP)
+
+
+# Per-provider config overrides; others get GenerateConfig or GenericGenerateConfig.
+CONFIGS: dict[str, type[GenerateConfig]] = {"gemini": GeminiGenerateConfig}
+
+_registered: set[str] = set()
+
+
 def _register(provider: str, title: str, description: str, config: type[GenerateConfig]) -> None:
     @register("generate", provider, title=title, description=description,
               availability=lambda: llm.availability(provider))
@@ -92,6 +109,18 @@ def _register(provider: str, title: str, description: str, config: type[Generate
     Gen.__name__ = f"{provider.title()}Generator"
 
 
-_register("gemini", "Google Gemini", "Free tier via Google AI Studio.", GeminiGenerateConfig)
-_register("nvidia", "NVIDIA", "Free tier via build.nvidia.com — Llama, Mistral, Nemotron and more.",
-          GenerateConfig)
+def sync_providers() -> None:
+    """Make the Generate node types match `llm.PROVIDERS` (re-registering all of
+    them keeps the catalog in provider order and picks up edited titles)."""
+    for name in _registered:
+        unregister("generate", name)
+    _registered.clear()
+    for name, p in llm.PROVIDERS.items():
+        config = CONFIGS.get(name) or (GenerateConfig if p.supports_reasoning else GenericGenerateConfig)
+        description = p.description if not p.custom else f"Custom endpoint · {p.base_url}"
+        _register(name, p.title, description, config)
+        _registered.add(name)
+
+
+llm.on_change(sync_providers)
+llm.refresh()

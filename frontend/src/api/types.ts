@@ -415,13 +415,54 @@ export interface Health {
   status: 'ok'
   providers: Record<string, boolean>
 }
+/** Where a provider's settings come from (later sources override earlier ones per field). */
+export type ProviderSource = 'preset' | 'env' | 'ui' | 'custom-env' | 'custom-ui'
+
+/** An LLM provider for the Generate slot — a built-in preset or a custom OpenAI-compatible endpoint. */
 export interface Provider {
   name: string
   title: string
+  description: string
+  base_url: string
+  default_model: string
+  signup_url: string
+  key_required: boolean
+  supports_reasoning: boolean
+  /** Names of extra HTTP headers sent with each request (values never leave the backend). */
+  headers: string[]
+  source: ProviderSource
+  /** Preset id, or null for a custom endpoint. */
+  preset: string | null
+  custom: boolean
+  key_set: boolean
+  /** "…abcd" — the key itself is never returned. */
+  key_hint: string
+  /** Env var the backend also reads the key from, e.g. OPENAI_API_KEY. */
+  key_env: string
   available: boolean
   reason: string
-  signup_url: string
-  default_model: string
+  /** Offered as a Generate type. */
+  enabled: boolean
+}
+
+/** Create/update body. Omitted fields keep their value; an empty api_key keeps the stored key. */
+export interface ProviderInput {
+  name?: string
+  title?: string
+  base_url?: string
+  api_key?: string
+  default_model?: string
+  supports_reasoning?: boolean
+  key_required?: boolean
+  headers?: Record<string, string>
+}
+
+export interface ProviderTestResult {
+  ok: boolean
+  error?: string
+  models?: number
+  sample?: string[]
+  ms: number
 }
 export interface ModelList {
   models: string[]

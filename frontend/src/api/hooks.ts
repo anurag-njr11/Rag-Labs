@@ -35,6 +35,8 @@ import type {
   PipelineConfig,
   Project,
   Provider,
+  ProviderInput,
+  ProviderTestResult,
   RunDetail,
   RunSummary,
   SlotCatalog,
@@ -56,6 +58,7 @@ export { ApiError, errorMessage, api } from './client'
 export const qk = {
   health: ['health'] as const,
   providers: ['providers'] as const,
+  providerPresets: ['providers', 'presets'] as const,
   providerModels: (name: string, kind: ModelKind) => ['providers', name, 'models', kind] as const,
   nodes: ['nodes'] as const,
   recommended: ['pipelines', 'recommended'] as const,
@@ -97,6 +100,47 @@ export const useProviders = (o?: QOpts<Provider[]>) =>
   useQuery({ queryKey: qk.providers, queryFn: () => api.get<Provider[]>('/providers'), staleTime: 60_000, ...o })
 
 /** True when no LLM provider key is configured (show the warning banner). undefined while loading. */
+export const useProviderPresets = (o?: QOpts<Provider[]>) =>
+  useQuery({ queryKey: qk.providerPresets, queryFn: () => api.get<Provider[]>('/providers/presets'), staleTime: 60_000, ...o })
+
+/** Provider changes add/remove Generate node types, so the catalog and health refresh too. */
+function invalidateProviders(qc: QueryClient) {
+  void qc.invalidateQueries({ queryKey: qk.providers })
+  void qc.invalidateQueries({ queryKey: qk.nodes })
+  void qc.invalidateQueries({ queryKey: qk.health })
+  void qc.invalidateQueries({ queryKey: qk.recommended })
+  void qc.invalidateQueries({ queryKey: ['options_from'] })
+}
+
+/** Create (`create: true`) or update a provider. */
+export function useSaveProvider() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ name, body, create }: { name: string; body: ProviderInput; create?: boolean }) =>
+      create
+        ? api.post<Provider>('/providers', { ...body, name })
+        : api.patch<Provider>(`/providers/${encodeURIComponent(name)}`, body),
+    onSuccess: () => invalidateProviders(qc),
+  })
+}
+
+export function useDeleteProvider() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (name: string) => api.del(`/providers/${encodeURIComponent(name)}`),
+    onSuccess: () => invalidateProviders(qc),
+  })
+}
+
+/** Test saved settings (`name` only) or a draft (`body`, falling back to the named provider's settings). */
+export const useTestProvider = () =>
+  useMutation({
+    mutationFn: ({ name, body }: { name?: string; body?: ProviderInput }) =>
+      body
+        ? api.post<ProviderTestResult>('/providers/test', { ...body, name })
+        : api.post<ProviderTestResult>(`/providers/${encodeURIComponent(name ?? '')}/test`),
+  })
+
 export function useNoProviderKey(): boolean | undefined {
   const { data } = useProviders()
   return data ? !data.some((p) => p.available) : undefined

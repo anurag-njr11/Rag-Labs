@@ -163,8 +163,11 @@ class ApiEmbedConfig(NodeConfig):
     batch_size: int = instant_field(50, ge=1, le=250, advanced=True, title="Batch size")
 
 
+EMBED_PROVIDERS = ("gemini", "nvidia")
+
+
 def _api_available() -> tuple[bool, str]:
-    if any(llm.availability(p)[0] for p in llm.PROVIDERS):
+    if any(llm.availability(p)[0] for p in EMBED_PROVIDERS):
         return True, ""
     return False, "Add GEMINI_API_KEY or NVIDIA_API_KEY to .env to use API embeddings."
 
@@ -178,7 +181,7 @@ class ApiEmbedder(BaseEmbedder):
     @property
     def model_name(self) -> str:
         c = self.config
-        return c.model or llm.PROVIDERS[c.provider].default_embed_model
+        return c.model or llm.get(c.provider).default_embed_model
 
     def embed_key(self) -> str:
         c = self.config

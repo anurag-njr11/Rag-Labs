@@ -51,18 +51,41 @@ def _requirements(cfg: PipelineConfig) -> str:
     pkgs: dict[str, str] = {"numpy": "numpy>=2.5.3"}
     if cfg["embed"]["type"] == "fastembed" or cfg["rerank"]["type"] == "cross_encoder":
         pkgs["fastembed"] = "fastembed>=0.8.1"
-    if cfg["embed"]["type"] == "api" or cfg["generate"]["type"] in ("gemini", "nvidia"):
+    if cfg["embed"]["type"] == "api" or cfg["generate"]["type"] in llm.PROVIDERS:
         pkgs["openai"] = "openai>=3.19.0"
     return "\n".join(sorted(pkgs.values())) + "\n"
 
 
-def _env_example(cfg: PipelineConfig) -> str:
-    providers: set[str] = set()
+def _used_providers(cfg: PipelineConfig) -> list[str]:
+    names: set[str] = set()
     if cfg["embed"]["type"] == "api":
-        providers.add(cfg["embed"]["provider"])
-    if cfg["generate"]["type"] in ("gemini", "nvidia"):
-        providers.add(cfg["generate"]["type"])
-    lines = [f"{p.upper()}_API_KEY=" for p in sorted(providers)]
+        names.add(cfg["embed"]["provider"])
+    if cfg["generate"]["type"] in llm.PROVIDERS:
+        names.add(cfg["generate"]["type"])
+    return sorted(names)
+
+
+def _providers_section(cfg: PipelineConfig) -> dict[str, dict[str, Any]]:
+    """Connection details rag.py needs for each provider the pipeline calls.
+    Keys are never exported, only the env var to read them from; header values
+    may be secrets too, so only header names are listed."""
+    out = {}
+    for name in _used_providers(cfg):
+        p = llm.get(name)
+        out[name] = {"title": p.title, "base_url": p.base_url, "api_key_env": p.key_env,
+                     "key_required": p.key_required, "default_model": p.default_model,
+                     "default_embed_model": p.default_embed_model,
+                     "extra_header_names": sorted(p.headers)}
+    return out
+
+
+def _env_example(cfg: PipelineConfig) -> str:
+    lines = []
+    for name, info in _providers_section(cfg).items():
+        lines.append(f"{info['api_key_env']}=" + ("" if info["key_required"] else "  # optional for this endpoint"))
+        if info["extra_header_names"]:
+            lines.append(f"# {info['title']} also needs these HTTP headers (set them in rag.py's generate()): "
+                         + ", ".join(info["extra_header_names"]))
     return "\n".join(lines) + ("\n" if lines else "")
 
 
@@ -166,7 +189,8 @@ async def build_export_zip(project: dict[str, Any], version: dict[str, Any], bui
         zf.writestr("README.md", _readme(project, version, cfg))
         zf.writestr("requirements.txt", _requirements(cfg))
         zf.writestr(".env.example", _env_example(cfg))
-        zf.writestr("config.json", json.dumps(cfg, indent=2, ensure_ascii=False))
+        zf.writestr("config.json", json.dumps({**cfg, "providers": _providers_section(cfg)},
+                                              indent=2, ensure_ascii=False))
         zf.writestr("data/chunks.jsonl", "\n".join(chunk_lines) + ("\n" if chunk_lines else ""))
         zf.writestr("data/vectors.npy", vectors_buf.getvalue())
         zf.write(_RAG_TEMPLATE_PATH, "rag.py")

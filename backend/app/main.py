@@ -30,8 +30,10 @@ async def lifespan(app: FastAPI):
         for table in ("eval_sets", "eval_runs"):
             await c.execute(f"UPDATE {table} SET status='failed', error='Interrupted by a server restart'"
                             " WHERE status='running'")
+    await llm.load()
     if not any(llm.availability(p)[0] for p in llm.PROVIDERS):
-        log.warning("No LLM API key set. Add GEMINI_API_KEY or NVIDIA_API_KEY to .env to chat.")
+        log.warning("No LLM provider configured. Add one in Settings → Providers, or set e.g. "
+                    "GEMINI_API_KEY / OPENAI_API_KEY in .env, to chat.")
     yield
     await stores.close_all()
     await db.close()
