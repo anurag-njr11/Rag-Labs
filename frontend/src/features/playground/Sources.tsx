@@ -3,18 +3,16 @@ import { ArrowDown, ArrowUp, Pin, Table } from 'lucide-react'
 import { formatPages, stripTags } from '@/api/format'
 import type { Citation, RetrievedChunk } from '@/api/types'
 import { Badge, Card, ChunkStateBadge, FoundByBadge, ScoreChip, Tooltip, cn } from '@/components/ui'
-import { ProseChunk, TableChunk, normalizeSpans, previewStart, type Span } from './chunkText'
+import { ProseChunk, TableChunk } from './chunkText'
+import { normalizeSpans, previewStart, type Span } from './chunkText.utils'
+import { isCited } from './Sources.utils'
 
 /** "A > B > C" → "A › B › C" */
-export const formatHeading = (h: string) => stripTags(h).split(/\s+>\s+/).filter(Boolean).join(' › ')
+const formatHeading = (h: string) => stripTags(h).split(/\s+>\s+/).filter(Boolean).join(' › ')
 
-export function spansFor(chunk: RetrievedChunk, citations: Citation[]): Span[] {
+function spansFor(chunk: RetrievedChunk, citations: Citation[]): Span[] {
   const raw = citations.filter((c) => c.chunk_id === chunk.id).flatMap((c) => c.spans)
   return normalizeSpans(raw, chunk.text.length)
-}
-
-export function isCited(chunk: RetrievedChunk, citations: Citation[]): boolean {
-  return chunk.cited ?? citations.some((c) => c.chunk_id === chunk.id)
 }
 
 const PATH_ORDER = ['dense', 'keyword', 'exact'] as const

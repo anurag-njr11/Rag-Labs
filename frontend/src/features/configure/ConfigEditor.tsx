@@ -6,8 +6,9 @@ import type { Change, NodeConfig, NodeType, PipelineConfig, PipelineFieldError, 
 import { SLOTS } from '@/api/types'
 import { TOPBAR_H } from '@/app/AppLayout'
 import {
-  Badge, Banner, Card, EffectBadge, ExactBadge, OptionCardGroup, Spinner, cn, smoothScrollTo, useIndicator, useScrollReveal, useSwapTransition,
+  Badge, Banner, Card, EffectBadge, ExactBadge, OptionCardGroup, Spinner, cn, smoothScrollTo, useIndicator, useSwapTransition,
 } from '@/components/ui'
+import { useScrollReveal } from '@/components/ui/scrollReveal'
 import { SchemaForm } from './SchemaForm'
 import { errorsFor, isExact, localChanges } from './schema'
 

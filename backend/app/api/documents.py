@@ -33,11 +33,14 @@ async def _active_cfg(project_id: str) -> dict[str, Any] | None:
 
 
 async def _usage_counts(project_id: str) -> dict[str, int]:
-    """OKF usage_count: chunk appearances per document in the retrieval results of recorded runs."""
+    """OKF usage_count: chunk appearances per document in the retrieval results of recent runs."""
+    # ponytail: counts only the latest 2000 chat runs so GET /documents stays cheap; keep a
+    # per-document counter updated in runs.finish_run if lifetime counts are ever needed.
     rows = await db.fetch_all(
         "SELECT json_extract(j.value, '$.document_id') AS doc, COUNT(*) AS n"
-        " FROM runs r, json_each(r.result, '$.retrieved') j"
-        " WHERE r.project_id=? AND r.kind='chat' AND r.result IS NOT NULL GROUP BY doc", (project_id,))
+        " FROM (SELECT result FROM runs WHERE project_id=? AND kind='chat' AND result IS NOT NULL"
+        "       ORDER BY created_at DESC LIMIT 2000) r, json_each(r.result, '$.retrieved') j"
+        " GROUP BY doc", (project_id,))
     return {r["doc"]: r["n"] for r in rows}
 
 

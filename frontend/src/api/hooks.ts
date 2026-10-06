@@ -705,7 +705,7 @@ export function useImportEvalCsv(projectId: string, setId: string) {
   const qc = useQueryClient()
   return useMutation({
     mutationFn: (csv: string) =>
-      api.post<{ added: number; error_count: number; errors: { row: number; message: string }[] }>(
+      api.post<{ added: number; skipped: number; error_count: number; errors: { row: number; message: string }[] }>(
         `${evalBase(projectId)}/sets/${setId}/import`, { csv }),
     onSuccess: () => invalidateSet(qc, projectId, setId),
   })

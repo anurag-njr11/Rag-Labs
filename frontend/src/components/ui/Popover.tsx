@@ -200,16 +200,22 @@ export interface PopoverProps {
 export function Popover({ open, onClose, anchor, children, placement = 'bottom', align = 'end', width = 280, className, ...aria }: PopoverProps) {
   const { ref: floating, mounted } = usePresence<HTMLDivElement>(open, presence.pop(placement))
   const pos = useFloating(mounted, anchor, floating, placement, align)
+  // Callers pass inline arrows; keep the latest in a ref so a new identity doesn't re-run the effect
+  // below (which would steal focus back to the first field while the user types).
+  const onCloseRef = useRef(onClose)
+  useLayoutEffect(() => {
+    onCloseRef.current = onClose
+  })
 
   useEffect(() => {
     if (!open) return
     const onDown = (e: MouseEvent) => {
       const t = e.target as Node
-      if (!floating.current?.contains(t) && !anchor.current?.contains(t)) onClose()
+      if (!floating.current?.contains(t) && !anchor.current?.contains(t)) onCloseRef.current()
     }
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
-        onClose()
+        onCloseRef.current()
         anchor.current?.focus()
       }
     }
@@ -221,7 +227,7 @@ export function Popover({ open, onClose, anchor, children, placement = 'bottom',
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
     }
-  }, [open, onClose, anchor, floating])
+  }, [open, anchor, floating])
 
   if (!mounted) return null
   return createPortal(

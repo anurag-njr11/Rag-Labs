@@ -262,7 +262,7 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
   const broken = sweep.cells.filter((c) => c.status === 'failed' || c.status === 'invalid')
   const pending = sweep.cells.filter((c) => c.status === 'pending' || c.status === 'running').length
   const line = insight(scored, base)
-  const graded = scored.some((c) => c.metrics.answers)
+  const graded = scored.some((c) => c.metrics.answers || c.grade_error)
   return (
     <div className="flex flex-col gap-4">
       {line && <Banner tone="info">{line}</Banner>}
@@ -310,9 +310,11 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
                   {graded && (
                     <td
                       className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}
-                      title={c.grade_error ?? (m.answers ? `95% CI ${Math.round(m.answers.correct_ci[0] * 100)}–${Math.round(m.answers.correct_ci[1] * 100)}%${m.answers.rejudged ? ' · median of 3 judgings (close to the leader)' : ''}${m.answers.judge ? ` · judge ${m.answers.judge}` : ''}` : 'not graded')}
+                      title={c.grade_error ?? (m.answers?.n ? `95% CI ${Math.round(m.answers.correct_ci[0] * 100)}–${Math.round(m.answers.correct_ci[1] * 100)}%${m.answers.rejudged ? ' · median of 3 judgings (close to the leader)' : ''}${m.answers.judge ? ` · judge ${m.answers.judge}` : ''}` : 'not graded')}
                     >
-                      {m.answers ? `${Math.round(m.answers.correct_rate * 100)}%${m.answers.rejudged ? ' ×3' : ''}` : <span className="text-text-tertiary">—</span>}
+                      {m.answers?.n ? `${Math.round(m.answers.correct_rate * 100)}%${m.answers.rejudged ? ' ×3' : ''}`
+                        : c.grade_error || m.answers ? <span className="text-text-tertiary">not graded{m.answers?.ungraded ? ` (${m.answers.ungraded} failed)` : ''}</span>
+                        : <span className="text-text-tertiary">—</span>}
                     </td>
                   )}
                   {priced && (
@@ -328,7 +330,7 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
                 </tr>
               )
             })}
-            {pending > 0 && (
+            {pending > 0 && sweep.status === 'running' && (
               <tr><td colSpan={10 + Number(graded) + Number(priced)} className={cn(CELL, 'text-body-sm text-text-tertiary')}>{pending} configuration{pending === 1 ? '' : 's'} still to score…</td></tr>
             )}
           </tbody>
@@ -349,7 +351,7 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
 // ------------------------------------------------------------------------------------------------ panel
 
 /**
- * Sweeps: pick a base version and a few axes, score every combination on the eval set (no LLM calls),
+ * Sweeps: pick a base version and a few axes, score every combination on the eval set (LLM calls only for query expansion / Auto-Optimize),
  * then read the leaderboard + Pareto chart and promote a winner into a new active version.
  */
 export function SweepsPanel({ projectId, setId, judge }: { projectId: string; setId: string; judge?: Judge | null }) {
@@ -375,7 +377,8 @@ export function SweepsPanel({ projectId, setId, judge }: { projectId: string; se
   const base = baseVersion?.config
   const axes = (axesQ.data?.axes ?? []).filter((a) => Object.entries(a.requires ?? {}).every(([p, v]) => getPath(base, p) === v))
   const max = axesQ.data?.max_cells ?? 48
-  const chosen = Object.entries(picked).filter(([, v]) => v.length)
+  // Only axes still shown: switching base version can hide one (its `requires` no longer holds).
+  const chosen = Object.entries(picked).filter(([p, v]) => v.length && axes.some((a) => a.path === p))
   const count = chosen.length ? chosen.reduce((n, [, v]) => n * v.length, 1) : 0
 
   const list = (sweeps.data ?? []).filter((s) => s.eval_set_id === setId)

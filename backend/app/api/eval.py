@@ -42,6 +42,16 @@ class CsvIn(BaseModel):
 
 
 CSV_COLUMNS = ["question", "gold_answer", "evidence", "document", "valid", "reject_reason", "facets"]
+MAX_ITEMS = 500  # valid questions per set, for hand adds, restores and CSV import
+_FORMULA = ("=", "+", "-", "@")  # a spreadsheet would run a cell starting with one of these
+
+
+def _csv_safe(v: Any) -> Any:
+    return f"'{v}" if isinstance(v, str) and v.startswith(_FORMULA) else v
+
+
+def _csv_unsafe(v: str) -> str:
+    return v[1:] if v.startswith("'") and v[1:].startswith(_FORMULA) else v
 
 
 class JudgeIn(BaseModel):
@@ -170,6 +180,8 @@ async def _add_item(s: dict[str, Any], body: ItemIn) -> str:
     doc = await db.fetch_one("SELECT id FROM documents WHERE id=? AND project_id=?", (body.document_id, s["project_id"]))
     if doc is None:
         raise HTTPException(422, "Unknown document.")
+    if await _room(s["id"]) <= 0:
+        raise HTTPException(409, f"An eval set holds at most {MAX_ITEMS} questions.")
     reason = await evaluate.check_evidence(s["build_id"], body.document_id, body.evidence)
     if reason:
         raise HTTPException(422, reason)
@@ -186,6 +198,11 @@ async def _add_item(s: dict[str, Any], body: ItemIn) -> str:
     return item_id
 
 
+async def _room(set_id: str) -> int:
+    row = await db.fetch_one("SELECT COUNT(*) AS n FROM eval_items WHERE eval_set_id=? AND valid=1", (set_id,))
+    return MAX_ITEMS - row["n"]
+
+
 @router.post("/sets/{set_id}/items", status_code=201)
 async def add_item(project_id: str, set_id: str, body: ItemIn) -> dict[str, Any]:
     s = await _set(project_id, set_id)
@@ -199,10 +216,14 @@ async def update_item(project_id: str, set_id: str, item_id: str, body: ItemPatc
     s = await _set(project_id, set_id)
     it = await _item(set_id, item_id)
     changes = body.model_dump(exclude_none=True)
+    if changes.get("evidence") == it["evidence"]:
+        del changes["evidence"]  # unchanged (the edit form sends every field): nothing to re-check
     if "evidence" in changes:
         reason = await evaluate.check_evidence(s["build_id"], it["document_id"], changes["evidence"])
         if reason:
             raise HTTPException(422, reason)
+    if changes.get("valid") is True and not it["valid"] and await _room(set_id) <= 0:
+        raise HTTPException(409, f"An eval set holds at most {MAX_ITEMS} questions.")
     if changes.get("valid") is True and "evidence" not in changes:
         reason = await evaluate.check_evidence(s["build_id"], it["document_id"], it["evidence"])
         if reason:
@@ -242,8 +263,9 @@ async def export_csv(project_id: str, set_id: str) -> Response:
     w = csv.DictWriter(buf, fieldnames=CSV_COLUMNS, extrasaction="ignore", lineterminator="\n")
     w.writeheader()
     for i in items:
-        w.writerow({**i, "valid": "yes" if i["valid"] else "no", "reject_reason": i["reject_reason"] or "",
-                    "facets": " | ".join(db.loads(i["facets"], []) or [])})
+        row = {**i, "valid": "yes" if i["valid"] else "no", "reject_reason": i["reject_reason"] or "",
+               "facets": " | ".join(db.loads(i["facets"], []) or [])}
+        w.writerow({k: _csv_safe(row[k]) for k in CSV_COLUMNS})
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": f'attachment; filename="eval-set-{set_id[:8]}.csv"'})
 
@@ -262,10 +284,14 @@ async def import_csv(project_id: str, set_id: str, body: CsvIn) -> dict[str, Any
         raise HTTPException(422, "The CSV needs columns: question, gold_answer (or answer), evidence, document.")
     docs = {d["filename"]: d["id"] for d in await db.fetch_all(
         "SELECT id, filename FROM documents WHERE project_id=?", (project_id,))}
-    added, errors = 0, []
+    added, skipped, errors = 0, 0, []
+    room = await _room(set_id)
     for n, raw in enumerate(reader, start=2):  # row 1 is the header
-        row = {(k or "").strip().lower(): (v or "").strip() for k, v in raw.items()}
+        row = {(k or "").strip().lower(): _csv_unsafe((v or "").strip()) for k, v in raw.items()}
         if row.get("valid", "yes").lower() in ("no", "false", "0"):
+            continue
+        if added >= room:
+            skipped += 1  # over MAX_ITEMS
             continue
         doc_id = docs.get(row.get("document", ""))
         if doc_id is None:
@@ -281,7 +307,7 @@ async def import_csv(project_id: str, set_id: str, body: CsvIn) -> dict[str, Any
             errors.append({"row": n, "message": str(e.detail)})
         except ValueError as e:  # pydantic validation
             errors.append({"row": n, "message": str(e).splitlines()[-1].strip() or "Invalid row."})
-    return {"added": added, "errors": errors[:50], "error_count": len(errors)}
+    return {"added": added, "skipped": skipped, "errors": errors[:50], "error_count": len(errors)}
 
 
 @router.post("/sets/{set_id}/runs", status_code=201)
@@ -363,6 +389,8 @@ def _sweep_out(s: dict[str, Any]) -> dict[str, Any]:
     cells = db.loads(s["cells"], [])
     counts: dict[str, int] = {}
     for c in cells:
+        if s["status"] != "running" and c["status"] in ("pending", "running"):
+            c["status"] = "skipped"  # the sweep stopped (cancel, failure, restart) before this cell finished
         counts[c["status"]] = counts.get(c["status"], 0) + 1
     return {**s, "axes": db.loads(s["axes"], []), "cells": cells, "counts": counts}
 

@@ -2,28 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { Check, Copy } from 'lucide-react'
 import { Button, type ButtonSize, type ButtonVariant } from './Button'
 import { cn } from './cn'
-
-/** Copy text to the clipboard (with a textarea fallback for non-secure contexts). */
-export async function copyText(text: string): Promise<boolean> {
-  try {
-    await navigator.clipboard.writeText(text)
-    return true
-  } catch {
-    try {
-      const ta = document.createElement('textarea')
-      ta.value = text
-      ta.style.position = 'fixed'
-      ta.style.opacity = '0'
-      document.body.appendChild(ta)
-      ta.select()
-      const ok = document.execCommand('copy')
-      ta.remove()
-      return ok
-    } catch {
-      return false
-    }
-  }
-}
+import { copyText } from './CodeBlock.utils'
 
 export interface CopyButtonProps {
   text: string

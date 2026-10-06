@@ -44,7 +44,8 @@ class Provider:
 # Tried in order when the configured default model is no longer offered — free-tier
 # catalogs change often, and a retired model returns HTTP 410.
 PREFERRED: dict[tuple[str, str], tuple[str, ...]] = {
-    ("gemini", "chat"): ("gemini-2.5-flash", "gemini-3.5-flash", "gemini-3-flash-preview", "gemini-2.5-flash-lite"),
+    # gemini-2.5-flash(-lite) 404 for keys created after 2026-10 ("no longer available to new users").
+    ("gemini", "chat"): ("gemini-3.5-flash", "gemini-flash-latest", "gemini-3-flash-preview"),
     ("gemini", "embed"): ("gemini-embedding-001", "gemini-embedding-2"),
     # Verified callable and fast (2026-09-23). NVIDIA's /models lists entries that
     # 404 or hang, so being listed isn't enough — keep this list tested.

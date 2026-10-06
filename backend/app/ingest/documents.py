@@ -47,14 +47,23 @@ class OKF(BaseModel):
 _FRONT_MATTER = re.compile(r"\A\ufeff?---[ \t]*\r?\n(.*?)\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|\Z)", re.S)
 
 
+_COMMENT = re.compile(r"(?:^|\s)#.*")
+
+
+def _uncomment(s: str) -> str:
+    """Drop a YAML ` # comment` from an unquoted value."""
+    s = s.strip()
+    return s if s.startswith(("'", '"')) else _COMMENT.sub("", s).strip()
+
+
 def _scalar(s: str) -> str:
-    return s.strip().strip("'\"")
+    return _uncomment(s).strip("'\"")
 
 
 def front_matter(text: str) -> dict[str, Any]:
     """Flat `key: value` YAML front matter, plus `[a, b]` and `- item` lists. Enough for the OKF
     fields; anything fancier is ignored rather than half-parsed."""
-    # ponytail: not a YAML parser (no nesting, multi-line strings or comments); use one if front matter grows
+    # ponytail: not a YAML parser (no nesting or multi-line strings); use one if front matter grows
     m = _FRONT_MATTER.match(text)
     out: dict[str, Any] = {}
     key = None
@@ -67,7 +76,7 @@ def front_matter(text: str) -> dict[str, Any]:
         if not kv:
             key = None
             continue
-        key, val = kv.group(1).lower(), kv.group(2).strip()
+        key, val = kv.group(1).lower(), _uncomment(kv.group(2))
         if val.startswith("[") and val.endswith("]"):
             out[key] = [_scalar(x) for x in val[1:-1].split(",") if x.strip()]
         else:

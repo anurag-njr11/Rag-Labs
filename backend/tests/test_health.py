@@ -91,6 +91,13 @@ def test_front_matter_okf_fields():
     assert okf_from_front_matter(b"---\nsources: https://one\n---\n") == {"sources": ["https://one"]}
     assert okf_from_front_matter(b"# No front matter\nstatus: draft\n") == {}
     assert okf_from_front_matter(b"---\nstatus: draft\n") == {}  # unterminated
+    # inline ` # comments` are dropped from unquoted values, kept inside quotes and URL fragments
+    fm = front_matter("---\nstatus: draft  # until review\nsources: [a, b] # two\ntitle: 'C # sharp'\n"
+                      "owner: https://x.example/#team\ntags:\n  - one # first\n---\n")
+    assert fm == {"status": "draft", "sources": ["a", "b"], "title": "C # sharp",
+                  "owner": "https://x.example/#team", "tags": ["one"]}
+    assert front_matter("\n---\nstatus: draft\n---\n") == {}  # only on the very first line
+    assert front_matter("---\nJust a rule\n---\n") == {}  # no key: value line, not front matter
 
 
 def test_staleness_reasons_and_order():

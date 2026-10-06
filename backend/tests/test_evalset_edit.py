@@ -59,6 +59,42 @@ async def test_hand_edits_and_csv_roundtrip(project):  # noqa: F811
         assert (await client.patch(f"{BASE}/items/{item}", json={"valid": True})).status_code == 404
 
 
+async def test_csv_formula_escape_cap_and_question_only_edit(project, monkeypatch):  # noqa: F811
+    from app.api import eval as eval_api
+    doc = await _ready_set()
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        q = "=HYPERLINK(1) how big can uploads be?"
+        item = (await client.post(f"{BASE}/items", json={"question": q, "gold_answer": "-250 MB",
+                                                         "evidence": "Each upload is capped at 250 megabytes",
+                                                         "document_id": doc})).json()
+        csv_text = (await client.get(f"{BASE}/export.csv")).text
+        assert f"'{q}" in csv_text and "'-250 MB" in csv_text  # a spreadsheet shows it as text
+        await client.delete(f"{BASE}/items/{item['id']}")
+        assert (await client.post(f"{BASE}/import", json={"csv": csv_text})).json()["added"] == 1
+        back = (await client.get(BASE)).json()["items"]
+        assert [(i["question"], i["gold_answer"]) for i in back] == [(q, "-250 MB")]  # round-trips exactly
+
+        # cap: import stops at MAX_ITEMS valid questions and says how many it skipped
+        monkeypatch.setattr(eval_api, "MAX_ITEMS", 2)
+        row = "How often are uploads retried?,three,retries failed uploads three times with exponential backoff,uploads.md\n"
+        body = (await client.post(f"{BASE}/import", json={"csv": "question,answer,evidence,document\n" + row * 3})).json()
+        assert (body["added"], body["skipped"]) == (1, 2)
+        full = await client.post(f"{BASE}/items", json={"question": "Max size?", "gold_answer": "250 MB",
+                                                         "evidence": "Each upload is capped at 250 megabytes",
+                                                         "document_id": doc})
+        assert full.status_code == 409
+
+    # a question-only edit of an item whose stored evidence fails the check still saves
+    async with db.tx() as c:
+        await c.execute("INSERT INTO eval_items (id, eval_set_id, ordinal, question, gold_answer, evidence, document_id,"
+                        " gold_chunk_id, valid, reject_reason) VALUES ('bad', 's', 9, 'old?', 'a', 'not in the doc', ?,"
+                        " 'x', 0, 'evidence not found in source')", (doc,))
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        r = await client.patch(f"{BASE}/items/bad", json={"question": "New wording?", "gold_answer": "a",
+                                                          "evidence": "not in the doc", "facets": []})
+        assert r.status_code == 200 and r.json()["question"] == "New wording?"
+
+
 async def test_facets_revision_and_corpus_fingerprint(project):  # noqa: F811
     doc = await _ready_set()
     async with db.tx() as c:

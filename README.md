@@ -5,15 +5,25 @@ Upload documents, choose and tune every part of the pipeline (including the vect
 build the index, and chat with answers that cite their sources. An inspector shows which
 passages were found, by which search path, and what each step cost.
 
-**Measure it, too.** The Evaluate tab writes test questions from your own documents (no
-labelling), scores any version's retrieval (and optionally grades its answers), explains every miss, re-scores each version you save,
-and **sweeps** a grid of configurations into a quality-vs-cost leaderboard with a Pareto frontier
-— promote the winner in one click. The Health tab turns real user questions into a ranked
-**content backlog** of what your documents can't answer, and flags contradicting and duplicate
-passages.
+**Measure it, too:** test questions written from your own documents, sweeps into a
+quality-vs-cost leaderboard, and a content backlog of what your documents can't answer.
 
-**Phase 1 — Build & Chat** is complete; **Phase 2 — Measure & Optimize** is in progress. See [`PRD.md`](PRD.md) for the full plan and [`IDEAS.md`](IDEAS.md)
-for the idea catalogue.
+![Auto-Optimize on the Pydantic Docs demo: the sweep runs, the leaderboard ranks 8 configurations on a Pareto chart, and the winner is promoted](docs/phase2-demo.gif)
+
+**v2.0** — **Phase 1 (Build & Chat)** and **Phase 2 (Measure & Optimize)** are complete; see
+[`CHANGELOG.md`](CHANGELOG.md). [`PRD.md`](PRD.md) has the full plan (§7.0: what Phase 2 built)
+and [`IDEAS.md`](IDEAS.md) the idea catalogue.
+
+## Measure & optimize (v2.0)
+
+- **Evaluate** — generate an eval set from your documents in one click; score any version on
+  Hit@k, MRR, nDCG, context tokens and p50/p95 latency, optionally with LLM-graded answers
+  (95% intervals, ties reported as ties). Every miss gets one diagnosis with a suggested fix.
+- **Sweeps & Auto-Optimize** — grid over up to 4 settings (chunking, embedder, retriever, top k,
+  reranker, query expansion…); Auto-Optimize answer-grades the best quarter. The leaderboard draws
+  the quality-vs-cost Pareto frontier and **Promote** makes the winner the live version.
+- **Corpus Health** — real user questions → a ranked backlog of what the documents can't answer
+  (vs. what retrieval merely missed), plus duplicates, contradictions, unused and stale documents.
 
 ## What you can tune
 

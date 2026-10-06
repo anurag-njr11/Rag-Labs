@@ -2,11 +2,10 @@
 import { useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react'
 import gsap from 'gsap'
 import { ScrollToPlugin } from 'gsap/ScrollToPlugin'
-import { ScrollTrigger } from 'gsap/ScrollTrigger'
 import { useGSAP } from '@gsap/react'
 import { cn } from './cn'
 
-gsap.registerPlugin(useGSAP, ScrollToPlugin, ScrollTrigger)
+gsap.registerPlugin(useGSAP, ScrollToPlugin)
 gsap.defaults({ ease: 'power3.out', duration: 0.26 })
 
 /**
@@ -31,7 +30,7 @@ reducedQuery?.addEventListener('change', applyReduced)
 
 export const prefersReducedMotion = () => !!reducedQuery?.matches
 
-export { gsap, useGSAP, ScrollTrigger }
+export { gsap, useGSAP }
 
 // ------------------------------------------------------------------------------------------ scrolling
 
@@ -183,27 +182,6 @@ export function useStaggerIn(ref: RefObject<HTMLElement | null>, ready: boolean,
       t.progress(1).kill()
     }
   }, [ref, ready, selector, y, stagger])
-}
-
-/**
- * Cards fade/rise into place as they scroll into view (ScrollTrigger.batch). `selector` is scoped to `scope`.
- * Re-runs when `deps` change (e.g. once the cards have rendered).
- */
-export function useScrollReveal(scope: RefObject<HTMLElement | null>, selector: string, deps: unknown[] = []) {
-  useGSAP(
-    () => {
-      if (prefersReducedMotion() || !scope.current) return
-      const els = gsap.utils.toArray<HTMLElement>(selector, scope.current)
-      if (!els.length) return
-      gsap.set(els, { opacity: 0, y: 28 })
-      ScrollTrigger.batch(els, {
-        start: 'top 94%',
-        once: true,
-        onEnter: (batch) => gsap.to(batch, { opacity: 1, y: 0, duration: 0.55, stagger: 0.08, ease: MOTION.out, clearProps: 'transform,opacity' }),
-      })
-    },
-    { scope, dependencies: deps, revertOnUpdate: true },
-  )
 }
 
 /** A sliding active indicator for tab lists. Place inside a `relative` container; position via `useIndicator`. */

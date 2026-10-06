@@ -334,6 +334,14 @@ async def test_context_window_merges_neighbours(project):
     assert [r["id"] for r in res] == [r["id"] for r in plain]  # same hits, same order
     hit = next(r for r in res if r["document"] == "letters.md" and r["heading_path"] == "Bravo")
     assert hit["window"] == [hit["ordinal"] - 1, hit["ordinal"], hit["ordinal"] + 1]
-    assert "alpha" in hit["text"] and "bravo" in hit["text"] and "charlie" in hit["text"]
-    assert "delta" not in hit["text"]
+    w = hit["window_text"]
+    assert "alpha" in w and "bravo" in w and "charlie" in w and "delta" not in w
     assert _events(ctx, "context_window")[0].payload["chunks_added"] > 0
+    # Rerank, hit checks, judges and excerpts see the hit's own text; only the prompt gets the window.
+    own = next(r for r in plain if r["id"] == hit["id"])
+    assert hit["text"] == own["text"] and "alpha" not in hit["text"]
+    from app.core import evalmetrics as M
+    assert not M.is_hit(hit, {"document_id": hit["document_id"], "evidence": "alpha text here charlie text here"})
+    from app.core.node import build_node
+    built = build_node("prompt", wcfg["prompt"]).build(q, [hit])
+    assert "charlie text here" in built["messages"][1]["content"]

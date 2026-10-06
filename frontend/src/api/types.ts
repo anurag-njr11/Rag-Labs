@@ -327,8 +327,10 @@ export interface RetrievedChunk {
   in_context: boolean
   context_n: number | null
   cited?: boolean
-  /** retrieve.context_window > 0: ordinals of the chunks merged into `text` (this one ± neighbours). */
+  /** retrieve.context_window > 0: ordinals of the chunks in `window_text` (this one ± neighbours). */
   window?: number[]
+  /** What the prompt got for this hit: its text plus neighbours. `text` stays the hit's own. */
+  window_text?: string
 }
 export interface Citation {
   n: number
@@ -483,6 +485,8 @@ export interface EvalSet {
   created_at: string
   /** +1 on every hand edit or import (FR-2.5). */
   revision: number
+  /** sha256 of the sorted document content hashes at generation; null on older sets. */
+  corpus_sha: string | null
   /** The project's documents differ from those the set was generated from; null = not recorded (older sets). */
   corpus_changed: boolean | null
 }

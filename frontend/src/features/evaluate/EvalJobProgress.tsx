@@ -1,7 +1,7 @@
 import { useJobEvents } from '@/api/hooks'
 import { formatNumber } from '@/api/format'
 import { ProgressBar, StatusBadge, cn } from '@/components/ui'
-import { STAGE_LABELS } from '@/app/JobProgress'
+import { STAGE_LABELS } from '@/app/JobProgress.utils'
 
 /** One-line progress for eval generation / scoring jobs. */
 export function EvalJobProgress({

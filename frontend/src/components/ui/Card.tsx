@@ -1,5 +1,6 @@
 import type { ComponentProps, ReactNode } from 'react'
 import { cn } from './cn'
+import { cardClasses } from './Card.utils'
 
 export interface CardProps extends ComponentProps<'div'> {
   /** Hover: border-strong + shadow-md. */
@@ -8,18 +9,6 @@ export interface CardProps extends ComponentProps<'div'> {
   selected?: boolean
   /** Padding: none | sm (12px) | md (16px, default) | lg (20px). */
   padding?: 'none' | 'sm' | 'md' | 'lg'
-}
-
-const pad = { none: '', sm: 'p-3', md: 'p-4', lg: 'p-5' }
-
-export function cardClasses({ interactive, selected, padding = 'md', className }: Omit<CardProps, 'children'> = {}) {
-  return cn(
-    'rounded-lg border shadow-sm transition-[border-color,box-shadow,background-color]',
-    selected ? 'border-accent-default bg-accent-subtle outline outline-[0.5px] outline-accent-default' : 'border-border-default bg-bg-surface',
-    interactive && !selected && 'hover:border-border-strong hover:shadow-md',
-    pad[padding],
-    className,
-  )
 }
 
 export function Card({ interactive, selected, padding = 'md', className, ...rest }: CardProps) {

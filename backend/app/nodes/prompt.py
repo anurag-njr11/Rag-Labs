@@ -84,12 +84,17 @@ def source_label(c: dict[str, Any]) -> str:
     return " · ".join(parts)
 
 
+def packed_text(c: dict[str, Any]) -> str:
+    """What the prompt carries for a chunk: its neighbour window (retrieve.context_window) if set."""
+    return c.get("window_text") or c["text"]
+
+
 class BasePrompt(Node):
     def pack(self, chunks: list[dict[str, Any]]) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
         budget = self.config.max_context_tokens
         used, included, dropped = 0, [], []
         for c in chunks:
-            t = approx_tokens(c["text"])
+            t = approx_tokens(packed_text(c))
             if included and used + t > budget:
                 dropped.append(c)
                 continue
@@ -101,7 +106,7 @@ class BasePrompt(Node):
         blocks = []
         for i, c in enumerate(included, start=1):
             head = f"[{i}] ({source_label(c)})" if self.config.source_labels else f"[{i}]"
-            blocks.append(f"{head}\n{c['text']}")
+            blocks.append(f"{head}\n{packed_text(c)}")
         return "\n\n".join(blocks)
 
     def system_text(self) -> str:

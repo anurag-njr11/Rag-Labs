@@ -136,11 +136,12 @@ export function EditQuestions({ set }: { set: EvalSetDetail }) {
     importCsv.mutate(await f.text(), {
       onSuccess: (r) =>
         toast({
-          tone: r.error_count ? 'warning' : 'success',
+          tone: r.error_count || r.skipped ? 'warning' : 'success',
           title: `Imported ${r.added} question${r.added === 1 ? '' : 's'}`,
-          description: r.error_count
-            ? `${r.error_count} row(s) skipped — ${r.errors.slice(0, 3).map((e) => `row ${e.row}: ${e.message}`).join('; ')}`
-            : undefined,
+          description: [
+            r.skipped ? `${r.skipped} row(s) over the 500-question limit` : '',
+            r.error_count ? `${r.error_count} row(s) skipped — ${r.errors.slice(0, 3).map((e) => `row ${e.row}: ${e.message}`).join('; ')}` : '',
+          ].filter(Boolean).join(' · ') || undefined,
         }),
       onError: (e) => toast({ tone: 'danger', title: 'Import failed', description: errorMessage(e) }),
     })

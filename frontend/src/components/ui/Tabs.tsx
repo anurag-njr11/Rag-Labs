@@ -112,13 +112,6 @@ export function Tabs<V extends string>({
   )
 }
 
-export const tabPanelProps = (idPrefix: string, value: string) => ({
-  role: 'tabpanel' as const,
-  id: `${idPrefix}-panel-${value}`,
-  'aria-labelledby': `${idPrefix}-tab-${value}`,
-  tabIndex: 0,
-})
-
 export interface TabLinkItem {
   to: string
   label: ReactNode

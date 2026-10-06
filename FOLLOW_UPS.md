@@ -45,18 +45,3 @@ The other three projects with eval sets (prose corpora) score identically under 
   13 questions is within noise for a 1-question difference.
 - Repro scripts used: compare fused/hybrid per question on a build with `retrieval.retrieve(...)` and
   `evalmetrics.first_hit_rank(...)` for each `eval_items` row.
-
----
-
-## 4. Frontend warnings
-
-**Status:** open · **Priority:** low (dev-only / build-size)
-
-- `oxlint`: 19 `react(only-export-components)` warnings across 10 files (all pre-existing):
-  `features/playground/{chunkText,markdown,Sources,Inspector,Trace}.tsx`,
-  `components/ui/{Tabs,CodeBlock,Card,Button}.tsx`, `app/JobProgress.tsx`. Each file exports helper
-  functions/constants next to components, so Vite fast refresh falls back to a full page reload when
-  it changes (dev-only; no runtime effect). Fix: move the helpers into sibling `*.utils.ts` files.
-- `npm run build`: "Some chunks are larger than 500 kB after minification". Route components are
-  already lazy-loaded; check which shared dependency (likely GSAP / markdown / icons) lands in the
-  main chunk with `npx vite-bundle-visualizer`, then split it or raise `chunkSizeWarningLimit`.

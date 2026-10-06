@@ -108,6 +108,64 @@ async def test_auto_optimize_grades_only_top_cells(project, monkeypatch):  # noq
     assert calls == ["gemini"] * 6  # 2 cells x (1 grading + 2 re-judgings), one batch each
 
 
+async def test_failed_grading_fails_the_run_instead_of_scoring_zero(project, monkeypatch):  # noqa: F811
+    cfg = _cfg("numpy")
+    await builder.sync_build(project, cfg)
+    v = await _version(cfg)
+    await _one_item_set(project)
+    _fakes(monkeypatch)
+
+    async def down(provider, opts, system, user):
+        raise RuntimeError("judge down")
+
+    monkeypatch.setattr(evaluate, "complete", down)
+    async with db.tx() as c:
+        await c.execute("INSERT INTO eval_runs (id, eval_set_id, project_id, version_id, created_at)"
+                        " VALUES ('r', 's', 'p', ?, ?)", (v["id"], db.now_iso()))
+    with pytest.raises(evaluate.EvalError):
+        await evaluate.run_eval(Job(id="j", kind="eval", project_id="p"), "r", "p", "s", v, answers=True)
+    run = await db.fetch_one("SELECT status, error FROM eval_runs WHERE id='r'")
+    assert run["status"] == "failed" and "judge down" in run["error"]
+
+
+async def test_stop_halts_auto_optimize_grading_and_skips_fingerprint(project, monkeypatch):  # noqa: F811
+    base = _cfg("numpy")
+    v = await _version(base)
+    await _one_item_set(project)
+    calls = []
+    _fakes(monkeypatch, calls)
+    graded = evaluate.complete
+
+    async def stop_after_first(provider, opts, system, user):
+        out = await graded(provider, opts, system, user)
+        async with db.tx() as c:  # the user presses Stop while the first cell is being graded
+            await c.execute("UPDATE sweeps SET status='cancelled' WHERE id='sw'")
+        return out
+
+    monkeypatch.setattr(evaluate, "complete", stop_after_first)
+    cells = sweep.expand_grid(base, [{"path": "retrieve.top_k", "values": [1, 2, 3, 5, 8]}])
+    async with db.tx() as c:
+        await c.execute("INSERT INTO sweeps (id, project_id, eval_set_id, base_version_id, axes, cells, created_at)"
+                        " VALUES ('sw', 'p', 's', ?, '[]', ?, ?)", (v["id"], db.dumps(cells), db.now_iso()))
+    await sweep.run_sweep(Job(id="j", kind="sweep", project_id="p"), "sw", auto_optimize=True)
+    assert len(calls) == 1  # no second cell, no re-judging
+    assert (await db.fetch_one("SELECT status FROM sweeps WHERE id='sw'"))["status"] == "cancelled"
+    assert await db.fetch_one("SELECT id FROM sweep_fingerprints WHERE sweep_id='sw'") is None
+
+
+async def test_rejudge_keeps_verdict_when_an_extra_vote_is_missing(monkeypatch):
+    rounds = iter([{0: {"correct": "no"}, 1: {"correct": "no"}}, {0: {"correct": "no"}}])  # item 1 lost a vote
+
+    async def fake_judge(job, provider, opts, todo, stage="grade"):
+        return next(rounds)
+
+    monkeypatch.setattr(evaluate, "_judge", fake_judge)
+    results = [{"correct": "yes", "in_context": True}, {"correct": "yes", "in_context": True}]
+    await evaluate.rejudge(Job(id="j", kind="sweep", project_id="p"), _cfg("numpy"), None,
+                           [{"i": 0}, {"i": 1}], results)
+    assert results[0]["correct"] == "no" and results[1]["correct"] == "yes"
+
+
 # --- modes 5-7, judge choice, median-of-3 -------------------------------------------------
 
 

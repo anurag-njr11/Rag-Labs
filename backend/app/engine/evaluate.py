@@ -24,6 +24,7 @@ from ..core.pipeline import index_config_hash
 from ..ingest.jobs import Job
 from ..llm import provider as llm
 from ..nodes.chunk import approx_tokens
+from ..nodes.prompt import packed_text
 from . import chat, retrieval, sync
 
 GEN_BATCH = 5
@@ -389,7 +390,7 @@ async def score_item(build: dict[str, Any], cfg: dict[str, Any], deep: dict[str,
         "diagnosis": diagnosis,
         "deep_rank": deep_rank,
         "in_context": in_context,
-        "ctx_tokens": sum(approx_tokens(r["text"]) for r in included),
+        "ctx_tokens": sum(approx_tokens(packed_text(r)) for r in included),
         "ms": round(ms, 1),
         "top": [{"id": r["id"], "document": r["document"], "heading_path": r["heading_path"],
                  "hit": M.is_hit(r, item)} for r in final[:5]],
@@ -555,10 +556,14 @@ def diagnose_answer(r: dict[str, Any]) -> None:
 
 async def _judge(job: Job, provider: str, opts: dict[str, Any], todo: list[dict[str, Any]],
                  stage: str = "grade") -> dict[int, dict[str, Any]]:
-    """Grade every todo entry -> {result index: verdicts}; a failed batch leaves its entries out."""
+    """Grade every todo entry -> {result index: verdicts}; a failed batch leaves its entries out.
+    Raises EvalError when there was something to grade and nothing got a verdict."""
     batches = [todo[i:i + GRADE_BATCH] for i in range(0, len(todo), GRADE_BATCH)]
-    graded, _ = await gather_tolerant([_grade_batch(provider, opts, b) for b in batches], job, stage)
-    return {t["i"]: g for b, res in zip(batches, graded) for j, t in enumerate(b) if (g := (res or {}).get(j))}
+    graded, errors = await gather_tolerant([_grade_batch(provider, opts, b) for b in batches], job, stage)
+    out = {t["i"]: g for b, res in zip(batches, graded) for j, t in enumerate(b) if (g := (res or {}).get(j))}
+    if todo and not out:
+        raise EvalError(f"Answer grading failed: {errors[0] if errors else 'the judge returned no verdicts'}")
+    return out
 
 
 async def grade_answers(job: Job, cfg: dict[str, Any], items: list[dict[str, Any]],
@@ -566,12 +571,14 @@ async def grade_answers(job: Job, cfg: dict[str, Any], items: list[dict[str, Any
                         judge: dict[str, str] | None = None) -> tuple[list[dict[str, Any]], str]:
     """Fill results[i] with answer + verdicts, then diagnose the in-context failures (modes 4–7).
     Returns (the grader's inputs, judge label)."""
-    answered, _ = await gather_tolerant(
+    answered, errors = await gather_tolerant(
         [generate_answer(cfg, it["question"], f) for it, f in zip(items, finals)], job, "answer")
     cites = asks_for_citations(cfg)
     todo = [{"i": i, "question": it["question"], "gold": it["gold_answer"],
              "facets": db.loads(it.get("facets"), []) or [], **a}
             for i, (it, a) in enumerate(zip(items, answered)) if a]
+    if items and not todo:
+        raise EvalError(f"Answer generation failed: {errors[0] if errors else 'no answers'}")
     for t in todo:
         r = results[t["i"]]
         r["answer"] = t["answer"]
@@ -600,5 +607,7 @@ async def rejudge(job: Job, cfg: dict[str, Any], judge: dict[str, str] | None, t
         if not r.get("correct"):
             continue
         for key in ("correct", "grounded", "relevant"):
-            r[key] = median_verdict([r.get(key), *(e.get(t["i"], {}).get(key) for e in extra)])
+            votes = [r.get(key), *(e.get(t["i"], {}).get(key) for e in extra)]
+            if all(v in LEVELS for v in votes):  # a missing extra vote keeps the original verdict
+                r[key] = median_verdict(votes)
         diagnose_answer(r)

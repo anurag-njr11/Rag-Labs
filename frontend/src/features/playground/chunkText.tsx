@@ -1,27 +1,11 @@
 import type { ReactNode } from 'react'
 import { cn } from '@/components/ui'
 import { stripTagsPre } from '@/api/format'
-import { inlineTag, renderInline } from './markdown'
-
-export type Span = [number, number]
-
-/** Merge/sort spans and clamp them to [0, len). */
-export function normalizeSpans(spans: Span[] | undefined, len: number): Span[] {
-  const s = (spans ?? [])
-    .map(([a, b]) => [Math.max(0, Math.min(a, len)), Math.max(0, Math.min(b, len))] as Span)
-    .filter(([a, b]) => b > a)
-    .sort((x, y) => x[0] - y[0])
-  const out: Span[] = []
-  for (const sp of s) {
-    const last = out[out.length - 1]
-    if (last && sp[0] <= last[1]) last[1] = Math.max(last[1], sp[1])
-    else out.push([sp[0], sp[1]])
-  }
-  return out
-}
+import type { Span } from './chunkText.utils'
+import { inlineTag, renderInline } from './markdown.utils'
 
 /** Render text[from, to) with the parts inside `spans` wrapped in <mark>. */
-export function highlight(text: string, spans: Span[], from = 0, to = text.length): ReactNode[] {
+function highlight(text: string, spans: Span[], from = 0, to = text.length): ReactNode[] {
   const out: ReactNode[] = []
   let pos = from
   for (const [a, b] of spans) {
@@ -47,7 +31,7 @@ const BULLET_LINE = /^(\s*)[-*+]\s+/
  * Light Markdown for chunk text that keeps char offsets intact for highlighting: `#` heading lines render
  * bold, `-`/`*` bullets render as •, and `**bold**` markers are hidden. Everything else stays literal.
  */
-export function richHighlight(text: string, spans: Span[], from = 0, to = text.length): ReactNode[] {
+function richHighlight(text: string, spans: Span[], from = 0, to = text.length): ReactNode[] {
   const out: ReactNode[] = []
   let pos = from
   let k = 0
@@ -112,7 +96,7 @@ const cellsOf = (l: string) =>
   l.trim().replace(/^\|/, '').replace(/(?<!\\)\|$/, '').split(/(?<!\\)\|/).map((c) => c.trim().replace(/\\\|/g, '|'))
 
 /** Split a chunk into prose and Markdown-table segments, keeping char offsets for highlighting. */
-export function segmentTable(text: string): Segment[] {
+function segmentTable(text: string): Segment[] {
   const segs: Segment[] = []
   let off = 0
   let textStart = 0
@@ -187,13 +171,4 @@ export function ProseChunk({ text, spans, from = 0, className }: { text: string;
       {richHighlight(text, spans, from)}
     </p>
   )
-}
-
-/** Where a collapsed (4-line) preview should start so the first highlight is visible. */
-export function previewStart(text: string, spans: Span[]): number {
-  const first = spans[0]?.[0] ?? 0
-  if (first < 160) return 0
-  const nl = text.lastIndexOf('\n', first - 1)
-  const start = nl >= 0 && first - nl < 200 ? nl + 1 : Math.max(0, text.lastIndexOf(' ', first - 60) + 1)
-  return start
 }

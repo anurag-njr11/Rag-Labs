@@ -8,7 +8,7 @@ const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : u
 const str = (v: unknown) => (typeof v === 'string' && v ? v : undefined)
 
 /** Short, human facts from a step payload. */
-export function payloadFacts(s: TraceStep): string[] {
+function payloadFacts(s: TraceStep): string[] {
   const p = s.payload ?? {}
   const f: string[] = []
   if ((s.step as string) === 'pin') {

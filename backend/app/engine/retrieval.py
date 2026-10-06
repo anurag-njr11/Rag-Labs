@@ -158,18 +158,18 @@ async def expand_query(ctx: RunContext, cfg: PipelineConfig, rc: R.RetrieveConfi
 
 
 async def add_neighbours(build_id: str, results: list[dict[str, Any]], window: int) -> None:
-    """Replace each result's text with itself plus `window` chunks either side
-    (same document, chunk order). The result keeps its id, rank and score."""
+    """Set each result's `window_text`: itself plus `window` chunks either side (same document,
+    chunk order). Only the prompt packer reads it; `text` stays the hit's own, so rerank, hit
+    checks, judges and excerpts score the chunk that was actually retrieved."""
     for r in results:
         rows = await db.fetch_all(
-            "SELECT ordinal, text, token_count FROM chunks WHERE build_id=? AND document_id=?"
+            "SELECT ordinal, text FROM chunks WHERE build_id=? AND document_id=?"
             " AND ordinal BETWEEN ? AND ? ORDER BY ordinal",
             (build_id, r["document_id"], r["ordinal"] - window, r["ordinal"] + window),
         )
         # ponytail: chunk overlap is repeated at each seam, and adjacent hits repeat each other's
         # neighbours; dedupe in the prompt packer if that context cost matters.
-        r["text"] = "\n\n".join(x["text"] for x in rows)
-        r["token_count"] = sum(x["token_count"] for x in rows)
+        r["window_text"] = "\n\n".join(x["text"] for x in rows)
         r["window"] = [x["ordinal"] for x in rows]
 
 

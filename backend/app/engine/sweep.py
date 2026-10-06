@@ -1,7 +1,8 @@
 """Config sweeps: score a grid of pipeline variants against one eval set.
 
 A sweep varies a few fields of a base config (axes), scores every resulting
-config with the same retrieval scoring as an eval run (no LLM calls), and marks
+config with the same retrieval scoring as an eval run (LLM calls only for query
+expansion cells and Auto-Optimize's answer grading), and marks
 the Pareto set on quality (MRR) vs. cost (context tokens sent per query — what
 the generator would bill). Both are deterministic, so a sweep re-run ranks the
 same way. Cells are ordered by index hash so variants sharing an index are
@@ -165,8 +166,7 @@ async def run_sweep(job: Job, sweep_id: str, auto_optimize: bool = False,
         todo = sorted((c for c in cells if c["status"] == "pending"),
                       key=lambda c: index_config_hash(c["config"]))
         for n, cell in enumerate(todo, start=1):
-            row = await db.fetch_one("SELECT status FROM sweeps WHERE id=?", (sweep_id,))
-            if row is None or row["status"] != "running":
+            if not await _running(sweep_id):
                 break  # cancelled (or deleted): finished cells stay valid
             job.progress("sweep", n - 1, len(todo), message=_label(cell))
             cell["status"] = "running"
@@ -181,8 +181,7 @@ async def run_sweep(job: Job, sweep_id: str, auto_optimize: bool = False,
             mark_pareto(cells)
             await _save(sweep_id, cells)
         job.progress("sweep", len(todo), len(todo))
-        row = await db.fetch_one("SELECT status FROM sweeps WHERE id=?", (sweep_id,))
-        if auto_optimize and row is not None and row["status"] == "running":
+        if auto_optimize and await _running(sweep_id):
             await _grade_top(job, sweep, cells, items, judge)
         for c in cells:
             if c["status"] == "pending":
@@ -190,11 +189,18 @@ async def run_sweep(job: Job, sweep_id: str, auto_optimize: bool = False,
         if not any(c["status"] == "ready" for c in cells) and any(c["status"] == "failed" for c in cells):
             raise evaluate.EvalError("No configuration finished. See the cell errors.")
         await _save(sweep_id, cells, status="ready")
-        await record_fingerprint(sweep, cells, len(items))
+        row = await db.fetch_one("SELECT status FROM sweeps WHERE id=?", (sweep_id,))
+        if row is not None and row["status"] == "ready":  # a cancelled sweep's partial grid isn't a winner
+            await record_fingerprint(sweep, cells, len(items))
     except Exception as e:
         await _save(sweep_id, cells, status="failed", error=str(e))
         raise
     return {"sweep_id": sweep_id, "ready": sum(c["status"] == "ready" for c in cells)}
+
+
+async def _running(sweep_id: str) -> bool:
+    row = await db.fetch_one("SELECT status FROM sweeps WHERE id=?", (sweep_id,))
+    return row is not None and row["status"] == "running"
 
 
 async def _grade_top(job: Job, sweep: dict[str, Any], cells: list[dict[str, Any]],
@@ -202,6 +208,8 @@ async def _grade_top(job: Job, sweep: dict[str, Any], cells: list[dict[str, Any]
     top = to_grade(cells)
     kept: dict[int, tuple[list[dict[str, Any]], list[dict[str, Any]]]] = {}  # id(cell) -> (judge inputs, results)
     for n, cell in enumerate(top, start=1):
+        if not await _running(sweep["id"]):
+            return  # Stop: no more LLM spend
         job.progress("grade_cells", n - 1, len(top), message=_label(cell))
         try:
             todo: list[dict[str, Any]] = []
@@ -217,6 +225,8 @@ async def _grade_top(job: Job, sweep: dict[str, Any], cells: list[dict[str, Any]
     # Median-of-3 only where the call is close: cost stays bounded to the overlapping cells.
     close = [c for c in near_leader(top) if id(c) in kept]
     for cell in close:
+        if not await _running(sweep["id"]):
+            return
         job.log(f"Re-judging {_label(cell)} twice more: its answer score is within noise of the leader's")
         todo, results = kept[id(cell)]
         try:

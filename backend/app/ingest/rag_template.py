@@ -44,7 +44,7 @@ PROVIDER_BASE_URL = {
     "nvidia": "https://integrate.api.nvidia.com/v1",
 }
 PROVIDER_DEFAULT_MODEL = {
-    "gemini": "gemini-2.5-flash",
+    "gemini": "gemini-3.5-flash",
     "nvidia": "nvidia/nemotron-3-super-120b-a12b",
 }
 PROVIDER_DEFAULT_EMBED_MODEL = {

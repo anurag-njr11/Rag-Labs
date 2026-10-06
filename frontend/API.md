@@ -142,7 +142,7 @@ interface Document {
   chunks: number | null        // in the ACTIVE index; null = not indexed there yet
   index_error: string | null   // active index couldn't process this doc
   last_modified: string | null // ISO; upload's File.lastModified or the URL's HTTP Last-Modified
-  okf: DocumentOkf & {usage_count: number}  // usage_count: computed — this doc's chunks in recorded runs' retrieval results
+  okf: DocumentOkf & {usage_count: number}  // usage_count: computed — this doc's chunks in the latest 2000 chat runs' retrieval results
 }
 // OKF fields (FR-2.30): from Markdown YAML front matter at upload, or PATCH below. Not index config: never rebuilds.
 interface DocumentOkf {
@@ -204,15 +204,15 @@ set scores any version, whatever its chunking. Status is `running | ready | fail
 | `POST /sets` | `{size?: 5–100 = 30, version_id?}` | 201 `{eval_set: EvalSet, job_id}` · 409 no documents |
 | `GET /sets` | | `EvalSet[]` newest first |
 | `GET /sets/{set_id}` | | `EvalSet & {items: EvalItem[]}` (rejected items included, `valid: false` + `reject_reason`) |
-| `POST /sets/{set_id}/runs` | `{version_id?, answers?: false, judge?: {provider, model?}}` (default active) | 201 `{run: EvalRun, job_id}` · 409 set not ready · 422 unknown judge provider. `answers: true` also writes each answer with the version's prompt+model and LLM-grades it (extra stages `answer`, `grade`); the grader is `judge` (any provider from `GET /providers`, `model: ''` = its default), else the version's own Generate model. Judge calls use temperature 0 |
+| `POST /sets/{set_id}/runs` | `{version_id?, answers?: false, judge?: {provider, model?}}` (default active) | 201 `{run: EvalRun, job_id}` · 409 set not ready · 422 unknown judge provider. `answers: true` also writes each answer with the version's prompt+model and LLM-grades it (extra stages `answer`, `grade`); the grader is `judge` (any provider from `GET /providers`, `model: ''` = its default), else the version's own Generate model. Judge calls use temperature 0. If no answer could be generated or graded at all, the run fails (`status: 'failed'`, `error`) rather than reporting 0% |
 | `GET /runs?set_id=` | | `EvalRun[]` oldest first (no `results`) |
 | `GET /runs/{run_id}` | | `EvalRun & {results: EvalItemResult[]}` |
 | `GET /runs/{run_id}/fixes` | | `EvalFix[]` — one-click fixes for the run's diagnoses: `{diagnosis, config, changes: Change[], base_version}`. Save `config` via `POST /versions` |
-| `POST /sets/{set_id}/items` | `{question, gold_answer, evidence, document_id, facets?: string[]}` | 201 `EvalItem` (`valid: true`, `gold_chunk_id: ''`) · 422 evidence not found in that document's chunks / unknown document · 409 set not ready |
-| `PATCH /sets/{set_id}/items/{item_id}` | `{question?, gold_answer?, evidence?, facets?, valid?}` | `EvalItem`. `valid: false` drops it from scoring (`reject_reason: 'removed by hand'`); `valid: true` restores it (evidence re-checked) |
+| `POST /sets/{set_id}/items` | `{question, gold_answer, evidence, document_id, facets?: string[]}` | 201 `EvalItem` (`valid: true`, `gold_chunk_id: ''`) · 422 evidence not found in that document's chunks / unknown document · 409 set not ready / set already has 500 valid questions |
+| `PATCH /sets/{set_id}/items/{item_id}` | `{question?, gold_answer?, evidence?, facets?, valid?}` | `EvalItem`. `valid: false` drops it from scoring (`reject_reason: 'removed by hand'`); `valid: true` restores it (evidence re-checked; 409 at 500 valid questions). Evidence equal to the stored value isn't re-checked |
 | `DELETE /sets/{set_id}/items/{item_id}` | | 204 |
-| `GET /sets/{set_id}/export.csv` | | CSV download: `question,gold_answer,evidence,document,valid,reject_reason,facets` (`facets` joined with ` \| `) |
-| `POST /sets/{set_id}/import` | `{csv: string}` | `{added, error_count, errors: {row, message}[] (≤50)}` — columns `question`, `gold_answer` (or `answer`), `evidence`, `document` (file name), optional `facets` (`\|`-separated); rows with `valid=no` skipped; 422 missing columns |
+| `GET /sets/{set_id}/export.csv` | | CSV download: `question,gold_answer,evidence,document,valid,reject_reason,facets` (`facets` joined with ` \| `). Cells starting with `=`, `+`, `-` or `@` get a leading `'` (spreadsheet formula guard); import strips it again |
+| `POST /sets/{set_id}/import` | `{csv: string}` | `{added, skipped, error_count, errors: {row, message}[] (≤50)}` — `skipped`: rows over the 500-valid-question cap; columns `question`, `gold_answer` (or `answer`), `evidence`, `document` (file name), optional `facets` (`\|`-separated); rows with `valid=no` skipped; 422 missing columns |
 
 ```ts
 EvalSet = {id, project_id, version_id, build_id, status, size_requested, error, created_at,
@@ -259,7 +259,8 @@ Fields marked `?` are absent on runs scored before they existed.
 ### Sweeps
 
 A sweep scores every combination of a few axes (`slot.field` or `slot.type`) over a base version,
-on one ready eval set — retrieval only, no LLM calls. Status: `running | ready | failed | cancelled`.
+on one ready eval set — retrieval scoring; LLM calls only for `retrieve.query_expansion` cells and
+`auto_optimize` answer grading. Status: `running | ready | failed | cancelled`.
 Cells live inside the sweep; one becomes a real version only when promoted (`POST /versions` with
 `cell.config`).
 
@@ -279,7 +280,9 @@ Sweep = {id, project_id, eval_set_id, base_version_id, base_version, axes: {path
          created_at, counts: {[cellStatus]: number},
          cells: {overrides: {[path]: value}, config: PipelineConfig | null,
                  status: 'pending' | 'running' | 'ready' | 'failed' | 'invalid' | 'skipped',
-                 error, metrics?: EvalRun['metrics'], build_id?, pareto?: boolean}[]}
+                 error, metrics?: EvalRun['metrics'], build_id?, pareto?: boolean,
+                 grade_error?: string /* auto_optimize: why answer grading failed; retrieval scores stand */}[]}
+// A cell still `pending`/`running` when the sweep is no longer `running` (cancel, failure, restart) is returned as `skipped`.
 ```
 `auto_optimize: true` → after all cells, the top 25% by MRR (≤5) are re-scored with answer grading
 (stage `grade_cells`); their `metrics.answers` fills in, or `grade_error` is set. Then, if any graded cell's 95%
@@ -363,8 +366,10 @@ interface RetrievedChunk {
   in_context: boolean          // made it into the prompt (false = dropped for the token budget)
   context_n: number | null     // its [n] number in the prompt
   cited?: boolean              // present on `done`
-  window?: number[]            // retrieve.context_window > 0: ordinals merged into `text` (this chunk ± neighbours,
-                               // same document); `token_count` covers the merged text, `id`/`ordinal` stay the hit's
+  window?: number[]            // retrieve.context_window > 0: ordinals in `window_text` (this chunk ± neighbours,
+                               // same document)
+  window_text?: string         // what the prompt got for this hit (neighbours merged); `text`/`token_count` stay the
+                               // hit's own, which rerank, eval hit checks and judges use
 }
 interface Citation {
   n: number                    // matches [n] in the answer text

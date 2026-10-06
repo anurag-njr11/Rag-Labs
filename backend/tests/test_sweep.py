@@ -89,6 +89,14 @@ async def test_cancelled_sweep_keeps_finished_cells(project):  # noqa: F811
     assert {c["status"] for c in db.loads(row["cells"])} == {"skipped"}
 
 
+def test_stopped_sweep_shows_unfinished_cells_as_skipped():
+    from app.api.eval import _sweep_out
+    cells = db.dumps([{"status": "running"}, {"status": "pending"}, {"status": "ready"}])
+    out = _sweep_out({"status": "failed", "cells": cells, "axes": "[]"})  # e.g. interrupted by a restart
+    assert out["counts"] == {"skipped": 2, "ready": 1}
+    assert _sweep_out({"status": "running", "cells": cells, "axes": "[]"})["counts"]["pending"] == 1
+
+
 def test_suggested_axes_cover_registered_types_and_expand():
     axes = {a["path"]: a for a in sweep.AXES}
     assert "semantic" in axes["chunk.type"]["values"] and "fused" in axes["retrieve.type"]["values"]
