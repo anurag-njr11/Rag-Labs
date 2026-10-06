@@ -37,6 +37,12 @@ phases map to releases (`PRD.md` §5).
   context tokens), an insight line, and **Promote** — the winner becomes the active version and
   serves the endpoint at once.
 - **Cost simulator** (FR-2.33): $/month per configuration from queries/month and your token prices.
+- **Measured cost, index size, contextual precision/recall** (§7.2): LLM calls are priced from a
+  paid-tier list-price table (Gemini; NVIDIA publishes none, shown as "—"), so traces show real
+  `cost_usd` and eval runs and the leaderboard report **$/1k queries** (query expansion, plus answer
+  generation when graded). Eval runs and leaderboard cells report **index size** (chunks, vectors,
+  bytes on disk). The existing answer-grading call also returns per-passage relevance and
+  per-fact support, giving rank-weighted **contextual precision** and **contextual recall**.
 - **Regression guard** (FR-2.32): every version saved with a build is scored on the newest ready
   eval set, with ▲/▼ against the previous run.
 - **Corpus Health tab** (FR-2.26–2.31): coverage gaps from real questions (Playground/API history
@@ -70,16 +76,11 @@ phases map to releases (`PRD.md` §5).
 
 ### Known limitations
 
-- `$` cost per query is not measured yet (`cost_usd` is a stub); context tokens per query is the
-  deterministic cost proxy.
-- No contextual precision/recall judges.
 - Not built, deliberately: `unstructured` / `docling` parsers (heavy dependencies) and the semantic
   answer cache (Phase 3). Sweep cells run sequentially (one CPU-bound embedder).
 - Eval-set revisions are a counter, not a history table; runs keep their per-item results.
 - `fused` still trails `hybrid` slightly on code-heavy docs (MRR 0.885 vs 0.962 on a 13-question
   set) — see `FOLLOW_UPS.md` #1.
-- A model download that stalls (e.g. the reranker on first use) has no timeout, so a sweep cell can
-  wait indefinitely; cancel the sweep and retry.
 
 ## [v1.0.0] — 2026-09-23 — Phase 1: Build & Chat
 

@@ -1,4 +1,5 @@
 /** Small display formatters shared by all features. */
+import type { EvalMetrics } from './types'
 
 const nf = new Intl.NumberFormat('en-US')
 
@@ -25,6 +26,19 @@ export function formatMs(ms: number | null | undefined): string {
 export function formatCost(usd: number | null | undefined): string {
   if (usd == null) return '—'
   return `$${usd.toFixed(5)}`
+}
+
+/** USD per 1,000 queries; null/undefined = unknown price. */
+export function formatPer1k(usd: number | null | undefined): string {
+  if (usd == null) return '—'
+  return `$${usd >= 1 || usd === 0 ? usd.toFixed(2) : usd.toPrecision(2)}`
+}
+
+/** An eval run's $/1k queries: the full pipeline when answers were graded, else the retrieval stage
+ * (query expansion) only. `value` undefined = scored before costs existed; null = unknown price. */
+export function runCostPer1k(m: EvalMetrics): { value: number | null | undefined; withAnswers: boolean } {
+  const withAnswers = !!m.answers?.n && m.answers.cost_per_1k !== undefined
+  return { value: withAnswers ? m.answers!.cost_per_1k : m.cost_per_1k, withAnswers }
 }
 
 /** "just now", "5m ago", "2h ago", "yesterday", "3d ago", else "Sep 23". */

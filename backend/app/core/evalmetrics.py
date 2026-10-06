@@ -116,7 +116,34 @@ def answer_summary(grades: list[dict[str, Any]]) -> dict[str, Any]:
         "correct_rate": round(yes / n, 4) if n else 0.0, "correct_ci": list(wilson(yes, n)),
         "grounded_rate": round(count("grounded", "yes") / n, 4) if n else 0.0,
         "relevant_rate": round(count("relevant", "yes") / n, 4) if n else 0.0,
+        "context_precision": mean([g.get("context_precision") for g in graded]),
+        "context_recall": mean([g.get("context_recall") for g in graded]),
+        "cost_per_1k": per_1k([g.get("cost_usd") for g in graded]),  # expansion + answer generation
     }
+
+
+def mean(values: list[float | None]) -> float | None:
+    """Mean of the scored values (None = not scored); None if nothing was scored."""
+    v = [x for x in values if x is not None]
+    return round(sum(v) / len(v), 4) if v else None
+
+
+def per_1k(costs: list[float | None]) -> float | None:
+    """USD per 1,000 queries from per-query costs; None if any cost is unknown (or no queries)."""
+    if not costs or any(c is None for c in costs):
+        return None
+    return round(sum(costs) / len(costs) * 1000, 4)  # type: ignore[arg-type]
+
+
+def context_precision(relevant: list[bool]) -> float:
+    """Rank-weighted contextual precision: mean of precision@i over the relevant positions i
+    (0 when no passage is relevant)."""
+    hits, total = 0, 0.0
+    for i, rel in enumerate(relevant, start=1):
+        if rel:
+            hits += 1
+            total += hits / i
+    return round(total / hits, 4) if hits else 0.0
 
 
 def percentile(values: list[float], q: float) -> float:

@@ -114,7 +114,8 @@ _BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
 # Expansions are LLM output, so they're cached per (mode, model, question): eval's deep pass and
 # every sweep cell then search with the same rewrites, and a repeated question costs no call.
 # ponytail: process-lifetime dict cleared when full; persist it if expansion cost shows up in sweeps.
-_expansions: dict[str, tuple[list[str], str | None]] = {}
+# The list cost of the original call is kept, so eval/sweep $/1k queries don't depend on cache hits.
+_expansions: dict[str, tuple[list[str], str | None, float | None]] = {}
 
 
 async def expand_query(ctx: RunContext, cfg: PipelineConfig, rc: R.RetrieveConfig, question: str,
@@ -127,8 +128,9 @@ async def expand_query(ctx: RunContext, cfg: PipelineConfig, rc: R.RetrieveConfi
     gen = build_node("generate", cfg["generate"])
     key = stable_hash([mode, rc.expansion_queries, cfg["generate"]["type"], cfg["generate"].get("model"), question])
     if key in _expansions:
-        rewrites, passage = _expansions[key]
-        ctx.emit("query_expansion", mode=mode, cached=True, queries=rewrites, passage=passage)
+        rewrites, passage, cost = _expansions[key]
+        ctx.emit("query_expansion", mode=mode, cached=True, queries=rewrites, passage=passage,
+                 uncached_cost_usd=cost)
         return rewrites, passage
     t0 = time.perf_counter()
     prompt = (MULTI_QUERY_PROMPT.format(n=rc.expansion_queries, q=question) if mode == "multi_query"
@@ -146,14 +148,15 @@ async def expand_query(ctx: RunContext, cfg: PipelineConfig, rc: R.RetrieveConfi
         rewrites = rewrites[:rc.expansion_queries]
     else:
         passage = text.strip() or None
+    cost = llm.cost_usd(gen.provider, gen.model_name, tin, tout)
     ctx.emit("query_expansion", ms=(time.perf_counter() - t0) * 1000, tokens_in=tin, tokens_out=tout,
-             cost_usd=llm.cost_usd(gen.provider, gen.model_name, tin, tout), mode=mode,
+             cost_usd=cost, mode=mode,
              provider=gen.provider, model=gen.model_name, queries=rewrites, passage=passage,
              fallback=not (rewrites or passage))
     if rewrites or passage:
         if len(_expansions) >= 2048:
             _expansions.clear()
-        _expansions[key] = (rewrites, passage)
+        _expansions[key] = (rewrites, passage, cost)
     return rewrites, passage
 
 

@@ -230,9 +230,17 @@ EvalRun = {id, eval_set_id, version_id, version, build_id, status, error, create
                      ndcg_at_k?, p95_ms?,   // binary-relevance nDCG@k; 95th-percentile retrieval latency
                      context_hit?,   // share whose evidence survives the prompt's context budget
                      ctx_tokens?,    // mean context tokens sent to the model per question
+                     cost_per_1k?: number | null,  // USD / 1,000 queries at paid-tier list price, retrieval stage
+                                                   // (query expansion; 0 when off). null = a model has no known price
+                     index?: {chunks, vectors, bytes},  // the scored build: chunks, vectors in the store,
+                                                        // bytes of data/stores/<project>/<build>/
                      answers?: {n, ungraded, correct, partial, wrong, correct_rate,
                                 correct_ci: [lo, hi] /* 95% Wilson */, grounded_rate,
                                 relevant_rate?, judge?: 'provider/model',
+                                context_precision?: number | null,  // mean rank-weighted contextual precision
+                                context_recall?: number | null,     // mean share of facets supported by the context
+                                cost_per_1k?: number | null,        // USD / 1k queries: expansion + answer generation
+                                                                    // (judge calls excluded); null = unknown price
                                 rejudged?: true /* sweep cells only: median of 3 judgings */},  // answers: true only
                      diagnoses: {incorrect_format?, incomplete_answer?, wrong_specificity?, failed_to_extract?,
                                  dropped_by_budget?, dropped_by_rerank, ranked_below_k, not_retrieved},
@@ -241,10 +249,15 @@ EvalItemResult = {item_id, rank: number | null, hit,
                   diagnosis: 'incorrect_format' | 'incomplete_answer' | 'wrong_specificity' | 'failed_to_extract'
                            | 'dropped_by_budget' | 'dropped_by_rerank' | 'ranked_below_k' | 'not_retrieved' | null,
                   deep_rank, in_context?, ctx_tokens?, ms, top: {id, document, heading_path, hit}[],
+                  cost_usd?: number | null,   // list-price LLM cost of this question: expansion (+ answer when graded)
                   // answers: true only
                   answer?, correct?: 'yes'|'partial'|'no', grounded?: 'yes'|'partial'|'no'|null,
                   relevant?: 'yes'|'partial'|'no'|null, specificity?: 'ok'|'too_vague'|'too_verbose'|null,
                   missing_facts?: string[],   // facets the judge found missing (items with facets)
+                  context_precision?: number | null,  // judge: relevant in-context passages, rank-weighted
+                                                      // (mean of precision@i over relevant positions); 0 if no sources
+                  context_recall?: number | null,     // judge: share of facets (else the gold answer as one)
+                                                      // supported by the in-context passages; null = malformed verdict
                   format_error?: string}      // broken citation contract, e.g. "no [n] citations"
 ```
 `dropped_by_budget` is set on a **hit** (rank ≠ null) whose chunk the prompt packer cut for
@@ -348,6 +361,7 @@ type ChatEvent =
   | { type: 'done'; run_id: string; answer: string; citations: Citation[];
       retrieved: RetrievedChunk[]; trace: TraceStep[];
       totals: { ms: number; tokens_in: number; tokens_out: number; cost_usd: number; latency_ms: number };
+                                      // cost_usd excludes unpriced steps — check trace payload.priced
       truncated: boolean }                                    // true if max tokens cut the answer
   | { type: 'error'; code: string; message: string }          // show message verbatim
 
@@ -382,8 +396,11 @@ interface TraceStep {
   seq: number
   step: 'embed_query' | 'dense_search' | 'keyword_search' | 'exact_search' | 'fuse' | 'pin' | 'mmr'
       | 'rerank' | 'prompt' | 'generate' | 'query_expansion' | 'context_window'
-  ms: number; tokens_in: number; tokens_out: number; cost_usd: number
+  ms: number; tokens_in: number; tokens_out: number
+  cost_usd: number                  // paid-tier list price of the step's LLM call (free tiers cost $0)
   payload: Record<string, unknown>  // e.g. {hits: 12, store: 'faiss', exact: true} / {included: 5, dropped: 2}
+                                    // priced: false → the model has no known price: cost_usd is 0, show "—"
+                                    // query_expansion cached: true → uncached_cost_usd (number|null): what the call cost
                                     // query_expansion (retrieve.query_expansion ≠ none; carries the LLM tokens):
                                     //   {mode, provider, model, queries: string[], passage: string|null,
                                     //    fallback: bool, error?, cached?}; with multi_query, dense_search /

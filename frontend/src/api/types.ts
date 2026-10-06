@@ -517,6 +517,12 @@ export interface AnswerSummary {
   correct_ci: [number, number]
   grounded_rate: number
   relevant_rate?: number
+  /** Rank-weighted share of in-context passages the judge found relevant (null = none scored; absent on older runs). */
+  context_precision?: number | null
+  /** Share of required facts (else the gold answer) the judge found supported by the context. */
+  context_recall?: number | null
+  /** USD per 1,000 queries at list price: query expansion + answer generation. null = a model has no known price. */
+  cost_per_1k?: number | null
   /** "provider/model" that graded. */
   judge?: string
   /** Sweep cell re-judged 3x with the per-question median (its interval overlapped the leader's). */
@@ -547,6 +553,10 @@ export interface EvalMetrics {
   context_hit?: number
   /** Mean tokens of context sent to the model per question (absent on older runs). */
   ctx_tokens?: number
+  /** USD per 1,000 queries at list price for the retrieval stage (query expansion only). null = unknown price. */
+  cost_per_1k?: number | null
+  /** Size of the build that was scored. */
+  index?: { chunks: number; vectors: number; bytes: number }
   answers?: AnswerSummary
   diagnoses: Record<EvalDiagnosis, number>
   config: EvalConfigSummary
@@ -559,7 +569,11 @@ export interface EvalItemResult {
   deep_rank: number | null
   in_context?: boolean
   ctx_tokens?: number
+  /** List-price LLM cost of this question: query expansion (+ answer generation when graded); null = unknown. */
+  cost_usd?: number | null
   /** Answer grading only. */
+  context_precision?: number | null
+  context_recall?: number | null
   answer?: string
   correct?: Grade
   grounded?: Grade | null

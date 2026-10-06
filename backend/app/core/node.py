@@ -84,9 +84,12 @@ class RunContext:
         ms: float = 0.0,
         tokens_in: int = 0,
         tokens_out: int = 0,
-        cost_usd: float = 0.0,
+        cost_usd: float | None = 0.0,
         **payload: Any,
     ) -> TraceEvent:
+        if cost_usd is None:  # an LLM call whose model has no known price: shown as "—", not $0
+            cost_usd = 0.0
+            payload["priced"] = False
         ev = TraceEvent(
             seq=len(self.events),
             step=step,

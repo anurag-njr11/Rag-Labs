@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { ChevronRight, CircleCheck, CircleX, PartyPopper, Play } from 'lucide-react'
 import { errorMessage, useCreateVersion, useEvalFixes, useEvalRun, useEvalRuns, useRunEval, useVersions } from '@/api/hooks'
-import { formatMs, stripTags } from '@/api/format'
+import { formatBytes, formatMs, formatNumber, formatPer1k, runCostPer1k, stripTags } from '@/api/format'
 import type { EvalDiagnosis, EvalFix, EvalItem, EvalItemResult, EvalMetrics, EvalRun, EvalRunDetail, Grade, Judge } from '@/api/types'
 import { Badge, Button, Card, Dialog, EffectBadge, ProgressBar, Select, Spinner, Switch, Tabs, cn, useToast, type ProgressTone, Collapse, presence, usePresence } from '@/components/ui'
 import { EvalJobProgress } from './EvalJobProgress'
@@ -118,6 +118,7 @@ function Tile({ label, value, hint, meter, delta }: { label: string; value: stri
 function Scorecard({ run, before }: { run: EvalRunDetail; before?: EvalMetrics }) {
   const m = run.metrics!
   const hits = run.results.filter((r) => r.hit).length
+  const cost = runCostPer1k(m)
   return (
     <div className="grid gap-6 lg:grid-cols-[minmax(260px,320px)_minmax(0,1fr)]">
       <div className="flex items-center gap-5 rounded-xl bg-bg-subtle p-5">
@@ -138,6 +139,16 @@ function Scorecard({ run, before }: { run: EvalRunDetail; before?: EvalMetrics }
         <Tile label="Hit@3" value={pct(m.hit_at_3)} meter={m.hit_at_3} hint="in the top three" delta={<Delta now={m.hit_at_3} before={before?.hit_at_3} />} />
         <Tile label="MRR" value={m.mrr.toFixed(2)} meter={m.mrr} hint={m.ndcg_at_k != null ? `nDCG@${m.k} ${m.ndcg_at_k.toFixed(2)} · 1.0 = always first` : '1.0 = always first'} delta={<Delta now={m.mrr} before={before?.mrr} pctFmt={false} />} />
         <Tile label="Retrieval p50" value={formatMs(m.p50_ms)} hint={m.p95_ms != null ? `p95 ${formatMs(m.p95_ms)}` : 'median per question'} />
+        {cost.value !== undefined && (
+          <Tile
+            label="Cost / 1k queries"
+            value={formatPer1k(cost.value)}
+            hint={`${cost.withAnswers ? 'expansion + answers' : 'retrieval only (query expansion)'} · ${cost.value === null ? 'a model has no published price' : 'paid-tier list price; free tiers cost $0'}`}
+          />
+        )}
+        {m.index && (
+          <Tile label="Index size" value={formatBytes(m.index.bytes)} hint={`${formatNumber(m.index.chunks)} chunks · ${formatNumber(m.index.vectors)} vectors`} />
+        )}
         {m.answers && m.answers.n === 0 && (
           <Tile label="Answers correct" value="not graded" hint={`grading failed for ${m.answers.ungraded} question${m.answers.ungraded === 1 ? '' : 's'}`} />
         )}
@@ -156,6 +167,12 @@ function Scorecard({ run, before }: { run: EvalRunDetail; before?: EvalMetrics }
               meter={m.answers.grounded_rate}
               hint={`every claim backed by a source${m.answers.relevant_rate != null ? ` · ${pct(m.answers.relevant_rate)} on-topic` : ''}`}
             />
+            {m.answers.context_recall != null && (
+              <Tile label="Context recall" value={pct(m.answers.context_recall)} meter={m.answers.context_recall} hint="required facts the passages support (judge)" />
+            )}
+            {m.answers.context_precision != null && (
+              <Tile label="Context precision" value={m.answers.context_precision.toFixed(2)} meter={m.answers.context_precision} hint="relevant passages ranked first (judge, rank-weighted)" />
+            )}
           </>
         )}
       </dl>

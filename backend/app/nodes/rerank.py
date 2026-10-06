@@ -4,11 +4,10 @@ question and chunk together — slower than vector search, but sharper."""
 from __future__ import annotations
 
 import asyncio
-import threading
 from typing import Any, Literal
 
-from ..config import get_settings
 from ..core.node import Node, NodeConfig, register, ui_field
+from .embed import load_local_model
 
 RERANK_MODELS = {
     "Xenova/ms-marco-MiniLM-L-6-v2": "80 MB · fastest",
@@ -31,19 +30,10 @@ class NoRerank(Node):
         return None
 
 
-_models: dict[str, Any] = {}
-_lock = threading.Lock()
-
-
 def _load(name: str) -> Any:
-    with _lock:
-        if name not in _models:
-            from fastembed.rerank.cross_encoder import TextCrossEncoder
+    from fastembed.rerank.cross_encoder import TextCrossEncoder
 
-            cache = get_settings().cache_dir / "models"
-            cache.mkdir(parents=True, exist_ok=True)
-            _models[name] = TextCrossEncoder(model_name=name, cache_dir=str(cache))
-        return _models[name]
+    return load_local_model(TextCrossEncoder, name)
 
 
 class CrossEncoderConfig(NodeConfig):

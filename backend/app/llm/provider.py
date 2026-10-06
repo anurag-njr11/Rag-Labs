@@ -167,9 +167,30 @@ async def resolve_model(name: str, kind: str = "chat") -> str:
     return models[0]
 
 
-# Free tiers cost nothing. Tokens are still recorded so costs can be priced later.
-def cost_usd(provider: str, model: str, tokens_in: int, tokens_out: int) -> float:
-    return 0.0
+# Paid-tier list price, USD per 1M (input, output) tokens; None = no published price.
+# Gemini: ai.google.dev/gemini-api/docs/pricing, standard paid tier, checked 2026-10-06.
+# NVIDIA's build.nvidia.com API catalog publishes no per-token price (only third-party hosts do).
+# Free tiers cost $0 — this is what the same traffic would cost on a paid plan.
+PRICES: dict[tuple[str, str], tuple[float, float] | None] = {
+    ("gemini", "gemini-3.5-flash"): (1.50, 9.00),
+    ("gemini", "gemini-3-flash-preview"): (0.50, 3.00),
+    ("gemini", "gemini-flash-latest"): None,  # alias: its target changes with releases
+    ("gemini", "gemini-embedding-2"): (0.20, 0.0),
+    ("gemini", "gemini-embedding-001"): None,  # no longer on the pricing page
+    ("nvidia", "nvidia/nemotron-3-super-120b-a12b"): None,
+    ("nvidia", "deepseek-ai/deepseek-v4.1-flash"): None,
+    ("nvidia", "nvidia/llama-3.2-nv-embedqa-1b-v1"): None,
+    ("nvidia", "nvidia/nv-embedqa-mistral-7b-v2"): None,
+    ("nvidia", "nvidia/embed-qa-4"): None,
+}
+
+
+def cost_usd(provider: str, model: str, tokens_in: int, tokens_out: int) -> float | None:
+    """List-price cost of one call; None when the model has no known price."""
+    price = PRICES.get((provider, model.removeprefix("models/")))
+    if price is None:
+        return None
+    return round((tokens_in * price[0] + tokens_out * price[1]) / 1_000_000, 8)
 
 
 def usage_tokens(usage: Any) -> tuple[int, int]:

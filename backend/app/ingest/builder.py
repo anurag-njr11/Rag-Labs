@@ -27,6 +27,7 @@ from ..core.node import build_node
 from ..core.pipeline import PipelineConfig, index_config_hash, rebuild_part
 from ..engine import stores
 from ..nodes.chunk import approx_tokens
+from ..nodes.embed import ModelLoadError
 from . import lookup
 from .jobs import Job
 from .document_analyzer import analyze_document
@@ -180,6 +181,8 @@ async def _index_documents(build: dict[str, Any], cfg: PipelineConfig, docs: lis
                 cache.put("chunks", chunk_key, chunks)
             else:
                 stats["chunk_cache_hits"] += 1
+        except ModelLoadError:
+            raise  # the semantic chunker's model is missing — fail the build, don't blame the document
         except Exception as e:
             stats["docs_failed"] += 1
             log(f"{d['filename']}: {e}", "error")

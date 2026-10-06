@@ -16,6 +16,7 @@ from ..core.node import RunContext, build_node
 from ..core.pipeline import index_config_hash
 from ..ingest import builder
 from ..llm import provider as llm
+from ..nodes.embed import ModelLoadError
 from . import retrieval, sync
 
 _CITE = re.compile(r"\[(\d+(?:\s*[,;]\s*\d+)*)\]")
@@ -167,7 +168,7 @@ async def answer(project_id: str, version: dict[str, Any], question: str) -> Asy
             result=result, latency_ms=(time.perf_counter() - t0) * 1000))
         raise
     except Exception as e:
-        msg = str(e) if isinstance(e, (llm.ProviderError, ChatError)) else f"{type(e).__name__}: {e}"
+        msg = str(e) if isinstance(e, (llm.ProviderError, ChatError, ModelLoadError)) else f"{type(e).__name__}: {e}"
         await runs.finish_run(run_id, ctx, status="error", answer=answer_text, error=msg, result=result,
                               latency_ms=(time.perf_counter() - t0) * 1000)
         raise ChatError(msg) from e

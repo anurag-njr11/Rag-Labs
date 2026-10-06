@@ -3,7 +3,7 @@ import { Grid3x3, Rocket, Square, Star } from 'lucide-react'
 import {
   errorMessage, useCancelSweep, useCreateVersion, useRuns, useStartSweep, useSweepAxes, useSweeps, useVersions,
 } from '@/api/hooks'
-import { formatMs, formatNumber } from '@/api/format'
+import { formatBytes, formatMs, formatNumber, formatPer1k, runCostPer1k } from '@/api/format'
 import type { Judge, PipelineConfig, Sweep, SweepAxis, SweepCell } from '@/api/types'
 import { Badge, Banner, Button, Card, EffectBadge, Field, Input, Select, Spinner, Switch, cn, useToast } from '@/components/ui'
 import { EvalJobProgress } from './EvalJobProgress'
@@ -254,6 +254,17 @@ function ParetoChart({ cells, base }: { cells: Scored[]; base?: PipelineConfig }
 
 // ------------------------------------------------------------------------------------------------ leaderboard
 
+function CostCell({ m }: { m: Scored['metrics'] }) {
+  const c = runCostPer1k(m)
+  return (
+    <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}>
+      {formatPer1k(c.value)}
+      {c.withAnswers && <span className="text-text-tertiary" aria-hidden>†</span>}
+      {c.withAnswers && <span className="sr-only"> including answer generation</span>}
+    </td>
+  )
+}
+
 function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
   sweep: Sweep; base?: PipelineConfig; onPromote: (c: SweepCell) => void; promoting: boolean; cost: CostInputs
 }) {
@@ -263,6 +274,10 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
   const pending = sweep.cells.filter((c) => c.status === 'pending' || c.status === 'running').length
   const line = insight(scored, base)
   const graded = scored.some((c) => c.metrics.answers || c.grade_error)
+  const hasCost = scored.some((c) => c.metrics.cost_per_1k !== undefined)
+  const hasIndex = scored.some((c) => c.metrics.index)
+  const hasCtx = scored.some((c) => c.metrics.answers?.context_recall != null || c.metrics.answers?.context_precision != null)
+  const optional = Number(graded) + Number(priced) + Number(hasCost) + Number(hasIndex) + 2 * Number(hasCtx)
   return (
     <div className="flex flex-col gap-4">
       {line && <Banner tone="info">{line}</Banner>}
@@ -282,6 +297,10 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
               <th scope="col" className={cn(CELL, 'text-right font-medium')}>p50</th>
               <th scope="col" className={cn(CELL, 'text-right font-medium')}>p95</th>
               {graded && <th scope="col" className={cn(CELL, 'text-right font-medium')} title="LLM-graded, with 95% interval">Answers ✓</th>}
+              {hasCtx && <th scope="col" className={cn(CELL, 'text-right font-medium')} title="Share of required facts the passages support (judge)">Ctx recall</th>}
+              {hasCtx && <th scope="col" className={cn(CELL, 'text-right font-medium')} title="Relevant passages ranked first (judge, rank-weighted)">Ctx precision</th>}
+              {hasCost && <th scope="col" className={cn(CELL, 'text-right font-medium')} title="USD per 1,000 queries at paid-tier list price">$ / 1k q</th>}
+              {hasIndex && <th scope="col" className={cn(CELL, 'text-right font-medium')}>Index</th>}
               {priced && <th scope="col" className={cn(CELL, 'text-right font-medium')}>$ / month</th>}
               <th scope="col" className={cn(CELL, 'font-medium')}><span className="sr-only">Actions</span></th>
             </tr>
@@ -317,6 +336,18 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
                         : <span className="text-text-tertiary">—</span>}
                     </td>
                   )}
+                  {hasCtx && (
+                    <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}>{m.answers?.context_recall != null ? `${Math.round(m.answers.context_recall * 100)}%` : '—'}</td>
+                  )}
+                  {hasCtx && (
+                    <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}>{m.answers?.context_precision != null ? m.answers.context_precision.toFixed(2) : '—'}</td>
+                  )}
+                  {hasCost && <CostCell m={m} />}
+                  {hasIndex && (
+                    <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums text-text-secondary')} title={m.index ? `${formatNumber(m.index.chunks)} chunks · ${formatNumber(m.index.vectors)} vectors` : undefined}>
+                      {m.index ? formatBytes(m.index.bytes) : '—'}
+                    </td>
+                  )}
                   {priced && (
                     <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}>{usd(monthlyCost(m.ctx_tokens, cost))}</td>
                   )}
@@ -331,11 +362,17 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
               )
             })}
             {pending > 0 && sweep.status === 'running' && (
-              <tr><td colSpan={10 + Number(graded) + Number(priced)} className={cn(CELL, 'text-body-sm text-text-tertiary')}>{pending} configuration{pending === 1 ? '' : 's'} still to score…</td></tr>
+              <tr><td colSpan={10 + optional} className={cn(CELL, 'text-body-sm text-text-tertiary')}>{pending} configuration{pending === 1 ? '' : 's'} still to score…</td></tr>
             )}
           </tbody>
         </table>
       </div>
+      {hasCost && (
+        <p className="text-body-sm text-text-tertiary">
+          $ / 1k q: LLM cost at paid-tier list price (free tiers cost $0) — query expansion only, plus answer generation
+          for answer-graded cells (†). “—” = a model with no published price.
+        </p>
+      )}
       {broken.length > 0 && (
         <details className="text-body-sm text-text-secondary">
           <summary className="cursor-pointer">{broken.length} configuration{broken.length === 1 ? '' : 's'} couldn't run</summary>

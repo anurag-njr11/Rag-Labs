@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     # Upper bounds that keep a runaway sitemap or upload from eating the machine.
     max_upload_mb: int = 100
     sitemap_max_pages: int = 200
+    # A first-use local model download (fastembed embedder, cross-encoder) that hasn't finished by
+    # then fails the build / chat turn / sweep cell instead of waiting forever.
+    model_download_timeout_s: float = 600.0
 
     @property
     def db_path(self) -> Path:

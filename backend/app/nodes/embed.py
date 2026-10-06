@@ -9,6 +9,8 @@ from __future__ import annotations
 
 import asyncio
 import threading
+from concurrent.futures import Future
+from concurrent.futures import TimeoutError as FutureTimeout
 from typing import Any, Awaitable, Callable, Literal
 
 import numpy as np
@@ -94,19 +96,67 @@ class BaseEmbedder(Node):
 
 # --- local (fastembed) ------------------------------------------------------
 
-_models: dict[str, Any] = {}
+class ModelLoadError(RuntimeError):
+    """A local model couldn't be downloaded or loaded — an environment problem, not a document one."""
+
+
+_models: dict[tuple[Any, str], Any] = {}
+_loading: dict[tuple[Any, str], Future] = {}
 _model_lock = threading.Lock()
 
 
-def _load_fastembed(name: str) -> Any:
-    with _model_lock:
-        if name not in _models:
-            from fastembed import TextEmbedding
+def load_local_model(factory: Callable[..., Any], name: str) -> Any:
+    """`factory(model_name=name, cache_dir=...)`, once per (factory, name); downloads on first use.
 
-            cache = get_settings().cache_dir / "models"
-            cache.mkdir(parents=True, exist_ok=True)
-            _models[name] = TextEmbedding(model_name=name, cache_dir=str(cache))
-        return _models[name]
+    fastembed's Hub metadata calls (`model_info`, `list_repo_tree`) pass `timeout=None`, so a
+    stalled connection hangs forever and no HF_HUB_* timeout reaches them. The load therefore runs
+    in a daemon thread and callers give up after `model_download_timeout_s`. A timed-out attempt
+    is forgotten so the next call starts afresh; Hugging Face downloads into `*.incomplete` blobs
+    under a file lock and fastembed's GCS fallback stages in a temp dir, so a partial download
+    never leaves a cache entry that looks complete.
+    """
+    key = (factory, name)
+    with _model_lock:
+        if key in _models:
+            return _models[key]
+        fut = _loading.get(key)
+        if fut is None:
+            fut = _loading[key] = Future()
+            threading.Thread(target=_load_into, args=(key, fut), name=f"load {name}", daemon=True).start()
+    try:
+        return fut.result(timeout=get_settings().model_download_timeout_s)
+    except FutureTimeout:
+        with _model_lock:
+            if _loading.get(key) is fut:
+                del _loading[key]
+        raise ModelLoadError(f"Downloading {name} timed out — check your connection and retry.") from None
+    except Exception as e:
+        raise ModelLoadError(f"Could not load {name}: {e}") from e
+
+
+def _load_into(key: tuple[Any, str], fut: Future) -> None:
+    factory, name = key
+    try:
+        cache = get_settings().cache_dir / "models"
+        cache.mkdir(parents=True, exist_ok=True)
+        model = factory(model_name=name, cache_dir=str(cache))
+    except BaseException as e:
+        with _model_lock:
+            if _loading.get(key) is fut:
+                del _loading[key]
+        fut.set_exception(e)
+        return
+    with _model_lock:
+        _models[key] = model
+        if _loading.get(key) is fut:
+            del _loading[key]
+    fut.set_result(model)
+
+
+def _load_fastembed(name: str) -> Any:
+    from fastembed import TextEmbedding
+
+    return load_local_model(TextEmbedding, name)
 
 
 FastembedModel = Literal[tuple(FASTEMBED_MODELS)]  # type: ignore[valid-type]

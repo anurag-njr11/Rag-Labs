@@ -43,6 +43,18 @@ async def open_store(build: dict[str, Any]) -> VectorStore:
         return _open[build["id"]]
 
 
+async def index_size(build: dict[str, Any]) -> dict[str, int]:
+    """PRD §7.2 index size: chunks (as recorded), vectors in the store, bytes of its directory."""
+    store = await open_store(build)
+    path = Path(build["store_path"])
+
+    def du() -> int:
+        return sum(f.stat().st_size for f in path.rglob("*") if f.is_file()) if path.exists() else 0
+
+    return {"chunks": int(build["chunk_count"]), "vectors": int(await asyncio.to_thread(store.count)),
+            "bytes": await asyncio.to_thread(du)}
+
+
 async def close_store(build_id: str) -> None:
     store = _open.pop(build_id, None)
     if store is not None:

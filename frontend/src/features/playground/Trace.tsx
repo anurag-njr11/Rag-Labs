@@ -53,7 +53,10 @@ function payloadFacts(s: TraceStep): string[] {
 }
 
 const tokens = (a: number, b: number) => (a || b ? `${a ? formatNumber(a) : '—'} / ${b ? formatNumber(b) : '—'}` : '—')
-const cost = (c: number, s: TraceStep) => (c || s.tokens_in || s.tokens_out ? formatCost(c) : '—')
+// `priced: false` = an LLM call whose model has no known list price: "—", never "$0".
+const unpriced = (s: TraceStep) => s.payload?.priced === false
+const cost = (c: number, s: TraceStep) => (!unpriced(s) && (c || s.tokens_in || s.tokens_out) ? formatCost(c) : '—')
+const COST_NOTE = 'paid-tier list price (free tiers cost $0); "—" = no published price for this model.'
 
 export function TracePanel({ turn, indexType }: { turn: Turn; indexType?: string }) {
   const active = isActive(turn)
@@ -66,6 +69,7 @@ export function TracePanel({ turn, indexType }: { turn: Turn; indexType?: string
   const tin = steps.reduce((a, s) => a + s.tokens_in, 0)
   const tout = steps.reduce((a, s) => a + s.tokens_out, 0)
   const tcost = steps.reduce((a, s) => a + s.cost_usd, 0)
+  const costKnown = !steps.some(unpriced)
   const firstToken = num(gen?.payload?.first_token_ms) ?? (turn.firstTokenAt ? turn.firstTokenAt - turn.startedAt : undefined)
   const total = turn.totals?.latency_ms ?? turn.totals?.ms ?? (turn.endedAt ? turn.endedAt - turn.startedAt : undefined)
   const store = turn.store ?? str(dense?.payload?.store)
@@ -105,7 +109,7 @@ export function TracePanel({ turn, indexType }: { turn: Turn; indexType?: string
         <Stat label="Total" value={total != null ? formatMs(total) : active ? '…' : '—'} />
         <Stat label="First token" value={firstToken != null ? formatMs(firstToken) : active ? '…' : '—'} />
         <Stat label="Tokens in / out" value={tin || tout ? `${formatNumber(tin)} / ${formatNumber(tout)}` : active ? '…' : '—'} />
-        <Stat label="Cost" value={gen || tcost ? formatCost(tcost) : active ? '…' : '—'} />
+        <Stat label="Cost (list price)" value={costKnown && (gen || tcost) ? formatCost(tcost) : active ? '…' : '—'} />
       </dl>
 
       <div className="overflow-x-auto rounded-lg border border-border-default">
@@ -159,11 +163,12 @@ export function TracePanel({ turn, indexType }: { turn: Turn; indexType?: string
                 <span className="inline-block w-11 text-right sm:w-14 font-mono text-mono tabular-nums">{formatNumber(Math.round(sumMs))}</span>
               </td>
               <td className="px-3 py-2 text-right font-mono text-mono tabular-nums">{tokens(tin, tout)}</td>
-              <td className="hidden px-3 py-2 text-right font-mono text-mono tabular-nums sm:table-cell">{gen ? formatCost(tcost) : '—'}</td>
+              <td className="hidden px-3 py-2 text-right font-mono text-mono tabular-nums sm:table-cell">{gen && costKnown ? formatCost(tcost) : '—'}</td>
             </tr>
           </tbody>
         </table>
       </div>
+      {gen && <p className="text-body-sm text-text-tertiary">Cost: {COST_NOTE}</p>}
       {total != null && sumMs > 0 && Math.abs(total - sumMs) > 50 && (
         <p className="text-body-sm text-text-tertiary">
           Step times add up to {formatMs(sumMs)}; end-to-end latency was {formatMs(total)} (includes streaming and overhead).

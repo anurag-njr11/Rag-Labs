@@ -19,13 +19,13 @@ from typing import Any
 
 from .. import db
 from ..core import evalmetrics as M
-from ..core.node import RunContext, build_node
+from ..core.node import RunContext, TraceEvent, build_node
 from ..core.pipeline import index_config_hash
 from ..ingest.jobs import Job
 from ..llm import provider as llm
 from ..nodes.chunk import approx_tokens
 from ..nodes.prompt import packed_text
-from . import chat, retrieval, sync
+from . import chat, retrieval, stores, sync
 
 GEN_BATCH = 5
 VAL_BATCH = 10
@@ -69,8 +69,12 @@ and the sources the system was given.
 - "specificity": "ok" if its level of detail fits the question; "too_vague" if it is generic or hedged where the
   reference is specific; "too_verbose" if the answer is buried in detail nobody asked for.
 - "facts": only when required facts are listed: one "yes" or "no" per fact, in order. Does the system's answer state it?
+- "sources_relevant": one "yes" or "no" per source, in order. Does that source contain information useful for
+  answering the question?
+- "facts_in_sources": one "yes" or "no" per required fact, in order; when no facts are listed, a single value for the
+  reference answer as a whole. Do the sources (not the system's answer) support it?
 Reply with JSON only: {"results": [{"id": 1, "correct": "yes", "grounded": "yes", "relevant": "yes",
-"specificity": "ok", "facts": ["yes", "no"]}]}"""
+"specificity": "ok", "facts": ["yes", "no"], "sources_relevant": ["yes", "no", "yes"], "facts_in_sources": ["yes", "yes"]}]}"""
 LEVELS = ("yes", "partial", "no")
 SPECIFICITY = ("ok", "too_vague", "too_verbose")
 MAX_FACETS = 4
@@ -391,6 +395,7 @@ async def score_item(build: dict[str, Any], cfg: dict[str, Any], deep: dict[str,
         "deep_rank": deep_rank,
         "in_context": in_context,
         "ctx_tokens": sum(approx_tokens(packed_text(r)) for r in included),
+        "cost_usd": query_cost(ctx.events),
         "ms": round(ms, 1),
         "top": [{"id": r["id"], "document": r["document"], "heading_path": r["heading_path"],
                  "hit": M.is_hit(r, item)} for r in final[:5]],
@@ -453,6 +458,8 @@ async def score_config(job: Job, project_id: str, cfg: dict[str, Any], items: li
     metrics["p95_ms"] = round(M.percentile([r["ms"] for r in results], 0.95), 1)
     metrics["context_hit"] = round(sum(r["in_context"] for r in results) / len(results), 4) if results else 0.0
     metrics["ctx_tokens"] = round(sum(r["ctx_tokens"] for r in results) / len(results)) if results else 0
+    metrics["cost_per_1k"] = M.per_1k([r["cost_usd"] for r in results])  # retrieval stage: query expansion
+    metrics["index"] = await stores.index_size(build)
     if answers:
         todo, label = await grade_answers(job, cfg, items, results, finals, judge)
         metrics["answers"] = {**M.answer_summary(results), "judge": label}
@@ -469,9 +476,30 @@ async def generate_answer(cfg: dict[str, Any], question: str, final: list[dict[s
     """Answer exactly as the chat path would (same packer, prompt and model), without streaming."""
     built = build_node("prompt", cfg["prompt"]).build(question, final)
     gen = build_node("generate", cfg["generate"])
+    usage: dict[str, Any] = {}
     async with _llm_slots:
-        text = "".join([d async for d in gen.stream(built["messages"], {})])
-    return {"answer": text.strip(), "sources": [c["text"][:GRADE_CONTEXT_CHARS] for c in built["included"]]}
+        text = "".join([d async for d in gen.stream(built["messages"], usage)])
+    return {"answer": text.strip(), "sources": [c["text"][:GRADE_CONTEXT_CHARS] for c in built["included"]],
+            "cost_usd": llm.cost_usd(gen.provider, gen.model_name, usage.get("tokens_in", 0),
+                                     usage.get("tokens_out", 0))}
+
+
+def query_cost(events: list[TraceEvent]) -> float | None:
+    """List-price LLM cost of one retrieval (query expansion), counting a cached expansion at what
+    the call cost; None if any call's model has no known price."""
+    total = 0.0
+    for e in events:
+        if e.payload.get("priced") is False:
+            return None
+        c = e.payload["uncached_cost_usd"] if "uncached_cost_usd" in e.payload else e.cost_usd
+        if c is None:
+            return None
+        total += c
+    return total
+
+
+def add_cost(a: float | None, b: float | None) -> float | None:
+    return None if a is None or b is None else a + b
 
 
 def judge_settings(cfg: dict[str, Any], judge: dict[str, str] | None) -> tuple[str, dict[str, Any], str]:
@@ -510,7 +538,23 @@ async def _grade_batch(provider: str, opts: dict[str, Any], batch: list[dict[str
         facets, facts = batch[idx]["facets"], r.get("facts")
         if facets and isinstance(facts, list) and len(facts) == len(facets):
             out[idx]["missing_facts"] = [f for f, v in zip(facets, facts) if str(v).lower() != "yes"]
+        out[idx].update(contextual(r, len(batch[idx]["sources"]), len(facets) or 1))
     return out
+
+
+def contextual(r: dict[str, Any], n_sources: int, n_facts: int) -> dict[str, float | None]:
+    """Contextual precision/recall from the judge's per-source and per-fact yes/no lists.
+    No sources -> both 0; a list of the wrong length -> None (not scored)."""
+    if n_sources == 0:
+        return {"context_precision": 0.0, "context_recall": 0.0}
+
+    def flags(key: str, n: int) -> list[bool] | None:
+        v = r.get(key)
+        return [str(x).lower() == "yes" for x in v] if isinstance(v, list) and len(v) == n else None
+
+    rel, sup = flags("sources_relevant", n_sources), flags("facts_in_sources", n_facts)
+    return {"context_precision": M.context_precision(rel) if rel is not None else None,
+            "context_recall": round(sum(sup) / n_facts, 4) if sup is not None else None}
 
 
 def format_problem(answer: str, n_sources: int) -> str | None:
@@ -582,6 +626,7 @@ async def grade_answers(job: Job, cfg: dict[str, Any], items: list[dict[str, Any
     for t in todo:
         r = results[t["i"]]
         r["answer"] = t["answer"]
+        r["cost_usd"] = add_cost(r.get("cost_usd"), t.get("cost_usd"))
         if cites and (problem := format_problem(t["answer"], len(t["sources"]))):
             r["format_error"] = problem
     provider, opts, label = judge_settings(cfg, judge)
