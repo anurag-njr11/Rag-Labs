@@ -114,6 +114,35 @@ def load_docx(path: Path) -> list[Page]:
 
 # --- post-processing & quality ---------------------------------------------
 
+# Inline HTML that PDF-to-Markdown converters emit: <sup>/<sub> for super/subscripts,
+# <mark> for highlighted text, <br> inside table cells. Anything else in angle
+# brackets is left alone — it may be real content (e.g. `<class 'int'>`).
+_INLINE_PAIR = re.compile(r"<(sup|sub|mark|u|b|strong|i|em)>(.*?)</\1>", re.S)
+_INLINE_STRAY = re.compile(r"</?(?:sup|sub|mark|u|b|strong|i|em)>")
+_BR = re.compile(r"<br\s*/?>")
+
+
+def _unwrap_inline(m: re.Match[str]) -> str:
+    tag, inner = m.group(1), m.group(2)
+    if not inner.strip():
+        return inner
+    if tag in ("b", "strong"):
+        return f"**{inner}**"
+    if tag in ("i", "em"):
+        return f"_{inner}_"
+    return inner  # sup, sub, mark, u: keep the text, drop the markup
+
+
+def strip_inline_html(text: str) -> str:
+    """Turn converter inline HTML into plain text / Markdown so it doesn't reach
+    chunks, keyword search or the LLM prompt. `<br>` becomes a space, which keeps
+    Markdown table rows on one line."""
+    prev = None
+    while prev != text:  # nested pairs, innermost first
+        prev, text = text, _INLINE_PAIR.sub(_unwrap_inline, text)
+    return _INLINE_STRAY.sub("", _BR.sub(" ", text))
+
+
 _DIGITS = re.compile(r"\d+")
 
 

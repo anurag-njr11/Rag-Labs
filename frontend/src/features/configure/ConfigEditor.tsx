@@ -4,7 +4,10 @@ import { errorMessage } from '@/api/client'
 import { useNodes } from '@/api/hooks'
 import type { Change, NodeConfig, NodeType, PipelineConfig, PipelineFieldError, Slot, SlotCatalog } from '@/api/types'
 import { SLOTS } from '@/api/types'
-import { Badge, Banner, Card, EffectBadge, ExactBadge, OptionCardGroup, Spinner, cn } from '@/components/ui'
+import { TOPBAR_H } from '@/app/AppLayout'
+import {
+  Badge, Banner, Card, EffectBadge, ExactBadge, OptionCardGroup, Spinner, cn, smoothScrollTo, useIndicator, useScrollReveal, useSwapTransition,
+} from '@/components/ui'
 import { SchemaForm } from './SchemaForm'
 import { errorsFor, isExact, localChanges } from './schema'
 
@@ -56,6 +59,13 @@ export function ConfigEditor({ value, onChange, errors, baseline, className }: C
     return m
   }, [changes])
 
+  // Stage nav: one GSAP-driven highlight that glides to the active stage. Stage cards reveal on scroll.
+  const navList = useRef<HTMLOListElement>(null)
+  const navIndicator = useRef<HTMLSpanElement>(null)
+  useIndicator(navList, navIndicator, '[aria-current="location"]', [active, !!catalog])
+  const stages = useRef<HTMLDivElement>(null)
+  useScrollReveal(stages, '[data-stage-card]', [!!catalog])
+
   // Track the stage in view for the nav highlight.
   useEffect(() => {
     if (!catalog) return
@@ -90,7 +100,7 @@ export function ConfigEditor({ value, onChange, errors, baseline, className }: C
   const jump = (slot: Slot) => {
     setActive(slot)
     const el = document.getElementById(stageId(slot))
-    el?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    if (el) smoothScrollTo(el, { offset: TOPBAR_H + 16 })
     el?.querySelector<HTMLElement>('h2')?.focus({ preventScroll: true })
   }
   const otherErrors = (errors ?? []).filter((e) => !SLOTS.includes(e.slot as Slot))
@@ -100,7 +110,14 @@ export function ConfigEditor({ value, onChange, errors, baseline, className }: C
     <div className={cn('@container', className)}>
       <div className="flex gap-10">
         <nav aria-label="Pipeline stages" className="hidden w-64 shrink-0 @min-[900px]:block">
-          <ol className="sticky top-[calc(var(--topbar-h)+16px)] flex flex-col gap-1.5">
+          <ol ref={navList} className="sticky top-[calc(var(--topbar-h)+16px)] flex flex-col gap-1.5">
+            <span
+              ref={navIndicator}
+              aria-hidden
+              className="pointer-events-none invisible absolute left-0 top-0 rounded-lg border border-border-default bg-bg-surface shadow-sm"
+            >
+              <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-accent-default" />
+            </span>
             {SLOTS.map((slot, i) => {
               const sc = catalog.find((s) => s.slot === slot)
               const cfg = value[slot]
@@ -116,10 +133,9 @@ export function ConfigEditor({ value, onChange, errors, baseline, className }: C
                     aria-current={isActive ? 'location' : undefined}
                     className={cn(
                       'focus-ring relative flex h-14 w-full items-center gap-3 rounded-lg border px-3.5 text-left transition-colors',
-                      isActive ? 'border-border-default bg-bg-surface shadow-sm' : 'border-transparent hover:bg-bg-subtle',
+                      isActive ? 'border-transparent' : 'border-transparent hover:bg-bg-subtle',
                     )}
                   >
-                    {isActive && <span aria-hidden className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-accent-default" />}
                     <span
                       className={cn(
                         'flex size-6 shrink-0 items-center justify-center rounded-full font-mono text-mono-sm',
@@ -149,7 +165,7 @@ export function ConfigEditor({ value, onChange, errors, baseline, className }: C
           </ol>
         </nav>
 
-        <div className="flex min-w-0 flex-1 flex-col gap-5">
+        <div ref={stages} className="flex min-w-0 flex-1 flex-col gap-5">
           {/* Compact stage jump row when the editor is narrow */}
           <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1 scrollbar-none @min-[900px]:hidden" role="navigation" aria-label="Pipeline stages">
             {SLOTS.map((slot, i) => {
@@ -247,8 +263,11 @@ function StageCard({ n, slot, catalog, value, baseline, changes, errors, onChang
   })
 
   const titleId = `${stageId(slot)}-title`
+  // Switching the stage type swaps in a new parameter form — let it rise in.
+  const form = useRef<HTMLDivElement>(null)
+  useSwapTransition(form, cfg.type)
   return (
-    <Card padding="lg" id={stageId(slot)} aria-labelledby={titleId} role="region" className="scroll-mt-[calc(var(--topbar-h)+16px)] sm:p-6">
+    <Card data-stage-card padding="lg" id={stageId(slot)} aria-labelledby={titleId} role="region" className="scroll-mt-[calc(var(--topbar-h)+16px)] sm:p-6">
       <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
         <div className="min-w-0">
           <h2 id={titleId} tabIndex={-1} className="text-title-lg text-text-primary outline-none">
@@ -288,7 +307,7 @@ function StageCard({ n, slot, catalog, value, baseline, changes, errors, onChang
       )}
 
       {nt && (
-        <div className="mt-6 border-t border-border-default pt-6">
+        <div ref={form} className="mt-6 border-t border-border-default pt-6">
           <SchemaForm
             node={nt}
             slot={catalog}

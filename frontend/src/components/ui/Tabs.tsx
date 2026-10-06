@@ -1,6 +1,7 @@
-import { useRef, type KeyboardEvent, type ReactNode } from 'react'
-import { NavLink } from 'react-router-dom'
+import { useLayoutEffect, useRef, type KeyboardEvent, type ReactNode } from 'react'
+import { NavLink, useLocation } from 'react-router-dom'
 import { cn } from './cn'
+import { TabIndicator, gsap, useIndicator } from './motion'
 
 export interface TabItem<V extends string = string> {
   value: V
@@ -32,6 +33,11 @@ export function Tabs<V extends string>({
   items, value, onChange, variant = 'segment', size = 'md', className, fill, idPrefix, ...aria
 }: TabsProps<V>) {
   const refs = useRef<(HTMLButtonElement | null)[]>([])
+  const list = useRef<HTMLDivElement>(null)
+  const indicator = useRef<HTMLSpanElement>(null)
+  const seg = variant === 'segment'
+  // GSAP-driven sliding pill (segment) / underline that follows the active tab.
+  useIndicator(list, indicator, '[aria-selected="true"]', [value, items.length, size, seg], seg ? 'x' : 'x-underline')
   const enabled = items.filter((i) => !i.disabled)
 
   const onKey = (e: KeyboardEvent) => {
@@ -48,18 +54,23 @@ export function Tabs<V extends string>({
     refs.current[items.findIndex((i) => i.value === v)]?.focus()
   }
 
-  const seg = variant === 'segment'
   return (
     <div
+      ref={list}
       role="tablist"
       aria-label={aria['aria-label']}
       onKeyDown={onKey}
       className={cn(
+        'relative',
         seg ? 'inline-flex rounded-lg bg-bg-muted p-0.5' : 'flex gap-5 overflow-x-auto scrollbar-none',
         fill && 'flex w-full',
         className,
       )}
     >
+      <TabIndicator
+        ref={indicator}
+        className={seg ? 'top-0 rounded-md bg-bg-surface shadow-sm' : '-bottom-px h-0.5 rounded-full bg-text-primary'}
+      />
       {items.map((it, i) => {
         const active = it.value === value
         return (
@@ -77,17 +88,17 @@ export function Tabs<V extends string>({
             disabled={it.disabled}
             onClick={() => onChange(it.value)}
             className={cn(
-              'focus-ring inline-flex items-center justify-center gap-1.5 whitespace-nowrap text-label transition-colors disabled:opacity-45 [&_svg]:size-3.5',
+              'focus-ring relative inline-flex items-center justify-center gap-1.5 whitespace-nowrap text-label transition-colors disabled:opacity-45 [&_svg]:size-3.5',
               seg
                 ? cn(
                     'rounded-md px-3',
                     size === 'sm' ? 'h-6 text-body-sm' : 'h-7',
                     fill && 'flex-1',
-                    active ? 'bg-bg-surface text-text-primary shadow-sm' : 'text-text-secondary hover:text-text-primary',
+                    active ? 'text-text-primary' : 'text-text-secondary hover:text-text-primary',
                   )
                 : cn(
-                    '-mb-px h-10 border-b-2 px-0.5',
-                    active ? 'border-text-primary text-text-primary' : 'border-transparent text-text-secondary hover:text-text-primary',
+                    '-mb-px h-10 border-b-2 border-transparent px-0.5',
+                    active ? 'text-text-primary' : 'text-text-secondary hover:text-text-primary',
                   ),
             )}
           >
@@ -120,9 +131,26 @@ export interface TabLinkItem {
  * on narrow screens (the inner `mx-auto` collapses to 0 on overflow, so the first tab is never clipped).
  */
 export function TabLinks({ items, className, 'aria-label': ariaLabel }: { items: TabLinkItem[]; className?: string; 'aria-label'?: string }) {
+  const { pathname } = useLocation()
+  const nav = useRef<HTMLElement>(null)
+  const row = useRef<HTMLDivElement>(null)
+  const indicator = useRef<HTMLSpanElement>(null)
+  const activeIdx = items.findIndex((it) => (it.end ? pathname === it.to : pathname === it.to || pathname.startsWith(`${it.to}/`)))
+  useIndicator(row, indicator, '[aria-current="page"]', [activeIdx, items.length], 'x-underline')
+
+  // Keep the active tab in view when the row scrolls horizontally (mobile).
+  useLayoutEffect(() => {
+    const n = nav.current
+    const a = row.current?.querySelector<HTMLElement>('[aria-current="page"]')
+    if (!n || !a || n.scrollWidth <= n.clientWidth) return
+    const x = a.offsetLeft - (n.clientWidth - a.offsetWidth) / 2
+    gsap.to(n, { scrollTo: { x: Math.max(0, x) }, duration: 0.4, ease: 'power2.out' })
+  }, [activeIdx])
+
   return (
-    <nav aria-label={ariaLabel} className={cn('flex overflow-x-auto scrollbar-none', className)}>
-      <div className="mx-auto flex gap-2 sm:gap-4">
+    <nav ref={nav} aria-label={ariaLabel} className={cn('flex overflow-x-auto scrollbar-none', className)}>
+      <div ref={row} className="relative mx-auto flex gap-2 sm:gap-4">
+        <TabIndicator ref={indicator} className="-bottom-px z-10 h-0.5 rounded-full bg-accent-default" />
         {items.map((it) => (
           <NavLink
             key={it.to}
@@ -132,7 +160,7 @@ export function TabLinks({ items, className, 'aria-label': ariaLabel }: { items:
               cn(
                 'focus-ring -mb-px inline-flex h-12 shrink-0 items-center gap-2 whitespace-nowrap rounded-t-md border-b-2 px-3 text-heading-lg transition-colors [&_svg]:size-4',
                 isActive
-                  ? 'border-accent-default text-text-primary'
+                  ? 'border-transparent text-text-primary'
                   : 'border-transparent font-medium text-text-secondary hover:border-border-strong hover:text-text-primary',
               )
             }

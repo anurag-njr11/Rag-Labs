@@ -106,7 +106,9 @@ export default function ConfigureTab() {
       setNote('')
       toast({
         title: `Saved v${res.version.version}`,
-        description: res.job_id ? 'Now active — updating the index.' : 'Now active — no re-index needed.',
+        description:
+          (res.job_id ? 'Now active — updating the index.' : 'Now active — no re-index needed.') +
+          (res.eval_job_id ? ' Scoring it on your eval set (see Evaluate).' : ''),
         tone: 'success',
       })
       if (res.job_id) {

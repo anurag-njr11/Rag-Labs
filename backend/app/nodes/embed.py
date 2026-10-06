@@ -20,21 +20,30 @@ from ..llm import provider as llm
 
 Progress = Callable[[int, int], Awaitable[None] | None]
 
+# `mteb`: MTEB English *Retrieval* average (nDCG@10, 15 BEIR datasets) as self-reported on
+# each model card, checked 2026-10-06 — a starting point for sweeps (PRD FR-2.19), not a verdict:
+# measure on your own corpus. None = the card reports no comparable retrieval figure
+# (nomic v1.5 only publishes the overall MTEB average; bge-m3 reports multilingual benchmarks).
 FASTEMBED_MODELS = {
     # Lightweight & balanced
-    "BAAI/bge-small-en-v1.5": {"dim": 384, "size": "67 MB"},
-    "sentence-transformers/all-MiniLM-L6-v2": {"dim": 384, "size": "90 MB"},
-    "snowflake/snowflake-arctic-embed-s": {"dim": 384, "size": "130 MB"},
+    "BAAI/bge-small-en-v1.5": {"dim": 384, "size": "67 MB", "mteb": 51.68},
+    "sentence-transformers/all-MiniLM-L6-v2": {"dim": 384, "size": "90 MB", "mteb": 41.95},
+    "snowflake/snowflake-arctic-embed-s": {"dim": 384, "size": "130 MB", "mteb": 51.98},
     # Standard & recommended
-    "BAAI/bge-base-en-v1.5": {"dim": 768, "size": "210 MB"},
-    "nomic-ai/nomic-embed-text-v1.5": {"dim": 768, "size": "520 MB"},
+    "BAAI/bge-base-en-v1.5": {"dim": 768, "size": "210 MB", "mteb": 53.25},
+    "nomic-ai/nomic-embed-text-v1.5": {"dim": 768, "size": "520 MB", "mteb": None},
     # High quality & specialized
-    "mixedbread-ai/mxbai-embed-large-v1": {"dim": 1024, "size": "640 MB"},  # Best for code
+    "mixedbread-ai/mxbai-embed-large-v1": {"dim": 1024, "size": "640 MB", "mteb": 54.39},
     # HuggingFace additions
-    "BAAI/bge-m3": {"dim": 1024, "size": "1 GB"},  # Multilingual, very strong
-    "intfloat/e5-large-v2": {"dim": 1024, "size": "1.3 GB"},  # MTEB top performer
-    "jinaai/jina-embeddings-v2-base-en": {"dim": 768, "size": "150 MB"},  # Long context (8k)
+    "BAAI/bge-m3": {"dim": 1024, "size": "1 GB", "mteb": None},  # Multilingual
+    "intfloat/e5-large-v2": {"dim": 1024, "size": "1.3 GB", "mteb": 50.56},
+    "jinaai/jina-embeddings-v2-base-en": {"dim": 768, "size": "150 MB", "mteb": 47.87},  # Long context (8k)
 }
+
+
+def mteb_label(model: str) -> str:
+    score = FASTEMBED_MODELS[model]["mteb"]
+    return f"MTEB retrieval {score:.1f}" if score is not None else "MTEB retrieval not reported"
 
 # Instruction prefixes the model authors recommend. Used when the prefix field is left empty.
 DEFAULT_PREFIXES: dict[str, tuple[str, str]] = {
@@ -107,7 +116,7 @@ class FastembedConfig(NodeConfig):
     model: FastembedModel = ui_field(  # type: ignore[valid-type]
         "BAAI/bge-small-en-v1.5", title="Model",
         description="Runs on your computer. Downloaded once on first use.",
-        json_schema_extra={"enum_labels": {k: f"{k} · {v['dim']}d · {v['size']}"
+        json_schema_extra={"enum_labels": {k: f"{k} · {v['dim']}d · {v['size']} · {mteb_label(k)}"
                                            for k, v in FASTEMBED_MODELS.items()}},
     )
     normalize: bool = ui_field(True, title="Normalise vectors",

@@ -1,7 +1,8 @@
 import { useState, type ReactNode } from 'react'
 import { ChevronRight, FileText } from 'lucide-react'
 import type { EvalItem, EvalSetDetail } from '@/api/types'
-import { Badge, Card, Disclosure, cn } from '@/components/ui'
+import { Badge, Card, Collapse, Disclosure, cn } from '@/components/ui'
+import { EditQuestions } from './EditQuestions'
 
 /** One eval question as an expandable list row (fits the narrow side panel). */
 function ItemRow({ item, n }: { item: EvalItem; n: number }) {
@@ -16,9 +17,9 @@ function ItemRow({ item, n }: { item: EvalItem; n: number }) {
       >
         <span className="mt-0.5 w-5 shrink-0 text-right font-mono text-mono-sm text-text-tertiary">{n}</span>
         <span className="min-w-0 flex-1 text-body text-text-primary">{item.question}</span>
-        <ChevronRight size={14} aria-hidden className={cn('mt-1 shrink-0 text-text-tertiary transition-transform', open && 'rotate-90')} />
+        <ChevronRight size={14} aria-hidden className={cn('mt-1 shrink-0 text-text-tertiary transition-transform duration-300', open && 'rotate-90')} />
       </button>
-      {open && (
+      <Collapse open={open}>
         <dl className="mb-3 ml-8 mr-1 grid gap-2 text-body-sm">
           {item.document && (
             <div className="flex items-center gap-1.5 text-text-tertiary">
@@ -47,7 +48,7 @@ function ItemRow({ item, n }: { item: EvalItem; n: number }) {
             </div>
           )}
         </dl>
-      )}
+      </Collapse>
     </li>
   )
 }
@@ -89,7 +90,7 @@ export function EvalSetCard({
         <span className="pb-1 text-body text-text-secondary">
           questions kept
           <span className="block text-body-sm text-text-tertiary">
-            from {st.sampled ?? '—'} sampled chunks · 0 labelled by hand
+            from {st.sampled ?? '—'} sampled chunks · {set.items.filter((i) => !i.gold_chunk_id).length} added by hand
           </span>
         </span>
       </div>
@@ -101,7 +102,10 @@ export function EvalSetCard({
         </div>
       )}
 
-      {actions && <div className="flex flex-wrap items-center gap-2">{actions}</div>}
+      <div className="flex flex-wrap items-center gap-2">
+        {actions}
+        <EditQuestions set={set} />
+      </div>
       {progress}
 
       {(!compact || dropped.length > 0) && (

@@ -53,10 +53,9 @@
   /* Animations (foundation additions) */
   --animate-flash: flash 600ms ease-out;
   --animate-caret: caret 1s steps(1) infinite;
-  --animate-toast-in: toast-in 160ms ease-out;
   @keyframes flash { 0% { background-color: var(--color-accent-subtle); } 100% { background-color: transparent; } }
   @keyframes caret { 50% { opacity: 0; } }
-  @keyframes toast-in { from { opacity: 0; transform: translateY(8px); } to { opacity: 1; transform: none; } }
+  @keyframes backdrop-in { from { opacity: 0; } }
 }
 
 /* Dark theme: toggle with <html class="dark">. Utilities read the variables, so overriding them is enough. */
@@ -105,6 +104,8 @@
   &::-webkit-scrollbar { display: none; }
 }
 
+/* JS motion (tabs, dropdowns, dialogs, steps, smooth scrolls) is GSAP: src/components/ui/motion.tsx.
+   Don't set `scroll-behavior: smooth` — it fights GSAP's ScrollToPlugin. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
 }

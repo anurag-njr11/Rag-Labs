@@ -6,6 +6,7 @@ import { Banner, Button, Card, EmptyState, Select, Spinner, useToast } from '@/c
 import { EvalJobProgress } from './EvalJobProgress'
 import { EvalSetCard } from './EvalSetCard'
 import { RunsPanel } from './RunsPanel'
+import { SweepsPanel } from './SweepsPanel'
 
 const SIZES = [10, 20, 30, 50].map((n) => ({ value: String(n), label: `${n} questions` }))
 
@@ -88,28 +89,31 @@ export default function EvaluateTab() {
           />
         </Card>
       ) : detail.data ? (
-        <RunsPanel
-          projectId={project.id}
-          setId={detail.data.id}
-          items={detail.data.items}
-          side={
-            <EvalSetCard
-              compact
-              set={detail.data}
-              actions={controls}
-              progress={
-                (jobId || latest?.status === 'failed') && (
-                  <>
-                    {progress}
-                    {!jobId && latest?.status === 'failed' && (
-                      <p role="alert" className="text-body-sm text-danger-fg">Regenerating failed: {latest.error}</p>
-                    )}
-                  </>
-                )
-              }
-            />
-          }
-        />
+        <>
+          <RunsPanel
+            projectId={project.id}
+            setId={detail.data.id}
+            items={detail.data.items}
+            side={
+              <EvalSetCard
+                compact
+                set={detail.data}
+                actions={controls}
+                progress={
+                  (jobId || latest?.status === 'failed') && (
+                    <>
+                      {progress}
+                      {!jobId && latest?.status === 'failed' && (
+                        <p role="alert" className="text-body-sm text-danger-fg">Regenerating failed: {latest.error}</p>
+                      )}
+                    </>
+                  )
+                }
+              />
+            }
+          />
+          <SweepsPanel projectId={project.id} setId={detail.data.id} />
+        </>
       ) : (
         <Spinner label="Loading eval set" />
       )}

@@ -1,6 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { ChevronRight, CircleCheck, CircleX, Info, TriangleAlert } from 'lucide-react'
 import { cn } from './cn'
+import { Collapse } from './motion'
 
 export interface EmptyStateProps {
   icon?: ReactNode
@@ -103,11 +104,13 @@ export function Disclosure({ label, hint, defaultOpen = false, open: openProp, o
         onClick={toggle}
         className="focus-ring flex w-full items-center gap-1.5 rounded-sm border-b border-border-default py-2 text-left text-label text-text-secondary hover:text-text-primary"
       >
-        <ChevronRight size={14} aria-hidden className={cn('transition-transform', open && 'rotate-90')} />
+        <ChevronRight size={14} aria-hidden className={cn('transition-transform duration-300 ease-out', open && 'rotate-90')} />
         {label}
         {hint && <span className="text-body-sm text-text-tertiary">{hint}</span>}
       </button>
-      {open && <div className="pt-4">{children}</div>}
+      <Collapse open={open}>
+        <div className="pt-4">{children}</div>
+      </Collapse>
     </div>
   )
 }

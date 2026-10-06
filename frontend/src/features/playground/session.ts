@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useSyncExternalStore } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api, errorMessage, streamChat } from '@/api/hooks'
 import type { ChatEvent, ChatTotals, Citation, RetrievedChunk, RunDetail, TraceStep } from '@/api/types'
@@ -101,22 +101,67 @@ export function turnFromRun(run: RunDetail): Turn {
   }
 }
 
+/**
+ * Chat state lives outside React, one store per project, so the conversation (and any answer still
+ * streaming) survives the Playground unmounting when the user switches to another workspace tab.
+ */
+interface SessionStore {
+  turns: Turn[]
+  abort: AbortController | null
+  listeners: Set<() => void>
+}
+
+const stores = new Map<string, SessionStore>()
+
+function getStore(projectId: string): SessionStore {
+  let s = stores.get(projectId)
+  if (!s) {
+    s = { turns: [], abort: null, listeners: new Set() }
+    stores.set(projectId, s)
+  }
+  return s
+}
+
+/** Abort the store's in-flight stream (if any) and register a new one. */
+function beginStream(s: SessionStore): AbortController {
+  s.abort?.abort()
+  s.abort = new AbortController()
+  return s.abort
+}
+
+function endStream(s: SessionStore, ac: AbortController) {
+  if (s.abort === ac) s.abort = null
+}
+
+function setTurns(s: SessionStore, fn: (ts: Turn[]) => Turn[]) {
+  s.turns = fn(s.turns)
+  s.listeners.forEach((l) => l())
+}
+
 export function useChatSession(projectId: string) {
   const qc = useQueryClient()
-  const [turns, setTurns] = useState<Turn[]>([])
-  const abortRef = useRef<AbortController | null>(null)
+  const store = getStore(projectId)
+  const subscribe = useCallback(
+    (l: () => void) => {
+      store.listeners.add(l)
+      return () => {
+        store.listeners.delete(l)
+      }
+    },
+    [store],
+  )
+  const turns = useSyncExternalStore(subscribe, () => store.turns)
 
-  useEffect(() => () => abortRef.current?.abort(), [])
-
-  const patch = useCallback((id: string, fn: (t: Turn) => Turn) => {
-    setTurns((ts) => ts.map((t) => (t.id === id ? fn(t) : t)))
-  }, [])
+  const patch = useCallback(
+    (id: string, fn: (t: Turn) => Turn) => {
+      setTurns(store, (ts) => ts.map((t) => (t.id === id ? fn(t) : t)))
+    },
+    [store],
+  )
 
   const run = useCallback(
     async (id: string, question: string, versionId?: string) => {
-      abortRef.current?.abort()
-      const ac = new AbortController()
-      abortRef.current = ac
+      const ac = beginStream(store)
       try {
         const terminal = await streamChat(
           projectId,
@@ -135,28 +180,28 @@ export function useChatSession(projectId: string) {
           patch(id, (t) => ({ ...t, status: 'error', error: { code: 'request_failed', message: errorMessage(e) }, endedAt: Date.now() }))
         }
       } finally {
-        if (abortRef.current === ac) abortRef.current = null
+        endStream(store, ac)
         void qc.invalidateQueries({ queryKey: ['projects', projectId, 'runs'] })
       }
     },
-    [projectId, patch, qc],
+    [projectId, store, patch, qc],
   )
 
   const ask = useCallback(
     (question: string, versionId?: string) => {
       const id = newId()
       const turn: Turn = { id, question, versionId, status: 'waiting', answer: '', retrieved: [], trace: [], citations: [], startedAt: Date.now() }
-      setTurns((ts) => [...ts, turn])
+      setTurns(store, (ts) => [...ts, turn])
       void run(id, question, versionId)
       return id
     },
-    [run],
+    [store, run],
   )
 
   /** Re-run a turn in place (after an error / stop). */
   const retry = useCallback(
     (id: string) => {
-      const t = turns.find((x) => x.id === id)
+      const t = store.turns.find((x) => x.id === id)
       if (!t) return
       patch(id, (x) => ({
         ...x, status: 'waiting', answer: '', retrieved: [], trace: [], citations: [], error: undefined, totals: undefined,
@@ -164,22 +209,25 @@ export function useChatSession(projectId: string) {
       }))
       void run(id, t.question, t.versionId)
     },
-    [turns, patch, run],
+    [store, patch, run],
   )
 
-  const stop = useCallback(() => abortRef.current?.abort(), [])
+  const stop = useCallback(() => store.abort?.abort(), [store])
 
   const clear = useCallback(() => {
-    abortRef.current?.abort()
-    setTurns([])
-  }, [])
+    store.abort?.abort()
+    setTurns(store, () => [])
+  }, [store])
 
-  const loadRun = useCallback(async (runId: string) => {
-    const detail = await api.get<RunDetail>(`/runs/${runId}`)
-    const turn = turnFromRun(detail)
-    setTurns((ts) => [...ts, turn])
-    return turn.id
-  }, [])
+  const loadRun = useCallback(
+    async (runId: string) => {
+      const detail = await api.get<RunDetail>(`/runs/${runId}`)
+      const turn = turnFromRun(detail)
+      setTurns(store, (ts) => [...ts, turn])
+      return turn.id
+    },
+    [store],
+  )
 
   return { turns, ask, retry, stop, clear, loadRun, streaming: turns.some(isActive) }
 }

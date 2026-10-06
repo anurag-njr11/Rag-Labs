@@ -1,6 +1,7 @@
 import type { ReactNode } from 'react'
 import { cn } from '@/components/ui'
-import { renderInline } from './markdown'
+import { stripTagsPre } from '@/api/format'
+import { inlineTag, renderInline } from './markdown'
 
 export type Span = [number, number]
 
@@ -27,15 +28,15 @@ export function highlight(text: string, spans: Span[], from = 0, to = text.lengt
     if (b <= from || a >= to) continue
     const s = Math.max(a, from)
     const e = Math.min(b, to)
-    if (s > pos) out.push(text.slice(pos, s))
+    if (s > pos) out.push(stripTagsPre(text.slice(pos, s)))
     out.push(
       <mark key={`${s}-${e}`} className="rounded-[2px] bg-highlight-bg px-px text-text-primary">
-        {text.slice(s, e)}
+        {stripTagsPre(text.slice(s, e))}
       </mark>,
     )
     pos = e
   }
-  if (pos < to) out.push(text.slice(pos, to))
+  if (pos < to) out.push(stripTagsPre(text.slice(pos, to)))
   return out
 }
 
@@ -70,21 +71,33 @@ export function richHighlight(text: string, spans: Span[], from = 0, to = text.l
   return out
 }
 
-/** Highlighted text[from, to) with `**…**` markers removed and their content bolded. */
+/**
+ * Highlighted text[from, to) with `**…**` markers removed and their content bolded, and the parser's inline
+ * HTML tags (<sup>, <mark>, <br>, …) rendered as formatting. Tags are hidden, never removed from `text`,
+ * so span offsets still line up.
+ */
 function boldRuns(text: string, spans: Span[], from: number, to: number, key: string): ReactNode[] {
   const out: ReactNode[] = []
-  const re = /\*\*(?=\S)([\s\S]*?\S)\*\*/g
+  const re = /\*\*(?=\S)([\s\S]*?\S)\*\*|<(sup|sub|mark|b|strong|i|em|u)>([\s\S]*?)<\/\2>|<br\s*\/?>/g
   re.lastIndex = from
   let pos = from
   let k = 0
   for (let m = re.exec(text); m && m.index + m[0].length <= to; m = re.exec(text)) {
     if (m.index > pos) out.push(...highlight(text, spans, pos, m.index))
-    out.push(
-      <strong key={`${key}-${k++}`} className="font-semibold text-text-primary">
-        {highlight(text, spans, m.index + 2, m.index + m[0].length - 2)}
-      </strong>,
-    )
-    pos = m.index + m[0].length
+    const end = m.index + m[0].length
+    if (m[1] !== undefined) {
+      out.push(
+        <strong key={`${key}-${k++}`} className="font-semibold text-text-primary">
+          {highlight(text, spans, m.index + 2, end - 2)}
+        </strong>,
+      )
+    } else if (m[2] !== undefined) {
+      const inner = boldRuns(text, spans, m.index + m[2].length + 2, end - m[2].length - 3, `${key}-${k}`)
+      out.push(inlineTag(m[2], inner, `${key}-${k++}`))
+    } else {
+      out.push('\n')
+    }
+    pos = end
   }
   if (pos < to) out.push(...highlight(text, spans, pos, to))
   return out

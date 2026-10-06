@@ -1,11 +1,11 @@
-import type { ReactNode } from 'react'
+import { useRef, type ReactNode } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { FolderX } from 'lucide-react'
 import { ApiError, errorMessage, useProject } from '@/api/hooks'
 import type { Project } from '@/api/types'
 import { PageFallback } from '@/app/AppLayout'
 import { projectPath } from '@/app/workspace'
-import { Button, ButtonLink, EmptyState } from '@/components/ui'
+import { Button, ButtonLink, EmptyState, smoothScrollTo, useSwapTransition } from '@/components/ui'
 import { BuildStep } from './BuildStep'
 import { ConfigureStep } from './ConfigureStep'
 import { DocumentsStep } from './DocumentsStep'
@@ -24,6 +24,9 @@ export default function CreateWizard() {
   const rawStep = Number(params.get('step') ?? 0)
   const step = projectId ? Math.min(Math.max(Number.isFinite(rawStep) ? rawStep : 0, 0), versionId ? 3 : 2) : 0
   const q = useProject(projectId)
+  // Steps slide in from the right going forward, from the left going back.
+  const stage = useRef<HTMLDivElement>(null)
+  useSwapTransition(stage, step, 'auto', 48)
 
   const go = (next: number, extra: Record<string, string | null> = {}, id = projectId) => {
     const p = new URLSearchParams()
@@ -36,7 +39,7 @@ export default function CreateWizard() {
     }
     for (const [k, v] of Object.entries(merged)) if (v) p.set(k, v)
     setParams(p, { replace: next === step })
-    window.scrollTo({ top: 0 })
+    smoothScrollTo(0, { duration: 0.45 })
   }
 
   const project: Project | undefined = q.data
@@ -84,9 +87,11 @@ export default function CreateWizard() {
   }
 
   return (
-    <div className="flex flex-1 flex-col">
+    <div className="flex flex-1 flex-col overflow-x-clip">
       <WizardHeader step={step} onStepClick={step < 3 ? onStepClick : undefined} exitTo={exitTo} title={project ? project.name : 'New project'} />
-      {body}
+      <div ref={stage} className="flex flex-1 flex-col">
+        {body}
+      </div>
     </div>
   )
 }

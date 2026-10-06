@@ -8,7 +8,7 @@ Stack: **FastAPI + SQLite (aiosqlite)** backend under `backend/app/`, **React 19
 
 ## 1. System Overview
 
-RAGLabs lets a user create a **project**, upload documents, configure an 8-stage **RAG pipeline** (parse → chunk → embed → vector_store → retrieve → rerank → prompt → generate) through a schema-driven UI, build a vector index, chat against it in a **Playground** with a retrieval **Inspector** and per-turn cost/latency **trace**, and **measure** any pipeline version on the **Evaluate** tab against an auto-generated, zero-labelling eval set (Part 37). Every saved pipeline configuration is an immutable **version**; only one version per project is "active" at a time (a mutable pointer). Rebuild-relevant configuration is deduplicated into shared **index builds**, and both parsed documents/chunks and embedding vectors are content-addressed and cached so that re-running a pipeline with the same effective inputs does no work.
+RAGLabs lets a user create a **project**, upload documents, configure an 8-stage **RAG pipeline** (parse → chunk → embed → vector_store → retrieve → rerank → prompt → generate) through a schema-driven UI, build a vector index, chat against it in a **Playground** with a retrieval **Inspector** and per-turn cost/latency **trace**, **measure** any pipeline version on the **Evaluate** tab against an auto-generated, zero-labelling eval set (Part 37), **sweep** a grid of configuration variants into a Pareto leaderboard whose winner can be promoted to a new active version (Part 38), and check **corpus health** — what real questions the documents can't answer, contradicting/duplicate passages, unused content (Part 39). Every saved pipeline configuration is an immutable **version**; only one version per project is "active" at a time (a mutable pointer). Rebuild-relevant configuration is deduplicated into shared **index builds**, and both parsed documents/chunks and embedding vectors are content-addressed and cached so that re-running a pipeline with the same effective inputs does no work.
 
 There is **no separate backend server process for vector search** — NumPy, FAISS, Chroma, Qdrant and LanceDB all run **embedded in-process** (Qdrant and Chroma use their local/embedded client modes, not a networked server). There is **no background worker/queue** (no Celery/Redis) — background work (index builds, URL fetch) runs as plain `asyncio.Task`s tracked by an in-memory job registry (`backend/app/ingest/jobs.py`), which does not survive a process restart.
 
@@ -22,7 +22,7 @@ flowchart TB
     end
     subgraph BE["backend/app"]
         API["FastAPI routers (api/*.py)"]
-        Engine["engine/ (chat.py, retrieval.py, stores.py, sync.py, evaluate.py)"]
+        Engine["engine/ (chat.py, retrieval.py, stores.py, sync.py, evaluate.py, sweep.py, health.py)"]
         Nodes["nodes/ (parse, chunk, embed, retrieve, rerank, prompt, generate)"]
         Ingest["ingest/ (builder.py, jobs.py, loaders.py, lookup.py, document_analyzer.py)"]
         Core["core/ (pipeline.py, node.py, cache.py, runs.py, recommender.py)"]
@@ -61,7 +61,7 @@ Where things live:
 - **Configuration**: `pipeline_versions` rows (immutable JSON blobs) plus `projects.active_version_id` (the one mutable pointer that decides "current" config).
 - **A project** = one row in `projects`, N `documents`, N `pipeline_versions` (its edit history), N `index_builds` (its distinct index configurations), and N `runs` (its chat history).
 - **A pipeline** = a `dict[slot_name -> {"type": node_type, **params}]` for the fixed 8 slots — not a distinct dataclass, just a validated dict shape (`backend/app/core/pipeline.py`).
-- **An evaluation** = one `eval_sets` row (LLM-written questions, each anchored to a document + verbatim evidence quote, in `eval_items`) scored by N `eval_runs` rows (one per pipeline version evaluated). Gold labels never reference build-scoped chunk ids for scoring, so one set compares versions with different chunking/parsing/stores (Part 37).
+- **An evaluation** = one `eval_sets` row (LLM-written questions, each anchored to a document + verbatim evidence quote, in `eval_items`) scored by N `eval_runs` rows (one per pipeline version evaluated). Gold labels never reference build-scoped chunk ids for scoring, so one set compares versions with different chunking/parsing/stores (Part 37). **A sweep** = one `sweeps` row holding N config cells scored against one eval set (Part 38).
 - **A chat request** flows: browser → `POST /api/projects/{id}/chat` (SSE) → `engine/chat.py:answer()` → retrieve → rerank → prompt → generate (streamed token-by-token) → citation extraction → `runs`/`trace_events` persisted → SSE `done` event → React renders the answer with citation chips wired to the Inspector.
 
 ---
@@ -107,7 +107,9 @@ frontend/src/
 | `backend/app/core/runs.py` | `start_run`, `finish_run`, `get_run`, `list_runs` | Persists one `runs` row + bulk `trace_events` per chat turn | `engine/chat.py` |
 | `backend/app/core/recommender.py` | `Recommender.recommend()` | Rule-based (no ML) corpus-aware pipeline suggestion | `api/projects.py:recommend` |
 | `backend/app/core/evalmetrics.py` | `is_hit`, `first_hit_rank`, `contains_evidence`, `coverage`, `token_f1`, `summarize`, `percentile`, `sample_chunks` | Pure (no I/O) eval scoring: evidence-based hit rule, Hit@k/MRR, closed-book F1, deterministic stratified chunk sampling | `engine/evaluate.py`, tests |
-| `backend/app/engine/evaluate.py` | `generate_set`, `run_eval`, `score_item`, `check_candidate`, `ready_build`, `complete`, `parse_json`, `final_k`, `deep_config`, `EvalError` | Eval-set generation (LLM) + retrieval scoring (no LLM) as background jobs | `api/eval.py` |
+| `backend/app/engine/evaluate.py` | `generate_set`, `run_eval`, `score_config`, `score_item`, `grade_answers`, `generate_answer`, `suggest_fix`, `check_evidence`, `valid_items`, `check_candidate`, `ready_build`, `complete`, `parse_json`, `final_k`, `deep_config`, `EvalError` | Eval-set generation (LLM) + retrieval scoring (no LLM) as background jobs | `api/eval.py`, `engine/sweep.py` |
+| `backend/app/engine/health.py` | `run_report`, `real_questions`, `cluster`, `similar_pairs`, `coverage_summary`, `to_markdown` | Corpus Health report job: coverage verdicts + gap clustering, duplicate/contradiction scan, usage | `api/corpus.py` |
+| `backend/app/engine/sweep.py` | `AXES`, `MAX_CELLS`, `apply_override`, `expand_grid`, `pareto`, `mark_pareto`, `to_grade`, `run_sweep`, `record_fingerprint`, `corpus_fingerprint`, `SweepError` | Config sweeps: grid expansion + validation, sequential scoring via `evaluate.score_config`, Pareto marking | `api/eval.py` |
 | `backend/app/engine/sync.py` | `start_sync`, `active_version` | Starts/dedupes background index-build jobs, resolves a project's active pipeline version | `api/projects.py`, `api/documents.py`, `engine/chat.py:ensure_ready` |
 | `backend/app/engine/stores.py` | `open_store`, `store_path`, `store_config`, `close_all` | Opens/caches one live `VectorStore` instance per `build_id` | `engine/retrieval.py`, `ingest/builder.py` |
 | `backend/app/engine/retrieval.py` | `retrieve`, `rerank`, `keyword_search`, `exact_search`, `chunk_vectors` | Runs dense/keyword/exact search concurrently, fuses, pins, MMRs, reranks | `engine/chat.py` |
@@ -145,7 +147,8 @@ frontend/src/
   configure                              ConfigureTab
   versions                               VersionsTab
   playground                             PlaygroundTab
-  evaluate                               EvaluateTab   (Part 37)
+  evaluate                               EvaluateTab   (Parts 37–38)
+  health                                 HealthTab     (Part 39)
   api                                    ApiTab
 *                                        NotFound
 ```
@@ -438,6 +441,8 @@ Retriever type picks which paths run: `dense=(dense,)`, `keyword=(keyword,)`, `h
 
 ### Exact matching
 `exact_search()` calls `ingest/lookup.py:query_keys(question)` — extracts normalized error/exception signatures (`normalize()` strips UUIDs, ISO timestamps, hex addresses, filesystem paths, "line N", quoted strings, standalone numbers, before lowercasing/collapsing whitespace) and identifier-looking tokens, matches them against the `lookup_index` table (`(build_id, chunk_id, document_id, kind, key)`, written at index time by `extract_keys()`). `KIND_WEIGHT = {"signature": 2.0, "symbol": 1.0, "heading": 6.0}` — a chunk whose *heading* is the exact key (its canonical defining section) scores far above one that merely mentions it. Scores accumulate additively over every distinct `(chunk_id, kind, key)` match.
+
+**Chunk-side `symbol` rows are not matched at query time** (`kind != 'symbol'` in the query; fixed 2026-10-06). They are incidental mentions — `model_dump` or `ValidationError` appear in dozens of chunks — which the keyword path already finds and ranks by IDF. As exact hits they all tied at score 1.0, the `(score, chunk_id)` sort made their order arbitrary, and RRF (which sees only ranks, at `exact_weight` 1.5) turned that order into a boost larger than ranking #1 on both dense and keyword. On the Pydantic Docs eval set `fused` scored MRR 0.61 vs `hybrid` 0.96, and two identical builds scored differently because chunk ids are build-specific. Now: 0.885 vs 0.962, Hit@k 1.00 for both; prose corpora are unchanged. A question's symbols still match **`heading`** rows (the section named after the identifier), and signatures are unaffected. Symbol rows are still written at index time (no rebuild needed). The remaining gap is tracked in `FOLLOW_UPS.md` §1. Guarded by `test_exact_path_ignores_incidental_symbol_mentions`.
 
 ### Fusion
 ```python
@@ -916,7 +921,7 @@ erDiagram
 | GET | `/{id}/versions` | List versions |
 | GET | `/{id}/versions/diff?a=&b=` | Diff two versions |
 | GET | `/{id}/versions/{vid}` | Get one version (+ diff from parent) |
-| POST | `/{id}/versions` | Create a new version (validate, optionally activate+build) |
+| POST | `/{id}/versions` | Create a new version (validate, optionally activate+build). With `build=true` also starts the **regression guard** (`api/eval.py:regression_check` → eval run on the newest ready set) and returns its `eval_job_id` |
 | POST | `/{id}/versions/{vid}/activate` | Activate a version |
 | POST | `/{id}/versions/{vid}/build` | Force (re)build |
 | GET | `/{id}/suggestions` | Starter questions for the Playground/API tab (`engine/suggest.py`: eval set → headings → recent questions) |
@@ -948,9 +953,28 @@ Registered in `main.py` as `eval_api` (imported under that alias so the module n
 | POST | `/sets` | Body `{size: 5–100 = 30, version_id?}`. Inserts an `eval_sets` row (`running`), starts a `jobs.start("evalset", …)` job → `201 {eval_set, job_id}`. `409` if the project has no documents, `404` unknown project/version |
 | GET | `/sets` | List sets, newest first |
 | GET | `/sets/{set_id}` | Set + all `items` (rejected included, `valid:false` + `reject_reason`), each joined to `documents.filename` as `document` |
-| POST | `/sets/{set_id}/runs` | Body `{version_id?}` (default active). Inserts an `eval_runs` row, starts a `jobs.start("eval", …)` job → `201 {run, job_id}`. `409` if the set isn't `ready` |
+| POST | `/sets/{set_id}/runs` | Body `{version_id?, answers?: false}` (default active); `answers` turns on answer grading. Inserts an `eval_runs` row, starts a `jobs.start("eval", …)` job → `201 {run, job_id}`. `409` if the set isn't `ready` |
 | GET | `/runs?set_id=` | Runs oldest first, joined to `pipeline_versions.version`; `metrics` only (no `results`) |
 | GET | `/runs/{run_id}` | One run incl. per-item `results` |
+| GET | `/runs/{run_id}/fixes` | `suggest_fix()` for every diagnosis in the run → `[{diagnosis, config, changes, base_version}]` (Part 37 → One-click fixes) |
+| POST | `/sets/{set_id}/items` | Hand-add an item; `check_evidence()` → 422 if the evidence isn't in the document's chunks of the set's build |
+| PATCH | `/sets/{set_id}/items/{item_id}` | Edit question/answer/evidence, or `valid` (drop/restore — restoring re-checks evidence) |
+| DELETE | `/sets/{set_id}/items/{item_id}` | Delete an item |
+| GET | `/sets/{set_id}/export.csv` | CSV of all items |
+| POST | `/sets/{set_id}/import` | Body `{csv}`; each row goes through the same path as a hand-added item; per-row errors returned |
+| GET | `/sweep-axes` | `{axes: sweep.AXES, max_cells}` — suggested axes for the UI |
+| POST | `/sweeps` | Body `{set_id, version_id?, axes: [{path, values}] (1–4), auto_optimize?: false}`. `expand_grid()` over the version's config → inserts a `sweeps` row → `jobs.start("sweep", …)` → `201 {sweep, job_id}`. `409` set not ready, `422` `SweepError` (unknown axis, over `MAX_CELLS`, no valid cell) |
+| GET | `/sweeps` | Sweeps, newest first, with `cells`, `counts` by status and `base_version` |
+| GET | `/sweeps/{sweep_id}` | One sweep |
+| POST | `/sweeps/{sweep_id}/cancel` | `status='cancelled'` (only while `running`); the job stops before its next cell |
+
+### `backend/app/api/corpus.py` (`prefix="/api/projects/{project_id}/health"`)
+| Method | Path | Purpose |
+|---|---|---|
+| POST | `/reports` | Body `{version_id?, questions?: ≤500}`. Inserts a `corpus_reports` row, starts `jobs.start("health", …)` → `201 {report, job_id}`. `409` no documents |
+| GET | `/reports` | Newest first, `summary` headline numbers instead of `result` |
+| GET | `/reports/{report_id}` | Full report incl. `result` |
+| GET | `/reports/{report_id}/report.md` | `health.to_markdown()` as a download; `409` unless `ready` |
 
 ### `backend/app/main.py`
 | Method | Path | Purpose |
@@ -971,9 +995,9 @@ Real, but **in-memory only** (`backend/app/ingest/jobs.py`) — no Celery/Redis/
 
 **Everywhere a build can be triggered**: document upload (`build=true`), URL add, document reindex, version create/activate/manual-build, and — notably — a chat request itself, via `engine/chat.py:ensure_ready()`, which can transparently kick off a sync and stream a `status` event before answering. Eval generation and eval runs reuse `ensure_ready()` too (via `engine/evaluate.py:ready_build()`), so evaluating a version whose index isn't built yet builds it first.
 
-**Job kinds**: `sync` (index build / URL fetch), `evalset` (eval-set generation), `eval` (eval run). All share the same `Job` bus and `GET /api/jobs/{id}/events` stream. Eval jobs emit `progress` stages `index` (only when a build is needed) → `generate` → `validate` for `evalset`, and `index` → `evaluate` for `eval`, plus `log` warnings when one LLM batch fails. The frontend `JobStage` union and `STAGE_LABELS` (`app/JobProgress.tsx`) include these stages; `features/evaluate/EvalJobProgress.tsx` renders them as a one-line bar (the full `JobProgress` component's stage list is build-specific).
+**Job kinds**: `sync` (index build / URL fetch), `evalset` (eval-set generation), `eval` (eval run — extra stages `answer` → `grade` with answer grading), `health` (Corpus Health — stages `index?` → `retrieve` → `judge` → `scan` → `contradictions`), `sweep` (config sweep — stage `grade_cells` for Auto-Optimize; progress stage `sweep` with `done/total` cells and the cell's overrides as `message`, plus `index` while a cell's build runs; per-question progress is suppressed). All share the same `Job` bus and `GET /api/jobs/{id}/events` stream. Eval jobs emit `progress` stages `index` (only when a build is needed) → `generate` → `validate` for `evalset`, and `index` → `evaluate` for `eval`, plus `log` warnings when one LLM batch fails. The frontend `JobStage` union and `STAGE_LABELS` (`app/JobProgress.tsx`) include these stages; `features/evaluate/EvalJobProgress.tsx` renders them as a one-line bar (the full `JobProgress` component's stage list is build-specific).
 
-**No resume across restart**: `main.py`'s lifespan marks any `index_builds` row stuck `'building'` as `'failed'` on startup (any `runs` stuck `'running'` as `'aborted'`, and any `eval_sets`/`eval_runs` stuck `'running'` as `'failed'`) — there is no persistence of the in-memory `Job`/`_running` state to resume from.
+**No resume across restart**: `main.py`'s lifespan marks any `index_builds` row stuck `'building'` as `'failed'` on startup (any `runs` stuck `'running'` as `'aborted'`, and any `eval_sets`/`eval_runs`/`sweeps`/`corpus_reports` stuck `'running'` as `'failed'`) — there is no persistence of the in-memory `Job`/`_running` state to resume from.
 
 ⚠ **Discrepancy**: `USER_GUIDE.md` describes build progress stages as "Parse → Embed → Store → Keywords" while `PRD.md` FR-1.4 says "Parse → chunk → embed → index" — actual stage names emitted by `progress()` calls in `ingest/builder.py` are `parse`, `embed`, `store`, `keywords`, plus a terminal `ready` — closer to USER_GUIDE's wording (chunking is folded into the "parse" progress stage from the UI's point of view, not a separately reported stage).
 
@@ -992,7 +1016,8 @@ Real, but **in-memory only** (`backend/app/ingest/jobs.py`) — no Celery/Redis/
 | Chat-turn errors | `ChatError(message, code)` — `code` drives HTTP status in non-streaming mode (409 for `no_documents`/`build_failed`, 502 otherwise) or is delivered as an SSE `error` event in streaming mode (no HTTP status change possible once the stream is open) |
 | Timeout/missing project/version | `_version_for()` 404s explicitly; `assert final is not None` in the non-streaming chat path is an **unguarded** assumption (would surface as an unhandled 500 `AssertionError` rather than a graceful error if `answer()` ever returned without a `done` event) |
 | Eval generation / scoring | `EvalError(message)` for user-facing conditions (index not ready, no usable chunks, no valid questions); `ChatError` from `ensure_ready` is re-raised as `EvalError`. LLM errors are mapped by `llm.friendly_error()`. Generation is **batch-tolerant**: a failed LLM batch is logged as a job warning and skipped; the job fails only if *no* candidates come back. Both `generate_set`/`run_eval` wrappers set the row's `status='failed'` + `error` before re-raising, so the job and the DB agree |
-| Crash/restart recovery | Any `index_builds` row `'building'` → `'failed'`; any `runs` row `'running'` → `'aborted'`; any `eval_sets`/`eval_runs` row `'running'` → `'failed'`; all with `error='Interrupted by a server restart'`, on every startup |
+| Sweeps | `SweepError` (bad axes / grid) → 422 before anything is stored. Per-cell failures (e.g. a model download) mark only that cell `failed` with its message and the sweep continues; the sweep fails only if cells failed and none finished |
+| Crash/restart recovery | Any `index_builds` row `'building'` → `'failed'`; any `runs` row `'running'` → `'aborted'`; any `eval_sets`/`eval_runs`/`sweeps`/`corpus_reports` row `'running'` → `'failed'`; all with `error='Interrupted by a server restart'`, on every startup |
 | Frontend | `ApiError` (status/detail/code/fieldErrors) is the single error type surfaced everywhere; components branch on `.status` (404 → "not found", 409 → "no documents", etc.) and `.code` (chat-specific); network failures get a synthetic "Cannot reach the backend" message |
 
 ---
@@ -1007,11 +1032,15 @@ Backend only — run via `cd backend && uv run pytest -q` (`pyproject.toml`: `te
 | `test_core.py` | `stable_hash`/`ArtifactCache` roundtrip, `RunContext.emit`/`totals`, full `start_run→finish_run→get_run` persistence | Real temp SQLite, no mocking |
 | `test_pipeline.py` | `validate_pipeline` rejects unknowns/bad combos and fills defaults; `index_config_hash` changes exactly on rebuild-effect fields and not on instant ones; `diff_pipelines` effect labeling; old-version-missing-fields diffs cleanly | Pure/in-memory, real node registry via `import app.nodes` |
 | `test_provider.py` | LLM error-message translation (410/overloaded), `_pick_default` fallback | Fully synthetic `httpx`/`openai` objects — **no real network calls anywhere in the suite** |
-| `test_retrieval.py` | Exact-match normalization/key extraction, RRF/weighted math, MMR relevance-vs-diversity, table-atomicity across all 4 chunkers, citation extraction, end-to-end retrieval determinism across `numpy/faiss/lancedb/qdrant` (Chroma excluded from that specific test), cache reuse on vector-store swap, defining-section-vs-incidental-mention ranking, `pin_definitions` behavior | Uses a synthetic deterministic `HashEmbedder` (MD5-based, 64-dim) specifically to avoid downloading real embedding models |
+| `test_retrieval.py` | Exact-match normalization/key extraction, incidental symbol mentions not matched by the exact path, RRF/weighted math, MMR relevance-vs-diversity, table-atomicity across all 4 chunkers, citation extraction, end-to-end retrieval determinism across `numpy/faiss/lancedb/qdrant` (Chroma excluded from that specific test), cache reuse on vector-store swap, defining-section-vs-incidental-mention ranking, `pin_definitions` behavior | Uses a synthetic deterministic `HashEmbedder` (MD5-based, 64-dim) specifically to avoid downloading real embedding models |
 | `test_eval.py` | `summarize`/MRR math; evidence hit rule incl. a chunk-boundary cut and wrong-document rejection; `token_f1`; `sample_chunks` round-robin + determinism + tiny-chunk skip; `parse_json` fence tolerance; `check_candidate` reject reasons; `generate_set` end-to-end with `evaluate.complete` monkeypatched (asserts generic and bad-evidence questions are rejected); `run_eval` on two builds with **different chunk sizes** scoring the same items (asserts cross-chunking hits and a `not_retrieved` diagnosis) | Imports `test_retrieval` for the deterministic `HashEmbedder` + `_cfg`; no real LLM calls |
+| `test_answers.py` | `wilson` interval, `answer_summary` (incl. ungraded), `to_grade` top-quarter selection, `run_eval(answers=True)` with stubbed generation + grader (correct/wrong counts, `failed_to_extract` on an in-context wrong answer), Auto-Optimize grading exactly `to_grade(cells)` | Stubs `evaluate.generate_answer` and `evaluate.complete` — no real LLM |
+| `test_evalset_edit.py` | First HTTP-level test (httpx `ASGITransport` against `app.main.app`): add with bad/good evidence, drop → restore, CSV export header + content, CSV import with per-row errors (bad evidence, unknown document) and missing-column 422, delete → 404 | Reuses `test_eval`'s fixture |
+| `test_health.py` | `cluster` (grouping + determinism), `similar_pairs` (cross-document only, i<j, order, limit), `coverage_summary`, `run_report` end to end with a stubbed LLM (pasted+history dedupe, verdict counts, gap topics, a near-copy document detected as duplicate, usage, Markdown) | Reuses `test_eval`'s fixture + `HashEmbedder` |
+| `test_sweep.py` | `expand_grid` (types applied before fields, overlap keeps the base ratio, dedupe, invalid cells, `MAX_CELLS`, unknown axis), `pareto` (incl. exact ties), `run_sweep` end to end (4 cells, 2 builds shared by the top_k variants, Pareto marked), cancellation leaving cells `skipped` | Reuses `test_eval`'s `project` fixture + `HashEmbedder` |
 | `test_vectorstores.py` | Contract compliance for all 5 stores × 8 index configs: upsert/search/delete/reopen-from-disk persistence; exact-store cross-agreement on cosine/dot/l2; `is_exact()` flags | Hits real FAISS/Chroma/Qdrant/LanceDB libraries with synthetic random vectors (seeded, no real embedding model) |
 
-**Gaps** (confirmed absent from the suite): no FastAPI endpoint/HTTP tests (`api/*.py` untested via `TestClient`), no real-file-type ingestion tests (PDF/DOCX/HTML — only synthetic in-memory markdown), no real embedding-model test (fastembed never actually loaded in tests), no real LLM call test, no reranker test, no background-job/SSE test, no version diff API test (activation log is covered by `tests/test_versions.py`), no project CRUD test. **No frontend tests exist at all** — `frontend/package.json` has no vitest/jest/testing-library; `npm run build` (type-check + Vite build) is what README/USER_GUIDE call "tests," which is a mislabeling — it's a build/typecheck, not a test run.
+**Gaps** (confirmed absent from the suite): only one HTTP-level test (`test_evalset_edit.py`, via httpx `ASGITransport`) — the rest of `api/*.py` is untested over HTTP, no real-file-type ingestion tests (PDF/DOCX/HTML — only synthetic in-memory markdown), no real embedding-model test (fastembed never actually loaded in tests), no real LLM call test, no reranker test, no background-job/SSE test, no version diff API test (activation log is covered by `tests/test_versions.py`), no project CRUD test. **No frontend tests exist at all** — `frontend/package.json` has no vitest/jest/testing-library; `npm run build` (type-check + Vite build) is what README/USER_GUIDE call "tests," which is a mislabeling — it's a build/typecheck, not a test run.
 
 ---
 
@@ -1052,8 +1081,9 @@ User pastes a raw stack trace / error message into the Playground
          normalize() strips UUIDs/timestamps/hex addresses/paths/line-numbers/quoted-strings/numbers
          extracts: whole-question-as-signature (if 8-400 chars), bare-identifier-as-symbol,
                    in-prose identifier-looking tokens
-       SELECT chunk_id, kind, key FROM lookup_index WHERE build_id=? AND key IN (...)
-       score += KIND_WEIGHT[kind]  (signature=2.0, symbol=1.0, heading=6.0) per distinct match
+       SELECT chunk_id, kind, key FROM lookup_index WHERE build_id=? AND kind != 'symbol' AND key IN (...)
+       score += KIND_WEIGHT[kind]  (signature=2.0, heading=6.0) per distinct match
+       (a question's symbol keys only hit chunks whose *heading* names them)
   -> fused into the RRF/weighted result alongside dense+keyword
   -> pin_definitions floats any chunk whose match came from a heading key (the error's defining section)
   -> answer generated with that chunk in context, cited
@@ -1146,20 +1176,21 @@ There is no formal migration tool. The established pattern (per `schema.sql`'s e
 Per `PRD.md`/`IDEAS.md`, Phase 1 (this codebase) explicitly excludes evaluation, sweeps, agentic retrieval, multi-tenancy, auth, and server-based vector DBs. Based on the actual Phase 1 code:
 
 - **Evaluation — BUILT (Part 37)**: auto-generated eval sets + deterministic retrieval scoring + per-miss diagnosis + version comparison now exist (`eval_sets`/`eval_items`/`eval_runs`, `engine/evaluate.py`, `/api/projects/{id}/eval/*`, Evaluate tab). It deliberately does **not** go through `engine/chat.py:answer()`: it calls `retrieval.retrieve()` + `retrieval.rerank()` directly (no generation, no `runs` rows), so scoring costs no LLM calls. What's still missing: answer-quality scoring (LLM judge / citation support) on top, and a regression guard that auto-runs the set on every new version.
-- **Multiple configurations / sweeps**: `pipeline_versions` already supports many configs per project with full diffing (`diff_pipelines`) and independent builds (`index_builds` keyed by hash), and `engine/evaluate.py:run_eval` already scores any version against a chunking-independent eval set — a sweep runner could create N versions programmatically, call `run_eval` per version and reuse the existing build-sharing/caching so sweeps over instant-only params (e.g. `top_k`, `rerank.top_n`) cost nothing extra, and sweeps that vary rebuild params benefit from the existing parse/chunk cache. There is currently **no** sweep orchestration, Pareto leaderboard, or cost-comparison UI/code.
+- **Sweeps / leaderboard — BUILT (Part 38)**: grid sweeps, Pareto leaderboard (MRR vs. context tokens/query), promote. What's missing: Auto-Optimize (successive halving into an LLM judge), MTEB-seeded embedder candidates, real $ cost (blocked on `cost_usd`), config-prior fingerprint logging.
 - **Deterministic metrics / LLM judging**: `extract_citations()`'s heuristic span-matching (Part 20) is the closest thing to an existing "grounding" signal, but it's not exposed as a metric — Phase 2 could compute citation-coverage/precision from the same data already in `runs.result` without new instrumentation.
+- **Corpus Health — BUILT (Part 39)**: coverage gaps from real questions, duplicates, contradictions, unused content, Markdown export. Missing: staleness (needs last-modified / OKF `stale_after` metadata), OKF field adoption (FR-2.30), and splitting a gap into "content missing" vs. "retrieval miss".
 - **Corpus analysis**: `ingest/document_analyzer.py`'s `DocumentMetadata`/`aggregate_corpus_metadata()` (Part 11) already computes per-document and per-corpus signals (code density, structure density, language, domain, OCR-need) — this is real, working infrastructure a "Corpus Health" Phase 2 feature could extend directly rather than build from scratch.
-- **Regression guard**: half-built — the Evaluate tab's runs table already shows ▲/▼ deltas of each run vs. the previous one on the same set; what's missing is running it automatically on version save.
-- **Corpus health / coverage gaps**: the `not_retrieved` diagnosis (evidence not in the top 50 at all) is the seed of IDEAS.md's "lack of content" detection; aggregating it by document/topic would give the content-gap report.
+- **Regression guard — BUILT**: `POST /versions` with `build=true` scores the new version on the newest ready set (`api/eval.py:regression_check`); the Evaluate run history shows ▲/▼ vs. the previous run. It compares against the previous run, not specifically the active/promoted version.
+- **Coverage gaps** come from real questions, not from the eval set's `not_retrieved` misses: eval questions are written from existing chunks, so their content always exists — a `not_retrieved` miss is a retrieval failure, never a corpus gap.
 
-`eval_sets`, `eval_items` and `eval_runs` **do** exist now (Part 37). Do not assume any of `eval_results` (results live in `eval_runs.results` JSON instead), `sweeps`, `sweep_cells`, `diagnostics`, `corpus_findings`, or `sweep_fingerprints` (mentioned as *future* additions in `PRD.md`) exist in `schema.sql` — they do not.
+`eval_sets`, `eval_items`, `eval_runs` (Part 37) and `sweeps` (Part 38) **do** exist now. Do not assume any of `eval_results` (results live in `eval_runs.results` JSON instead), `sweep_cells` (cells live in `sweeps.cells` JSON), `corpus_findings` (findings live in `corpus_reports.result` JSON), `diagnostics`, or `sweep_fingerprints` (mentioned as *future* additions in `PRD.md`) exist in `schema.sql` — they do not.
 
 ---
 
 ## 35. Known Limitations / Technical Debt
 
 **HIGH**
-- **Cost tracking is a stub**: `llm.cost_usd()` always returns `0.0` (Part 19). The `runs`/`trace_events` schema and the Playground's cost UI fully depend on this being real; right now every cost figure shown to a user is `$0.00000`. Practical consequence: any "compare cost across configs" feature (including a future Phase 2 leaderboard) has no real data to work with yet.
+- **Cost tracking is a stub**: `llm.cost_usd()` always returns `0.0` (Part 19). The `runs`/`trace_events` schema and the Playground's cost UI fully depend on this being real; right now every cost figure shown to a user is `$0.00000`. Practical consequence: run records show $0. The sweep leaderboard works around it with a user-priced projection (Part 38 → cost) from deterministic context-token counts.
 - **Reranker has no error handling** (Part 17): a `cross_encoder` model load/inference failure aborts the entire chat turn rather than degrading to un-reranked results. Practical consequence: a transient first-download network hiccup on the reranker model makes chat entirely unusable until it succeeds, even though retrieval itself worked fine.
 - **No CORS middleware** (Part 27): frontend and backend must be same-origin; a separately-hosted frontend (e.g. static hosting pointing at a different backend host) would fail all API calls with no clear error surfaced beyond a generic network failure.
 
@@ -1174,11 +1205,19 @@ Per `PRD.md`/`IDEAS.md`, Phase 1 (this codebase) explicitly excludes evaluation,
 - **Evidence hit rule is a heuristic, not human-validated**: exact normalized substring match, else ≥70% evidence-token coverage within a same-document chunk (`EVIDENCE_COVERAGE`). Practical consequence: short or boilerplate-heavy evidence can false-positive, and an answer that also exists in a *different* document counts as a miss (single gold passage per item).
 - **`eval_items.document_id` has no FK**: deleting a document leaves its eval items in place; they can never hit again and show up as misses (`document` renders as `—`). Practical consequence: regenerate the eval set after removing documents.
 
+- **Sweep cells run sequentially in one job** (Part 38): a 48-cell grid with several rebuild axes can take minutes (each new embedding model downloads and embeds the corpus on first use). Instant-only axes are fast — they share one build.
+- **Pareto uses context tokens, not dollars**: `cost_usd` is a stub (above), so a sweep's cost axis is mean context tokens per question — deterministic and proportional to generation input cost, but it ignores output tokens and per-model prices.
+
+- **Answer grades are single LLM judgements** (Part 37): discrete verdicts with a Wilson interval, but no median-of-3 re-judging yet (PRD FR-2.8), and the grader is the version's own Generate model grading its own answers — a stronger, separate judge model would be less biased.
+- **Corpus Health verdicts are LLM judgements** (Part 39): discrete and batched, but not reproducible run to run, and a "missing" verdict can't tell absent content from a retrieval miss. The duplicate scan and usage counts are deterministic.
+
 **LOW (evaluation)**
 - `engine/evaluate.py:_llm_slots` is a module-level `asyncio.Semaphore(3)` shared by every eval job in the process — two concurrent generations share 3 LLM slots.
 - Eval runs call `retrieval.retrieve/rerank` directly and write no `runs`/`trace_events` rows, so they never appear in Playground history or the API tab; per-item latency is kept only in `eval_runs.results[].ms`.
 - Scoring is a sequential per-item loop (plus one extra `top_k=50` retrieval per miss for diagnosis) — fine for 5–100 questions; with an API embedder each question costs one provider embedding call.
-- The Evaluate tab shows only the newest `ready` set (plus a newer running/failed one); older sets stay in the DB but can't be browsed in the UI.
+- The Evaluate tab shows only the newest `ready` set (plus a newer running/failed one); older sets stay in the DB but can't be browsed in the UI. Sweeps are listed per set.
+- A sweep's cell JSON (incl. each full config) is rewritten on every cell update — fine at ≤48 cells.
+- Regression-guard runs start even for instant-only edits on large sets; they are cheap (no LLM) but with an API embedder each question costs one embedding call.
 
 **LOW**
 - **`NoRerank.rerank()` is dead code** (Part 17) — harmless, but a maintenance trap if the short-circuit in `engine/retrieval.py:rerank()` is ever refactored without updating this method's now-load-bearing `return None`.
@@ -1217,6 +1256,8 @@ Per `PRD.md`/`IDEAS.md`, Phase 1 (this codebase) explicitly excludes evaluation,
 | `ChatError` | `engine/chat.py` | Chat-turn error with a UI-facing `code` |
 | `Provider` | `llm/provider.py` | Gemini/NVIDIA OpenAI-compatible client config |
 | `Recommender` | `core/recommender.py` | Corpus-aware pipeline suggestion engine |
+| `cluster` / `similar_pairs` | `engine/health.py` | Deterministic greedy question clustering; blockwise cross-document cosine pairs |
+| `SweepError` | `engine/sweep.py` | Invalid sweep grid (unknown axis/type, over `MAX_CELLS`, nothing valid) → HTTP 422 |
 | `EvalError` | `engine/evaluate.py` | User-facing eval generation/scoring failure (surfaced as the job's `failed` error and the row's `error`) |
 
 ### Important functions
@@ -1232,6 +1273,8 @@ Per `PRD.md`/`IDEAS.md`, Phase 1 (this codebase) explicitly excludes evaluation,
 | `generate_set` | `engine/evaluate.py` | `api/eval.py` (as an `evalset` job) | Sample chunks → LLM questions + evidence → closed-book filter → persist items |
 | `run_eval` / `score_item` | `engine/evaluate.py` | `api/eval.py` (as an `eval` job) | Retrieve+rerank each valid question for one version, rank-of-first-hit, diagnose misses, persist metrics |
 | `is_hit` / `summarize` | `core/evalmetrics.py` | `engine/evaluate.py` | Evidence-based hit rule; Hit@1/3/k + MRR |
+| `score_config` | `engine/evaluate.py` | `run_eval`, `run_sweep` | Score one config against eval items → `(build, metrics, results)` |
+| `expand_grid` / `run_sweep` / `pareto` | `engine/sweep.py` | `api/eval.py` | Sweep grid, sweep job, Pareto frontier |
 
 ### API endpoints
 See Part 27 for the full table.
@@ -1245,7 +1288,7 @@ See Part 23's table for the complete, verified classification.
 ### Data stores
 | Store | Data |
 |---|---|
-| `data/app.db` (SQLite) | Everything relational: projects, documents, versions, builds, chunks, FTS index, lookup index, vector cache, runs, traces, eval sets/items/runs |
+| `data/app.db` (SQLite) | Everything relational: projects, documents, versions, builds, chunks, FTS index, lookup index, vector cache, runs, traces, eval sets/items/runs, sweeps, sweep fingerprints, corpus reports |
 | `data/raw/<doc_id>/` | Original uploaded/fetched files |
 | `data/cache/artifacts/{parsed,chunks}/` | Content-addressed parse/chunk JSON cache |
 | `data/cache/models/` | Downloaded fastembed/cross-encoder ONNX models |
@@ -1260,7 +1303,8 @@ See Part 23's table for the complete, verified classification.
 | New frontend page | `frontend/src/features/<name>/` + `frontend/src/app/router.tsx` |
 | New trace/inspector field | `ctx.emit(...)` call site in `engine/retrieval.py`/`engine/chat.py` — no schema change needed |
 | New eval metric | Pure function in `core/evalmetrics.py` → add to `summarize()` or to `metrics` in `engine/evaluate.py:_run_eval` → `EvalMetrics` in `frontend/src/api/types.ts` → a `Stat`/column in `features/evaluate/RunsPanel.tsx` |
-| New miss diagnosis | `engine/evaluate.py:score_item` (set `diagnosis`) + `metrics["diagnoses"]` keys → `EvalDiagnosis` type + `DIAGNOSIS` label/fix map in `RunsPanel.tsx` |
+| New sweep axis suggestion | Append to `engine/sweep.py:AXES` (any `slot.field` works without it; `requires` hides it for incompatible bases) |
+| New miss diagnosis | `engine/evaluate.py:score_item` (set `diagnosis`) + `DIAGNOSES` → `EvalDiagnosis` type + `DIAGNOSIS` label/fix map in `RunsPanel.tsx` |
 | New DB table/column | `backend/app/schema.sql` (no migration tool — see Part 34) |
 
 ---
@@ -1300,26 +1344,44 @@ Chunk ids are `sha256(build_id:doc_id:ordinal)` (Part 15/25), so a chunk id mean
 **LLM calls** (`complete()`): non-streaming `llm.client(provider).chat.completions.create(...)` with the *version's* `generate` slot provider and model (empty → `llm.resolve_model(provider, "chat")`), `temperature=0.3`, `max_tokens=4096`, and `reasoning_effort` forwarded unless `"default"`. No `response_format` is sent (not reliably supported across Gemini/NVIDIA); `parse_json()` strips code fences and falls back to the outermost `{…}`. Concurrency is capped by the module-level `asyncio.Semaphore(3)`. Failures go through `llm.friendly_error()`. `_gather_tolerant()` runs batches concurrently, logs a failed batch as a job warning and continues; the job fails only if zero candidates come back. A 30-question set ≈ 9 generation + 5 validation calls.
 
 ### Scoring — `run_eval(job, run_id, project_id, set_id, version)` (job kind `eval`)
+Steps 1–4 live in `score_config(job, project_id, cfg, items, stage)`, shared with sweeps (Part 38); `run_eval` = `valid_items()` + `score_config()` + persist.
+
 1. `ready_build()` for the version being evaluated (its own build — may differ from the build the set was generated from).
 2. For each `valid=1` item, in `ordinal` order (sequential), `score_item()`:
    - `retrieved = retrieval.retrieve(RunContext(), build, cfg, question)`, `final = retrieval.rerank(...)` — exactly the chat path's retrieval (Part 16/17), timed end-to-end into `ms`.
    - `rank = first_hit_rank(final, item)`.
    - **Miss diagnosis** (deterministic, IDEAS §2.5 failure points 2–3): hit in `retrieved` but not `final` → `dropped_by_rerank`; otherwise one more `retrieve` with `deep_config(cfg)` (`top_k=50`, `candidates=max(candidates,50)`, `mmr=False`, no rerank) → found at `deep_rank` → `ranked_below_k`, else `not_retrieved`.
-   - Result: `{item_id, rank, hit, diagnosis, deep_rank, ms, top: first 5 of final as {id, document, heading_path, hit}}`. Progress stage `evaluate`.
+   - **Context inclusion** (PRD mode 3, "consolidation loss"): `build_node("prompt", cfg["prompt"]).pack(final)` — the same packer the chat path uses — gives the chunks that fit `max_context_tokens`. A hit whose evidence chunk is not among them gets `diagnosis = "dropped_by_budget"` (the only diagnosis set on a hit). `ctx_tokens` = `approx_tokens` summed over the packed chunks: the deterministic per-query cost proxy sweeps use.
+   - Result: `{item_id, rank, hit, diagnosis, deep_rank, in_context, ctx_tokens, ms, top: first 5 of final as {id, document, heading_path, hit}}`. Progress stage `evaluate`.
 3. `k = final_k(cfg)` = `retrieve.top_k`, or `min(top_k, rerank.top_n)` when a reranker is on — i.e. the number of chunks that actually reach the prompt packer.
-4. `metrics = summarize(ranks, k)` → `{n, k, hit_at_1, hit_at_3, hit_at_k, mrr}` (MRR over all items, misses contribute 0) + `p50_ms` + `diagnoses` counts + `config` (`config_summary()`: parse type, chunk type/size/unit, embed model, store, retriever, top_k, rerank). Persisted with per-item `results` JSON; `status='ready'`.
+4. `metrics = summarize(ranks, k)` → `{n, k, hit_at_1, hit_at_3, hit_at_k, mrr}` (MRR over all items, misses contribute 0) + `p50_ms` + `context_hit` (share `in_context`) + `ctx_tokens` (mean) + `diagnoses` counts over `DIAGNOSES = (dropped_by_budget, dropped_by_rerank, ranked_below_k, not_retrieved)` + `config` (`config_summary()`: parse type, chunk type/size/unit, embed model, store, retriever, top_k, rerank). Persisted with per-item `results` JSON; `status='ready'`.
 
 Determinism: generation is not deterministic (LLM), but **scoring is** for a fixed set and version — retrieval is deterministic on exact stores with `(score desc, chunk_id asc)` tie-breaks (Part 15), and the hit rule is pure arithmetic. No `temperature` or LLM judge is involved.
 
+### One-click fixes — `suggest_fix(cfg, diagnosis, results)` (PRD FR-2.13)
+Pure function; returns a full new config or `None`. `ranked_below_k` → `top_k = max(top_k + 1, deepest deep_rank among those misses)` (≤ 50) and `candidates ≥ top_k`; `dropped_by_rerank` (reranker on) → `top_n = min(top_k, top_n + 3)`; `dropped_by_budget` → `max_context_tokens × 1.5`, rounded up to 500 (≤ 100 000); `not_retrieved` / `failed_to_extract` → `None` (no single setting fixes them). `GET /runs/{id}/fixes` diffs each against the run's version. The UI (`RunsPanel.tsx → ApplyFix`) shows the diff in a `Dialog` and saves via `POST /versions` (`activate`, `build`), so the regression guard re-scores the fix automatically.
+
+### Hand edits — eval items (PRD FR-2.4)
+`check_evidence(build_id, document_id, evidence)` rejects evidence under `MIN_EVIDENCE_TOKENS` or below `MANUAL_COVERAGE = 0.9` token coverage of every chunk of that document in the set's build — the same bar generated items pass. Hand-added items get `gold_chunk_id = ''` (the card counts them as "added by hand"). Drop = `valid=0, reject_reason='removed by hand'`; restore re-checks the evidence. CSV import maps `document` by filename and reuses the add path row by row. Existing runs are untouched (their `results` reference item ids; a deleted item just no longer joins). UI: `features/evaluate/EditQuestions.tsx` (`Dialog`, add/inline edit form, drop/restore/delete, export link, file-input import); hooks `useAddEvalItem`, `useUpdateEvalItem`, `useDeleteEvalItem`, `useImportEvalCsv`, `evalSetCsvUrl`, `useEvalFixes`.
+
+### Answer grading (opt-in: `run_eval(..., answers=True)`, `score_config(..., answers=True)`)
+Retrieval scoring above is unchanged and runs first; `score_item` hands each item's `final` list back (as `_final`, popped by `score_config`). Then `grade_answers()`:
+1. **Answer** (stage `answer`): `generate_answer()` packs the prompt with the version's `prompt` node and streams the version's `generate` node to completion — the chat path minus SSE, `runs` rows and citations. Concurrency via `gather_tolerant` and the shared 3-slot `_llm_slots`; a failed generation leaves that item ungraded.
+2. **Grade** (stage `grade`): `GRADE_SYSTEM`, 5 items per call (question, gold answer, system answer, the packed sources ≤800 chars each) → `correct` and `grounded` ∈ `yes|partial|no` (discrete, FR-2.7). Results get `answer`, `correct`, `grounded`.
+3. **Mode 4**: `correct == "no"` while the evidence was `in_context` and no retrieval diagnosis applies → `diagnosis = "failed_to_extract"`.
+4. `metrics["answers"] = evalmetrics.answer_summary(results)` → `{n, ungraded, correct, partial, wrong, correct_rate, correct_ci, grounded_rate}`; `correct_ci` is a 95% Wilson interval (`evalmetrics.wilson`) — at 13 questions, 12 correct reads 92% (67–99%).
+
+Cost: one generation per question + one grading call per 5. The Evaluate tab's **Also grade answers** switch sends `answers: true`; the scorecard adds Answers-correct (with CI and ▲/▼) and Grounded tiles, and per-question rows show the grade badge and the pipeline's answer.
+
 ### Design decisions
 - **Doesn't reuse `engine/chat.py:answer()`**: that path always generates (LLM cost + latency per question) and writes a `runs` row; scoring needs only retrieval, so it calls `retrieval.retrieve/rerank` directly.
-- **No LLM judge**: retrieval-level metrics are reproducible and free to re-run across many versions; answer-quality judging is a later layer.
+- **Retrieval first, judge optional**: retrieval-level metrics are reproducible and free to re-run across many versions, so they lead; answer grading is opt-in and always shown with its interval.
 - **Rejected items are stored, not dropped**: the UI shows them with the model's closed-book answer, which is the visible evidence that the validity filter works.
 
 ### Frontend (`frontend/src/features/evaluate/`)
 - `EvaluateTab.tsx` — route `/projects/:id/evaluate`, tab between Playground and API. Empty state (pitch + size select 10/20/30/50 + "Generate eval set", disabled with no documents); otherwise the newest `ready` set, with "Regenerate" and a progress/failure card for a newer running/failed set.
 - `EvalSetCard.tsx` — stats badges (kept / too generic / bad evidence, sampled count, "0 labelled by hand"); "Questions (n)" and "Rejected by the filter (n)" disclosures; each row expands to gold answer, highlighted evidence, and the no-documents answer.
-- `RunsPanel.tsx` — version `Select` (default active) + "Run evaluation"; runs table (oldest first; config summary, Hit@1 / Hit@k / MRR / p50, ▲/▼ point deltas vs. the previous ready run); selected run detail with stat tiles (Hit@1, Hit@3, Hit@k, MRR, retrieval p50), a misses banner by diagnosis, and a per-question table (rank badge or Miss, diagnosis label + suggested fix, "Only misses" filter).
+- `RunsPanel.tsx` — version `Select` (default active) + "Run evaluation"; the miss breakdown counts every result with a `diagnosis` (incl. `dropped_by_budget` hits) as "never reaches the model"; runs table (oldest first; config summary, Hit@1 / Hit@k / MRR / p50, ▲/▼ point deltas vs. the previous ready run); selected run detail with stat tiles (Hit@1, Hit@3, Hit@k, MRR, retrieval p50), a misses banner by diagnosis, and a per-question table (rank badge or Miss, diagnosis label + suggested fix, "Only misses" filter).
 - `EvalJobProgress.tsx` — one-line `useJobEvents` progress for `evalset`/`eval` jobs.
 - Hooks (`api/hooks.ts`): `useEvalSets`, `useEvalSet`, `useGenerateEvalSet`, `useEvalRuns`, `useEvalRun`, `useRunEval` — all poll every 3 s while any returned row is `running`; types in `api/types.ts` (`EvalSet`, `EvalSetDetail`, `EvalItem`, `EvalRun`, `EvalRunDetail`, `EvalMetrics`, `EvalItemResult`, `EvalDiagnosis`, `EvalConfigSummary`). Endpoint contract documented in `frontend/API.md` → "Evaluation".
 
@@ -1336,5 +1398,121 @@ Evaluate: pick vN+1 -> Run evaluation (builds vN+1's index first if needed)
 Limitations are listed under Part 35 (MEDIUM/LOW evaluation entries).
 
 ---
+
+## 38. Sweeps — Grid Search, Pareto Leaderboard, Promote
+
+**Files**: `backend/app/engine/sweep.py` (grid + job), `backend/app/api/eval.py` (routes under `/api/projects/{id}/eval/sweeps`, plus `sweep-axes`), `backend/app/schema.sql` (`sweeps`), `frontend/src/features/evaluate/SweepsPanel.tsx`, `backend/tests/test_sweep.py`. Implements PRD FR-2.15–2.18, 2.20–2.25.
+
+**What it does**: takes a base version and 1–4 axes, builds every combination as a full validated pipeline config, scores each with the same retrieval scoring as an eval run (Part 37 — no LLM calls), and marks the Pareto set on **quality = MRR (higher)** vs. **cost = mean context tokens per question (lower)**. Both axes are deterministic, so a re-run ranks identically on exact stores.
+
+```mermaid
+flowchart LR
+    A["POST /eval/sweeps<br/>{set_id, version_id?, axes}"] --> B["expand_grid(base, axes)<br/>types first, then fields;<br/>validate_pipeline; dedupe"]
+    B --> C[("sweeps row<br/>cells JSON: pending/invalid")]
+    C --> D["run_sweep job<br/>cells sorted by index_config_hash"]
+    D --> E["per cell: evaluate.score_config()<br/>ready_build → retrieve+rerank+pack"]
+    E --> F["mark_pareto(cells)<br/>save cells JSON"]
+    F --> D
+    F --> G["SweepsPanel: insight line,<br/>scatter + frontier, leaderboard"]
+    G --> H["Promote → POST /versions<br/>{config: cell.config, activate, build}"]
+```
+
+### Grid expansion — `expand_grid(base, axes)`
+- An axis is `{path: "slot.field" | "slot.type", values: [...]}`. `AXES` is only the UI's suggestion list (chunk size/type, local embedding model, retriever, top-k, reranker); the API accepts any path matching `^[a-z_]+\.[a-z_]+$`.
+- `apply_override(cfg, "slot.type", v)` resets the slot to `default_for(slot, v)` but keeps fields both types share, so `chunk.type × chunk.size` works; type axes are applied before field axes for the same reason.
+- When `chunk.size` varies and `chunk.overlap` doesn't, overlap is set to `round(size × base_overlap / base_size)` so small sizes don't trip `overlap must be smaller than chunk size`.
+- Each combination goes through `validate_pipeline`; failures become `status: "invalid"` cells with the message (shown under the leaderboard), not a request error. Identical configs (by `stable_hash`) are dropped. More than `MAX_CELLS = 48` runnable cells, or zero, → `SweepError` → 422.
+
+### Execution — `run_sweep(job, sweep_id)` (job kind `sweep`)
+1. `evaluate.valid_items(set_id)`; pending cells sorted by `index_config_hash` so variants that share an index run back to back (one `ready_build`, then instant-only cells hit the same build).
+2. Before each cell it re-reads `sweeps.status`; anything other than `running` (cancel, delete) stops the loop. Finished cells stay valid; unstarted ones become `skipped`.
+3. Per cell: `score_config(..., stage=None)` (per-question progress suppressed; the sweep publishes stage `sweep` with `done/total` cells). A rebuild axis triggers a normal sync build through `chat.ensure_ready` — parse/chunk/vector caches apply exactly as in Part 23, so e.g. 4 chunk sizes × 3 top-k values = 4 builds, not 12. An exception marks only that cell `failed` (logged as a job warning).
+4. After every cell: `mark_pareto()` over ready cells, then the whole `cells` JSON is rewritten (single writer — the job; the cancel endpoint only touches `status`). Final status `ready` (via `UPDATE … WHERE status='running'`, so a cancel is never overwritten), or `failed` if cells failed and none finished.
+
+`pareto(points)`: a point is on the frontier iff no other point has quality ≥ and cost ≤ with at least one strict — exact duplicates both stay.
+
+### Auto-Optimize (`auto_optimize: true` → `run_sweep(job, id, auto_optimize=True)`)
+Successive halving (FR-2.18): after every cell is retrieval-scored (and only if the sweep wasn't cancelled), `to_grade(cells)` picks the top `GRADE_FRACTION = 0.25` of ready cells by `(-mrr, ctx_tokens)`, at least 1 and at most `MAX_GRADED = 5`; `_grade_top` re-runs `score_config(..., answers=True)` on each (retrieval is cheap and deterministic, so re-running beats keeping per-cell chunk lists) and stores `cell.metrics.answers`, or `cell.grade_error` on failure. The flag is passed to the job, not stored — a sweep's grading is visible from which cells carry `answers`. The leaderboard adds an **Answers ✓** column and the insight line reports the best graded cell, or "tied within noise" when the top two 95% intervals overlap (FR-2.9). Sort order and Pareto stay on deterministic metrics (FR-2.10).
+
+### Embedder candidates (FR-2.19) and cost (FR-2.33)
+`nodes/embed.py:FASTEMBED_MODELS[model]["mteb"]` = the model card's MTEB English retrieval average (nDCG@10, 15 BEIR sets), checked 2026-10-06; `None` where no comparable figure is published (nomic v1.5 publishes only the overall MTEB average; bge-m3 multilingual benchmarks). It appears in the Configure form's model labels (`mteb_label`) and drives the sweep's `embed.model` axis: values sorted by score, plus `notes`, `scores` and `seed` (top 3) for the "MTEB top 3" preset.
+Cost is computed client-side in `SweepsPanel.tsx`: `monthlyCost = queries × ((ctx_tokens + 150) × $in + avg_answer_tokens × $out) / 1e6`, where `avg_answer_tokens` is the mean `tokens_out` of the project's last 50 chat runs (300 if none). The `$ / month` column shows once a price is entered; free tiers stay $0. Real per-model pricing in `llm.cost_usd` is still a stub.
+
+### Config-prior instrumentation (FR-2.35)
+At the end of a successful sweep with ≥ 2 ready cells, `record_fingerprint()` inserts one `sweep_fingerprints` row: `fingerprint` = `corpus_fingerprint(project)` (`document_analyzer.aggregate_corpus_metadata` over `document_metadata` — densities, sizes, tables, languages, domains, OCR flag; no names or text), `axes` (paths), `winner` (`overrides` + `metrics.config` summary — not the full config, which could hold a custom prompt), `score` (winner and runner-up `mrr/hit_at_1/hit_at_k/ctx_tokens/context_hit`), `n_cells`, `n_questions`. No project id / FK, so rows outlive projects. Wrapped in `try/except` + log: it can never fail a sweep. Nothing reads the table yet.
+
+### Cell shape (`sweeps.cells[]`)
+`{overrides: {path: value}, config: PipelineConfig | null, status: pending|running|ready|failed|invalid|skipped, error, metrics?: (eval metrics incl. ctx_tokens, context_hit, answers?), build_id?, pareto?, grade_error?}`
+
+### Promote
+No dedicated endpoint: the UI posts `cell.config` to `POST /api/projects/{id}/versions` with `note: "Sweep: <overrides>"`, `activate: true, build: true`. The build usually already exists from the sweep (same `index_config_hash`), so promotion is instant and the published chat endpoint serves it immediately. The same call also triggers the regression guard, so the promoted version gets a normal eval run in Run history.
+
+### Frontend (`SweepsPanel.tsx`, below `RunsPanel` on the Evaluate tab)
+- **Axis picker**: one fieldset per `AXES` entry (filtered by `requires` against the base config — e.g. local embedding models only when `embed.type == fastembed`), ⚡/🔁 `EffectBadge`, toggle chips with `(current)` marking the base value. Live cell count vs. `max_cells`; base version `Select`; **Run sweep**.
+- **Leaderboard** (newest sweep for the set, older ones via a `Select`): insight `Banner` (best vs. the baseline cell — the one whose overrides equal the base config — plus the cheapest Pareto cell within 0.02 MRR of the best), `ParetoChart` (hand-rolled SVG: frontier as an accent step line, dominated points hollow, hover/focus tooltip, keyboard-focusable 12px hit targets, width capped so labels stay legible), sortable-by-rank table (★ Pareto, MRR, Hit@1, Hit@k, In context, Tokens/q, p50, **Promote**), and a disclosure listing invalid/failed cells. **Stop** calls the cancel endpoint while running.
+- Hooks: `useSweepAxes`, `useSweeps` (polls 3 s while any sweep is running), `useStartSweep`, `useCancelSweep`; types `Sweep`, `SweepCell`, `SweepAxis`, `SweepAxes` in `api/types.ts`.
+
+### Flow H — Find a better configuration
+```
+Evaluate tab (eval set ready) → Sweep configurations
+  pick chunk size {512, 1000(current)} × top k {3, 8(current)} → Run sweep (4 configs)
+  → POST /eval/sweeps → sweep job: build chunk-512 index (cached parse), score 4 cells
+  → leaderboard: "chunk size 512 lifts MRR from 0.61 to 0.68 at 776 context tokens per question (now 1,383)"
+  → Promote → POST /versions {config, activate, build} → v4 active (build reused) + regression-guard eval run
+```
+
+---
+
+## 39. Corpus Health — Coverage Gaps, Contradictions, Duplicates, Unused Content
+
+**Files**: `backend/app/engine/health.py`, `backend/app/api/corpus.py`, `backend/app/schema.sql` (`corpus_reports`), `frontend/src/features/health/HealthTab.tsx`, `backend/tests/test_health.py`. Implements PRD FR-2.26, 2.27, 2.29, 2.31 (staleness FR-2.28 and OKF fields FR-2.30 are not built).
+
+**Why a separate tab**: PRD §14 — corpus failures get their own surface so the product doesn't drift back to pure config tuning. And the input is different: eval-set questions are generated *from* existing chunks, so they can never reveal missing content. Health uses **real** questions.
+
+```mermaid
+flowchart LR
+    Q["real_questions()<br/>pasted + chat history<br/>normalised dedupe, ≤200"] --> R["retrieve + rerank + pack<br/>(version's own pipeline)"]
+    R --> J["LLM judge, 5 q/call:<br/>covered | partial | missing<br/>+ missing-topic phrase"]
+    J --> C["cluster() gap questions<br/>(embed_documents, cos ≥ 0.75)"]
+    R --> U["usage: chunk ids that<br/>reached the prompt"]
+    V["build chunks' cached vectors<br/>(vector_cache)"] --> P["similar_pairs()<br/>cross-document, cos ≥ 0.85"]
+    P --> D["≥ 0.97 → duplicates"]
+    P --> X["30 closest others →<br/>LLM contradiction check"]
+    C --> RES[("corpus_reports.result")]
+    U --> RES
+    D --> RES
+    X --> RES
+```
+
+### Pipeline — `run_report(job, report_id, project_id, version, extra)` (job kind `health`)
+1. `evaluate.ready_build()` for the version (default active) — may build first (stage `index`).
+2. **Questions** (`real_questions`): pasted first, then `runs.question` for `kind='chat'` newest first; de-duplicated by `evalmetrics.normalize`; capped at `MAX_QUESTIONS = 200`. Each carries `source: pasted|history`.
+3. **Coverage** (`_coverage`, stages `retrieve` → `judge`): per question `retrieval.retrieve` + `rerank`, then the version's prompt packer → `included`. Every `included` chunk id goes into the usage set; the first `PASSAGES_PER_QUESTION = 6` (≤1200 chars each) go to the judge — roughly what the generator would see, so an answer at rank 4–6 isn't flagged (an earlier 3-passage cut did flag those: 47% → 60% covered on the Pydantic Docs project). `JUDGE_SYSTEM` returns a discrete verdict + a noun-phrase "missing" topic, 5 questions per call via `evaluate.complete` (version's Generate provider/model, temperature 0.3, shared 3-slot semaphore) and `evaluate.gather_tolerant` (a failed batch → those questions `ungraded`; the job fails only if every batch fails).
+4. **Gap topics**: non-covered questions are embedded with the version's embedder (`embed_documents`) and grouped by `cluster()` — a deterministic greedy pass (join the most similar centroid at cos ≥ `CLUSTER_SIM = 0.75`, else start a new one), largest first. A topic's name is its first member's "missing" phrase, else its first question.
+5. **Overlaps** (`_overlaps`, stages `scan` → `contradictions`): the build's chunk vectors come from `vector_cache` (`retrieval.chunk_vectors`, no re-embedding; tables skipped). `similar_pairs()` scans blockwise (512 rows × n) for cross-document pairs at cos ≥ `NEAR_SIM = 0.85`, most similar first, capped at 90. ≥ `DUPLICATE_SIM = 0.97` → `duplicates` (no LLM). The next 30 → `PAIR_SYSTEM` contradiction check, 5 pairs/call; confirmed ones are kept with the model's one-line explanation.
+6. **Usage** (`_usage`): per document, chunks total vs. chunks that reached any analysed question's prompt; least used first.
+7. One `UPDATE corpus_reports SET status='ready', result=…, build_id=…`. On any exception the row is set `failed` with the message.
+
+Thresholds are cosine values and so embedder-dependent (bge-family models score related text high); the 30-pair cap keeps the contradiction step bounded regardless.
+
+### Export — `to_markdown(report, project_name)`
+Coverage sentence, numbered content backlog (topic, counts, up to 5 questions each), contradictions, duplicates, and a usage table (or "Needs real questions to measure").
+
+### Frontend (`features/health/HealthTab.tsx`, route `/projects/:id/health`, tab between Evaluate and API)
+Run card (textarea of pasted questions, one per line; **Check corpus health**; `EvalJobProgress` with the new `retrieve/judge/scan/contradictions` stage labels), then for the newest ready report (older ones via a `Select`): five stat tiles (answered %, gap topics, contradictions, duplicates, unused documents), **Content backlog** (ranked topics with verdict counts; a `Disclosure` per topic lists questions with verdict badge, source and the closest passage), **Contradictions** and **Duplicate content** cards (side-by-side excerpts), **Unused content** (per-document bars, with a small-sample warning under 30 questions), and **Download report (.md)**. Hooks `useHealthReports` (polls while running), `useHealthReport`, `useStartHealthReport`, `healthReportUrl`; types `HealthReport`, `HealthResult`, `GapTopic`, `PassagePair`, `HealthExcerpt`, `CoverageSummary`, `DocumentUsage`.
+
+### Flow I — Find what to write next
+```
+Playground/API questions accumulate in `runs`
+Health tab: paste support-ticket questions → Check corpus health → POST /health/reports
+  → health job: retrieve each question → judge (covered/partial/missing) → cluster gaps
+               → scan cached vectors for cross-document pairs → contradiction check
+  → "60% of 15 real questions answered" + backlog: 1. AWS Lambda deployment guide (1 missing) …
+  → Download report (.md) → docs owner writes the page → upload → re-run: coverage goes up
+```
+
+---
+
+Open problems that were investigated but parked are tracked in `FOLLOW_UPS.md`.
 
 *This document was generated by reading the repository directly (no README/PRD content was assumed accurate without verification). Discrepancies between documentation and implementation are marked with ⚠ throughout. If behavior described here ever stops matching the code, trust the code and update this document.*

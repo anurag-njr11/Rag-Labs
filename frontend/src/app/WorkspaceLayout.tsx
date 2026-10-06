@@ -1,13 +1,13 @@
 import { Suspense, useLayoutEffect, useRef, useState } from 'react'
 import { Link, Outlet, useLocation, useParams } from 'react-router-dom'
 import {
-  ChevronRight, Code2, Database, FileText, FlaskConical, FolderX, GitCommitHorizontal, History, MessageSquare, RefreshCw,
+  ChevronRight, Code2, Database, FileText, FlaskConical, FolderX, HeartPulse, GitCommitHorizontal, History, MessageSquare, RefreshCw,
   SlidersHorizontal,
 } from 'lucide-react'
 import { ApiError, errorMessage, useBuildVersion, useProject } from '@/api/hooks'
 import { formatNumber, storeLabel } from '@/api/format'
 import type { IndexStatus, Project } from '@/api/types'
-import { Button, ButtonLink, EmptyState, Pill, TabLinks, useToast } from '@/components/ui'
+import { Button, ButtonLink, EmptyState, Pill, TabLinks, useSwapTransition, useToast } from '@/components/ui'
 import { PageFallback } from './AppLayout'
 import { JobProgress } from './JobProgress'
 import { ProviderKeyBanner } from './ProviderKeyBanner'
@@ -38,6 +38,9 @@ function indexPillText(p: Project): string {
   if (ix.store) parts.push(storeLabel(ix.store))
   return parts.join(' · ')
 }
+
+/** Workspace tabs in display order (route segment → index drives the slide direction). */
+const TAB_ORDER = ['documents', 'configure', 'versions', 'playground', 'evaluate', 'health', 'api']
 
 function WorkspaceHeader({ project }: { project: Project }) {
   const build = useBuildVersion(project.id)
@@ -117,6 +120,7 @@ function WorkspaceHeader({ project }: { project: Project }) {
           { to: `${base}/versions`, label: 'Versions', icon: <History aria-hidden /> },
           { to: `${base}/playground`, label: 'Playground', icon: <MessageSquare aria-hidden /> },
           { to: `${base}/evaluate`, label: 'Evaluate', icon: <FlaskConical aria-hidden /> },
+          { to: `${base}/health`, label: 'Health', icon: <HeartPulse aria-hidden /> },
           { to: `${base}/api`, label: 'API', icon: <Code2 aria-hidden /> },
         ]}
       />
@@ -134,6 +138,11 @@ export function WorkspaceLayout() {
   const q = useProject(id)
   const chrome = useRef<HTMLDivElement>(null)
   const [chromeH, setChromeH] = useState(0)
+  // Tab switches slide the content in from the side of the tab you moved towards.
+  const { pathname } = useLocation()
+  const tabIdx = TAB_ORDER.indexOf(pathname.split('/')[3] ?? '')
+  const panel = useRef<HTMLDivElement>(null)
+  useSwapTransition(panel, tabIdx, 'auto', 32)
 
   useLayoutEffect(() => {
     const el = chrome.current
@@ -166,12 +175,12 @@ export function WorkspaceLayout() {
 
   const ctx: WorkspaceContext = { project: q.data }
   return (
-    <div className="flex min-h-0 flex-1 flex-col" style={{ ['--chrome-h' as string]: `calc(var(--topbar-h) + ${chromeH}px)` }}>
+    <div className="flex min-h-0 flex-1 flex-col overflow-x-clip" style={{ ['--chrome-h' as string]: `calc(var(--topbar-h) + ${chromeH}px)` }}>
       <div ref={chrome}>
         <ProviderKeyBanner />
         <WorkspaceHeader project={q.data} />
       </div>
-      <div className="flex min-h-0 flex-1 flex-col">
+      <div ref={panel} className="flex min-h-0 flex-1 flex-col">
         <Suspense fallback={<PageFallback />}>
           <Outlet context={ctx} />
         </Suspense>

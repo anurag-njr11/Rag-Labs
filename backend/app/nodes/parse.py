@@ -69,13 +69,15 @@ class Pymupdf4llmConfig(NodeConfig):
 )
 class Pymupdf4llmParser(BaseParser):
     Config = Pymupdf4llmConfig
+    revision = 1  # 1: strip <sup>/<mark>/<br>… inline HTML from the Markdown
 
     def parse_pdf(self, path: Path):
         import pymupdf4llm
 
         res = pymupdf4llm.to_markdown(str(path), page_chunks=True, show_progress=False)
         pages = [
-            {"page": int(r["metadata"].get("page_number") or i + 1), "text": r["text"]}
+            {"page": int(r["metadata"].get("page_number") or i + 1),
+             "text": loaders.strip_inline_html(r["text"])}
             for i, r in enumerate(res)
         ]
         return pages, False, []

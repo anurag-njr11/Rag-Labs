@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Search, Table } from 'lucide-react'
 import { errorMessage, useDocumentChunks } from '@/api/hooks'
-import { formatNumber, formatPages } from '@/api/format'
+import { formatNumber, formatPages, stripTags, stripTagsPre } from '@/api/format'
 import type { Document } from '@/api/types'
 import { Badge, Button, Dialog, EmptyState, Input, Spinner } from '@/components/ui'
 
@@ -47,12 +47,12 @@ export function ChunkViewer({ projectId, doc, onClose }: { projectId: string; do
                   <span className="flex h-5 min-w-6 items-center justify-center rounded-sm bg-bg-subtle px-1 font-mono text-mono-sm text-text-secondary">
                     #{c.ordinal + 1}
                   </span>
-                  {c.heading_path && <span className="min-w-0 truncate">{c.heading_path}</span>}
+                  {c.heading_path && <span className="min-w-0 truncate">{stripTags(c.heading_path)}</span>}
                   {formatPages(c.page_start, c.page_end) && <span className="font-mono text-mono-sm">{formatPages(c.page_start, c.page_end)}</span>}
                   {c.is_table && <Badge tone="neutral" icon={<Table aria-hidden />}>Table</Badge>}
                   <span className="ml-auto font-mono text-mono-sm">{formatNumber(c.token_count)} tok</span>
                 </div>
-                <p className="line-clamp-6 whitespace-pre-wrap break-words text-body text-text-primary">{c.text}</p>
+                <p className="line-clamp-6 whitespace-pre-wrap break-words text-body text-text-primary">{stripTagsPre(c.text)}</p>
               </li>
             ))}
             {chunks.length === 0 && <p className="py-6 text-center text-text-tertiary">No chunks match “{filter}”.</p>}

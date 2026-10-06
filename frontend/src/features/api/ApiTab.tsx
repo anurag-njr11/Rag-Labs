@@ -1,10 +1,10 @@
-import { useMemo, useState, type FormEvent } from 'react'
+import { useMemo, useRef, useState, type FormEvent } from 'react'
 import { ExternalLink, Play } from 'lucide-react'
 import { errorMessage, useChat, useRun, useRuns, useSuggestions } from '@/api/hooks'
 import type { ChatResult, RunDetail } from '@/api/types'
 import { BACKEND_DOCS_URL } from '@/app/AppLayout'
 import { useWorkspace } from '@/app/workspace'
-import { Badge, Banner, Button, Card, CodeBlock, CopyButton, Input, Spinner, Tabs, tabPanelProps } from '@/components/ui'
+import { Badge, Banner, Button, Card, CodeBlock, CopyButton, Input, Spinner, Tabs, tabPanelProps, useSwapTransition } from '@/components/ui'
 
 const ORIGIN = (() => {
   try {
@@ -87,11 +87,15 @@ const STATIC_EXAMPLE = `{
   "totals": {"ms": 1784, "latency_ms": 1784, "tokens_in": 2328, "tokens_out": 151, "cost_usd": 0.0}
 }`
 
+const LANGS: Lang[] = ['curl', 'python', 'js', 'stream']
+
 export default function ApiTab() {
   const { project } = useWorkspace()
   const url = `${ORIGIN}/api/projects/${project.id}/chat`
   const version = project.active_version?.version
   const [lang, setLang] = useState<Lang>('curl')
+  const langPanel = useRef<HTMLDivElement>(null)
+  useSwapTransition(langPanel, LANGS.indexOf(lang), 'auto', 20)
   const suggestions = useSuggestions(project.id)
   const exampleQ = suggestions.data?.questions[0] ?? FALLBACK_Q
 
@@ -145,7 +149,7 @@ export default function ApiTab() {
             ]}
           />
         </div>
-        <div {...tabPanelProps('api-lang', lang)} tabIndex={-1}>
+        <div ref={langPanel} {...tabPanelProps('api-lang', lang)} tabIndex={-1}>
           <CodeBlock code={snippets[lang]} title={lang === 'stream' ? 'curl · Server-Sent Events' : lang === 'js' ? 'JavaScript' : lang === 'python' ? 'Python' : 'curl'} />
         </div>
       </Card>

@@ -1,7 +1,8 @@
 /**
  * Tiny, safe Markdown renderer for model answers. Builds React elements only — never HTML strings,
  * never dangerouslySetInnerHTML. Supports: paragraphs, headings, fenced code, bullet / numbered lists,
- * blockquotes, inline code, **bold**, *italic* / _italic_, http(s) links and `[n]` / `[1, 2]` citation markers.
+ * blockquotes, inline code, **bold**, *italic* / _italic_, http(s) links, `[n]` / `[1, 2]` citation markers
+ * and a small allowlist of inline HTML tags (see `inlineTag`).
  * Tolerates partial input while streaming (an unclosed ``` fence renders as code).
  */
 import { Fragment, type ReactNode } from 'react'
@@ -107,9 +108,33 @@ export function parseBlocks(src: string): Block[] {
 
 // ------------------------------------------------------------------------------------------------ inline
 
-// Order matters: code first (its content is literal), then citations, links, bold, italics.
+// Order matters: code first (its content is literal), then citations, links, bold, italics, then the
+// allowlisted inline HTML tags (paired, <br>, and stray unpaired ones, which are dropped).
 const INLINE =
-  /(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|\[(\d{1,3}(?:\s*,\s*\d{1,3})*)\](?!\()|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*\n][\s\S]*?)\*\*|(?<![\w*])\*([^*\s](?:[^*\n]*[^*\s])?)\*(?![\w*])|(?<![\w])_([^_\s](?:[^_\n]*[^_\s])?)_(?![\w])/g
+  /(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|\[(\d{1,3}(?:\s*,\s*\d{1,3})*)\](?!\()|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*\n][\s\S]*?)\*\*|(?<![\w*])\*([^*\s](?:[^*\n]*[^*\s])?)\*(?![\w*])|(?<![\w])_([^_\s](?:[^_\n]*[^_\s])?)_(?![\w])|<(sup|sub|mark|b|strong|i|em|u)>([\s\S]*?)<\/\9>|<br\s*\/?>|<\/?(?:sup|sub|mark|b|strong|i|em|u)>/g
+
+/**
+ * Wrap `children` in the element for an allowlisted tag. A source `<mark>` (a highlight in the PDF) renders
+ * unstyled so it can't be confused with the cited-span highlight.
+ */
+export function inlineTag(tag: string, children: ReactNode, key: string): ReactNode {
+  switch (tag) {
+    case 'sup':
+      return <sup key={key}>{children}</sup>
+    case 'sub':
+      return <sub key={key}>{children}</sub>
+    case 'b':
+    case 'strong':
+      return <strong key={key} className="font-semibold">{children}</strong>
+    case 'i':
+    case 'em':
+      return <em key={key}>{children}</em>
+    case 'u':
+      return <u key={key}>{children}</u>
+    default:
+      return <Fragment key={key}>{children}</Fragment>
+  }
+}
 
 export function renderInline(text: string, cite: RenderCitation | undefined, keyPrefix = 'i'): ReactNode[] {
   const out: ReactNode[] = []
@@ -139,6 +164,10 @@ export function renderInline(text: string, cite: RenderCitation | undefined, key
       out.push(<strong key={key()} className="font-semibold">{renderInline(m[6], cite, key())}</strong>)
     } else if (m[7] !== undefined || m[8] !== undefined) {
       out.push(<em key={key()}>{renderInline((m[7] ?? m[8])!, cite, key())}</em>)
+    } else if (m[9] !== undefined) {
+      out.push(inlineTag(m[9], renderInline(m[10], cite, key()), key()))
+    } else if (m[0].startsWith('<br')) {
+      out.push(<br key={key()} />)
     }
     last = idx + m[0].length
   }

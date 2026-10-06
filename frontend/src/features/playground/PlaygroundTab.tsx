@@ -4,7 +4,7 @@ import { errorMessage, useProviders, useRuns, useSuggestions, useVersions } from
 import { formatMs, formatRelative, storeLabel } from '@/api/format'
 import type { Suggestions, Version } from '@/api/types'
 import { useWorkspace } from '@/app/workspace'
-import { Button, Popover, Select, Spinner, StatusBadge, cn, useToast } from '@/components/ui'
+import { Button, MOTION, Popover, Select, Spinner, StatusBadge, cn, gsap, presence, usePresence, useToast } from '@/components/ui'
 import { Inspector, inspectorSummary, type InspectorFocus, type InspectorTab } from './Inspector'
 import { Message } from './Message'
 import { isActive, useChatSession, type Turn } from './session'
@@ -385,20 +385,48 @@ export default function PlaygroundTab() {
 
       {/* ------------------------------------------------------------------ inspector */}
       {wide ? (
-        inspectorOpen && (
-          <aside className="flex min-w-[400px] flex-[2] flex-col border-l border-border-default bg-bg-surface">{inspector()}</aside>
-        )
+        <InspectorColumn open={inspectorOpen}>{inspector()}</InspectorColumn>
       ) : (
-        sheetOpen && inspected && (
-          <BottomSheet onClose={closeSheet}>{inspector(true)}</BottomSheet>
-        )
+        <BottomSheet open={sheetOpen && !!inspected} onClose={closeSheet}>{inspected && inspector(true)}</BottomSheet>
       )}
     </div>
   )
 }
 
-/** Mobile bottom sheet (max 70vh) with a drag handle; Escape / backdrop / handle close it. */
-function BottomSheet({ onClose, children }: { onClose: () => void; children: ReactNode }) {
+/** Desktop Inspector column; slides in/out from the right when shown or hidden. */
+function InspectorColumn({ open, children }: { open: boolean; children: ReactNode }) {
+  const { ref, mounted } = usePresence<HTMLElement>(open, presence.slideX(32))
+  if (!mounted) return null
+  return (
+    <aside ref={ref} className="flex min-w-[400px] flex-[2] flex-col border-l border-border-default bg-bg-surface">
+      {children}
+    </aside>
+  )
+}
+
+/** Mobile bottom sheet: slides up (GSAP) with a fading backdrop; Escape / backdrop / handle close it. */
+function BottomSheet({ open, onClose, children }: { open: boolean; onClose: () => void; children: ReactNode }) {
+  const { ref: root, mounted } = usePresence<HTMLDivElement>(open, {
+    enter: (el) =>
+      gsap
+        .timeline()
+        .fromTo(el.firstElementChild, { opacity: 0 }, { opacity: 1, duration: 0.25 })
+        .fromTo(el.lastElementChild, { yPercent: 100 }, { yPercent: 0, duration: 0.42, ease: 'expo.out', clearProps: 'transform' }, 0),
+    exit: (el) =>
+      gsap
+        .timeline()
+        .to(el.lastElementChild, { yPercent: 100, duration: 0.26, ease: MOTION.in })
+        .to(el.firstElementChild, { opacity: 0, duration: 0.2 }, 0.06),
+  })
+  if (!mounted) return null
+  return (
+    <div ref={root} className="fixed inset-0 z-50">
+      <SheetPanel onClose={onClose}>{children}</SheetPanel>
+    </div>
+  )
+}
+
+function SheetPanel({ onClose, children }: { onClose: () => void; children: ReactNode }) {
   const ref = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const prev = document.activeElement as HTMLElement | null
@@ -411,7 +439,7 @@ function BottomSheet({ onClose, children }: { onClose: () => void; children: Rea
     }
   }, [onClose])
   return (
-    <div className="fixed inset-0 z-50">
+    <>
       <div className="absolute inset-0 bg-black/30" onClick={onClose} aria-hidden />
       <div
         id="pg-sheet"
@@ -430,6 +458,6 @@ function BottomSheet({ onClose, children }: { onClose: () => void; children: Rea
         </div>
         <div className="min-h-0 flex-1">{children}</div>
       </div>
-    </div>
+    </>
   )
 }

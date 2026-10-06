@@ -116,7 +116,7 @@ interface Change { slot: Slot; field: string; before: unknown; after: unknown; e
 | `GET /api/projects/{id}/versions` | | `Version[]` newest first, each with `index` |
 | `GET /api/projects/{id}/versions/{vid}` | | `Version` with `index`, `changes_from_parent`, `parent_version`, `activations: {at, previous_version}[]` (newest first) |
 | `GET /api/projects/{id}/versions/diff?a={vid}&b={vid}` | | `{a: number, b: number, changes: Change[]}` (a → b) |
-| `POST /api/projects/{id}/versions` | `{config, note?, activate?=true, build?=true}` | `201 {version: Version, job_id: string\|null, unchanged: boolean}` — `unchanged: true` if identical to active (no new version) |
+| `POST /api/projects/{id}/versions` | `{config, note?, activate?=true, build?=true}` | `201 {version: Version, job_id: string\|null, eval_job_id: string\|null, unchanged: boolean}` — `unchanged: true` if identical to active (no new version). `eval_job_id`: regression guard — with `build: true`, the new version is scored on the newest ready eval set (null if none) |
 | `GET /api/projects/{id}/suggestions` | | `{source: 'eval'\|'headings'\|'recent'\|'none', questions: string[]}` — up to 3 starter questions from the latest eval set, else section headings of the active build, else recent questions |
 | `POST /api/projects/{id}/versions/{vid}/activate` | | `{version, job_id}` — also logged in `activations` |
 | `POST /api/projects/{id}/versions/{vid}/build` | | `{job_id}` (409 if no documents) |
@@ -194,9 +194,15 @@ set scores any version, whatever its chunking. Status is `running | ready | fail
 | `POST /sets` | `{size?: 5–100 = 30, version_id?}` | 201 `{eval_set: EvalSet, job_id}` · 409 no documents |
 | `GET /sets` | | `EvalSet[]` newest first |
 | `GET /sets/{set_id}` | | `EvalSet & {items: EvalItem[]}` (rejected items included, `valid: false` + `reject_reason`) |
-| `POST /sets/{set_id}/runs` | `{version_id?}` (default active) | 201 `{run: EvalRun, job_id}` · 409 set not ready |
+| `POST /sets/{set_id}/runs` | `{version_id?, answers?: false}` (default active) | 201 `{run: EvalRun, job_id}` · 409 set not ready. `answers: true` also writes each answer with the version's prompt+model and LLM-grades it (extra stages `answer`, `grade`) |
 | `GET /runs?set_id=` | | `EvalRun[]` oldest first (no `results`) |
 | `GET /runs/{run_id}` | | `EvalRun & {results: EvalItemResult[]}` |
+| `GET /runs/{run_id}/fixes` | | `EvalFix[]` — one-click fixes for the run's diagnoses: `{diagnosis, config, changes: Change[], base_version}`. Save `config` via `POST /versions` |
+| `POST /sets/{set_id}/items` | `{question, gold_answer, evidence, document_id}` | 201 `EvalItem` (`valid: true`, `gold_chunk_id: ''`) · 422 evidence not found in that document's chunks / unknown document · 409 set not ready |
+| `PATCH /sets/{set_id}/items/{item_id}` | `{question?, gold_answer?, evidence?, valid?}` | `EvalItem`. `valid: false` drops it from scoring (`reject_reason: 'removed by hand'`); `valid: true` restores it (evidence re-checked) |
+| `DELETE /sets/{set_id}/items/{item_id}` | | 204 |
+| `GET /sets/{set_id}/export.csv` | | CSV download: `question,gold_answer,evidence,document,valid,reject_reason` |
+| `POST /sets/{set_id}/import` | `{csv: string}` | `{added, error_count, errors: {row, message}[] (≤50)}` — columns `question`, `gold_answer` (or `answer`), `evidence`, `document` (file name); rows with `valid=no` skipped; 422 missing columns |
 
 ```ts
 EvalSet = {id, project_id, version_id, build_id, status, size_requested, error, created_at,
@@ -205,10 +211,82 @@ EvalItem = {id, ordinal, question, gold_answer, evidence, document_id, document,
             valid, reject_reason, closed_book_answer}
 EvalRun = {id, eval_set_id, version_id, version, build_id, status, error, created_at,
            metrics: {n, k, hit_at_1, hit_at_3, hit_at_k, mrr, p50_ms,
-                     diagnoses: {dropped_by_rerank, ranked_below_k, not_retrieved},
+                     context_hit?,   // share whose evidence survives the prompt's context budget
+                     ctx_tokens?,    // mean context tokens sent to the model per question
+                     answers?: {n, ungraded, correct, partial, wrong, correct_rate,
+                                correct_ci: [lo, hi] /* 95% Wilson */, grounded_rate},  // answers: true only
+                     diagnoses: {failed_to_extract?, dropped_by_budget?, dropped_by_rerank, ranked_below_k, not_retrieved},
                      config: {parse, chunk, embed, store, retrieve, top_k, rerank}} | null}
-EvalItemResult = {item_id, rank: number | null, hit, diagnosis: 'dropped_by_rerank' | 'ranked_below_k' | 'not_retrieved' | null,
-                  deep_rank, ms, top: {id, document, heading_path, hit}[]}
+EvalItemResult = {item_id, rank: number | null, hit,
+                  diagnosis: 'failed_to_extract' | 'dropped_by_budget' | 'dropped_by_rerank' | 'ranked_below_k' | 'not_retrieved' | null,
+                  deep_rank, in_context?, ctx_tokens?, ms, top: {id, document, heading_path, hit}[],
+                  answer?, correct?: 'yes'|'partial'|'no', grounded?: 'yes'|'partial'|'no'|null}   // answers: true only
+```
+`dropped_by_budget` is set on a **hit** (rank ≠ null) whose chunk the prompt packer cut for
+`prompt.max_context_tokens`. `failed_to_extract` (answer grading only) is a hit whose evidence was in
+the prompt but whose answer was graded wrong. Fields marked `?` are absent on runs scored before they existed.
+
+### Sweeps
+
+A sweep scores every combination of a few axes (`slot.field` or `slot.type`) over a base version,
+on one ready eval set — retrieval only, no LLM calls. Status: `running | ready | failed | cancelled`.
+Cells live inside the sweep; one becomes a real version only when promoted (`POST /versions` with
+`cell.config`).
+
+| Method & path | Body | Returns |
+|---|---|---|
+| `GET /sweep-axes` | | `{axes: SweepAxis[], max_cells: 48}` — suggested axes (any `slot.field` is accepted) |
+| `POST /sweeps` | `{set_id, version_id?, axes: {path, values}[], auto_optimize?: false}` (1–4 axes) | 201 `{sweep: Sweep, job_id}` (job kind `sweep`) · 409 set not ready · 422 bad axis / over `max_cells` / no valid config |
+| `GET /sweeps` | | `Sweep[]` newest first |
+| `GET /sweeps/{sweep_id}` | | `Sweep` |
+| `POST /sweeps/{sweep_id}/cancel` | | `Sweep` — stops after the current cell; finished cells stay, the rest become `skipped` |
+
+```ts
+SweepAxis = {path, label, effect: 'instant' | 'rebuild', values, requires?: {[path]: value},
+             notes?: {[value]: string}, scores?: {[value]: number | null}, seed?: values}
+             // embed.model: values sorted by MTEB retrieval score, `seed` = top 3
+Sweep = {id, project_id, eval_set_id, base_version_id, base_version, axes: {path, values}[], status, error,
+         created_at, counts: {[cellStatus]: number},
+         cells: {overrides: {[path]: value}, config: PipelineConfig | null,
+                 status: 'pending' | 'running' | 'ready' | 'failed' | 'invalid' | 'skipped',
+                 error, metrics?: EvalRun['metrics'], build_id?, pareto?: boolean}[]}
+```
+`auto_optimize: true` → after all cells, the top 25% by MRR (≤5) are re-scored with answer grading
+(stage `grade_cells`); their `metrics.answers` fills in, or `grade_error` is set. `pareto` = on the frontier of MRR (higher) vs. `ctx_tokens` (lower). Varying `chunk.size` without
+`chunk.overlap` keeps the base overlap/size ratio. `invalid` cells carry the validation message.
+
+## Corpus Health
+
+Prefix `/api/projects/{id}/health`. A report analyses one version's build: real questions
+(Playground/API history + pasted) → coverage verdicts and a gap backlog; cross-document passage
+pairs → duplicates and contradictions; and which chunks/documents those questions ever retrieved.
+Status `running | ready | failed`. Job kind `health`, progress stages `index?` → `retrieve` →
+`judge` → `scan` → `contradictions`.
+
+| Method & path | Body | Returns |
+|---|---|---|
+| `POST /reports` | `{version_id?, questions?: string[] (≤500)}` | 201 `{report: HealthReport, job_id}` · 409 no documents |
+| `GET /reports` | | `HealthReport[]` newest first, with `summary` (no `result`) |
+| `GET /reports/{rid}` | | `HealthReport` with `result` |
+| `GET /reports/{rid}/report.md` | | Markdown download (`Content-Disposition: attachment`) · 409 not ready |
+
+```ts
+HealthReport = {id, project_id, version_id, version, build_id, status, error, created_at,
+                result?: HealthResult | null,
+                summary?: {n, covered, partial, missing, covered_rate, ungraded, sources,
+                           topics, contradictions, duplicates, unused_documents} | null}
+Excerpt = {chunk_id, document_id, document, heading_path, page_start, text /* ≤600 chars */}
+HealthResult = {
+  coverage: {summary: {n, covered, partial, missing, covered_rate, ungraded, sources: {pasted, history}},
+             topics: {topic, count, missing, partial,
+                      questions: {question, verdict: 'covered'|'partial'|'missing', source: 'pasted'|'history',
+                                  passages: Excerpt[] /* closest one */}[]}[]}   // biggest first
+  duplicates: {a: Excerpt, b: Excerpt, similarity}[]           // cosine ≥ 0.97, different documents
+  contradictions: {a, b, similarity, explanation}[]              // LLM-confirmed among the 30 closest pairs
+  pairs_checked: number
+  usage: {questions, chunks, chunks_used, unused_documents,
+          documents: {document_id, document, chunks, used}[]}  // least used first
+}
 ```
 
 ## Chat

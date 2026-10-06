@@ -138,6 +138,9 @@ class Node:
     slot: ClassVar[str]
     type: ClassVar[str]
     Config: ClassVar[type[NodeConfig]] = NodeConfig
+    # Bump when a rebuild-slot node's output changes for the same config (e.g. a parser
+    # fix). It feeds the index hash, so affected indexes and cached artifacts are redone.
+    revision: ClassVar[int] = 0
 
     def __init__(self, config: NodeConfig | dict[str, Any] | None = None) -> None:
         if isinstance(config, NodeConfig):

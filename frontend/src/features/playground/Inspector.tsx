@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { PanelRightClose, Search } from 'lucide-react'
 import { formatMs } from '@/api/format'
-import { Banner, Button, EmptyState, FoundByBadge, Spinner, Tabs, cn, tabPanelProps } from '@/components/ui'
+import { Banner, Button, EmptyState, FoundByBadge, Spinner, Tabs, cn, smoothScrollTo, tabPanelProps, useSwapTransition } from '@/components/ui'
 import { SourceItem, isCited } from './Sources'
 import { TracePanel } from './Trace'
 import { isActive, type Turn } from './session'
@@ -44,13 +44,15 @@ export function Inspector({ turn, tab, onTabChange, focus, indexType, compact, o
   const scroller = useRef<HTMLDivElement>(null)
   const [flashId, setFlashId] = useState<string | null>(null)
   const s = inspectorSummary(turn)
+  // Sources ⇄ Trace slide in the direction of the tab.
+  useSwapTransition(scroller, tab, tab === 'trace' ? 1 : -1, 20)
 
   // Scroll to + flash the focused source when a citation chip is clicked.
   useEffect(() => {
     if (!turn || !focus.chunkId || tab !== 'sources') return
     const el = document.getElementById(sourceDomId(turn.id, focus.chunkId))
     if (!el) return
-    el.scrollIntoView({ behavior: window.matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth', block: 'start' })
+    smoothScrollTo(el, { container: scroller.current, offset: 16, duration: 0.5 })
     el.focus({ preventScroll: true })
     setFlashId(focus.chunkId)
     const t = setTimeout(() => setFlashId(null), 650)

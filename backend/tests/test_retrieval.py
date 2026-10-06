@@ -217,6 +217,19 @@ async def test_defining_section_beats_incidental_mentions(tmp_path, monkeypatch)
         get_settings.cache_clear()
 
 
+async def test_exact_path_ignores_incidental_symbol_mentions(project):
+    """A symbol mentioned in prose only counts when a section is *named* after it.
+    Mere mentions are the keyword path's job; as exact hits they flooded RRF with
+    arbitrary ties and dragged fused below hybrid (Pydantic docs: MRR 0.61 vs 0.96)."""
+    build = await builder.sync_build(project, _cfg("numpy"))
+    # int_parsing is mentioned in errors.md's example and names its section heading
+    ranked, keys = await retrieval.exact_search(build["id"], "What is int_parsing?", 10)
+    assert ranked and all(any(k.startswith("heading:") for k in keys[cid]) for cid, _ in ranked)
+    # Model.model_validate is mentioned in models.md but no section is named after it
+    ranked, _ = await retrieval.exact_search(build["id"], "When should I call Model.model_validate?", 10)
+    assert ranked == []
+
+
 async def test_pinned_definition_ranks_first_after_fusion(project):
     """RRF only sees ranks; a heading-exact match must still come first."""
     cfg = _cfg("numpy")

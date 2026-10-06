@@ -21,4 +21,8 @@ export { ToastProvider, useToast, type ToastInput, type ToastTone } from './Toas
 export { ProgressBar, Stepper, type ProgressBarProps, type ProgressTone, type StepperProps, type StepperStep } from './Progress'
 export { CodeBlock, CopyButton, copyText, type CodeBlockProps, type CopyButtonProps } from './CodeBlock'
 export { EmptyState, Banner, Disclosure, VisuallyHidden, type EmptyStateProps, type BannerProps, type BannerTone, type DisclosureProps } from './Feedback'
+export {
+  MOTION, gsap, useGSAP, prefersReducedMotion, smoothScrollTo, usePresence, presence, Collapse, useSwapTransition, useStaggerIn,
+  useIndicator, TabIndicator, useScrollReveal, ScrollTrigger, type PresenceAnims, type SmoothScrollOptions,
+} from './motion'
 export { CitationChip, SourceChip, Pill, type CitationChipProps, type SourceChipProps, type PillProps } from './Chip'

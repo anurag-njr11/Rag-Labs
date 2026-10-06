@@ -68,7 +68,8 @@ def validate_pipeline(cfg: dict[str, Any]) -> PipelineConfig:
 
 def rebuild_part(cfg: PipelineConfig) -> dict[str, Any]:
     """The subset of the pipeline that determines the index: node types of
-    rebuild slots, plus every field whose effect is 'rebuild'."""
+    rebuild slots, plus every field whose effect is 'rebuild', plus the node's
+    `revision` when non-zero (left out at 0 so existing hashes don't move)."""
     part: dict[str, Any] = {}
     for s in SLOTS:
         node_cfg = cfg[s.name]
@@ -77,6 +78,8 @@ def rebuild_part(cfg: PipelineConfig) -> dict[str, Any]:
         fields = {k: node_cfg[k] for k, eff in effects.items() if eff == "rebuild"}
         if s.effect == "rebuild" or fields:
             part[s.name] = {"type": node_cfg["type"], **fields}
+            if spec.cls.revision:
+                part[s.name]["revision"] = spec.cls.revision
     return part
 
 

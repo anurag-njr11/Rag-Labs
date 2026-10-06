@@ -1,7 +1,8 @@
-import { useEffect, useId, useRef, type ReactNode } from 'react'
+import { useId, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
 import { X } from 'lucide-react'
 import { Button } from './Button'
 import { cn } from './cn'
+import { MOTION, gsap } from './motion'
 
 export interface DialogProps {
   open: boolean
@@ -26,11 +27,47 @@ export function Dialog({ open, onClose, title, description, children, footer, si
   const titleId = useId()
   const descId = useId()
 
-  useEffect(() => {
+  // Keep the content rendered while the close animation plays.
+  const [shown, setShown] = useState(open)
+  if (open && !shown) setShown(true)
+
+  useLayoutEffect(() => {
     const d = ref.current
     if (!d) return
-    if (open && !d.open) d.showModal()
-    else if (!open && d.open) d.close()
+    gsap.killTweensOf(d)
+    if (open) {
+      if (!d.open) d.showModal()
+      d.removeAttribute('data-closing')
+      const t = gsap.fromTo(
+        d,
+        { opacity: 0, y: 14, scale: 0.97 },
+        { opacity: 1, y: 0, scale: 1, duration: 0.3, ease: MOTION.out, clearProps: 'transform,opacity' },
+      )
+      return () => {
+        t.kill()
+      }
+    }
+    if (!d.open) {
+      setShown(false)
+      return
+    }
+    d.setAttribute('data-closing', '')
+    const t = gsap.to(d, {
+      opacity: 0,
+      y: 8,
+      scale: 0.98,
+      duration: MOTION.fast,
+      ease: MOTION.in,
+      onComplete: () => {
+        d.close()
+        d.removeAttribute('data-closing')
+        gsap.set(d, { clearProps: 'transform,opacity' })
+        setShown(false)
+      },
+    })
+    return () => {
+      t.kill()
+    }
   }, [open])
 
   return (
@@ -47,12 +84,12 @@ export function Dialog({ open, onClose, title, description, children, footer, si
       }}
       className={cn(
         'm-auto w-[calc(100vw-32px)] rounded-xl border border-border-default bg-bg-surface p-0 text-text-primary shadow-lg',
-        'backdrop:bg-black/40 backdrop:backdrop-blur-[1px]',
+        'backdrop:bg-black/40 backdrop:backdrop-blur-[1px] backdrop:transition-opacity backdrop:duration-200 data-[closing]:backdrop:opacity-0 backdrop:animate-[backdrop-in_200ms_ease-out]',
         widths[size],
         className,
       )}
     >
-      {open && (
+      {shown && (
         <div className="flex max-h-[85vh] flex-col">
           <div className="flex items-start justify-between gap-4 px-5 pt-5">
             <div className="min-w-0">

@@ -201,3 +201,49 @@ CREATE TABLE IF NOT EXISTS eval_runs (
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_eval_runs_set ON eval_runs(eval_set_id, created_at);
+
+-- Config sweeps: one eval set scored across a grid of variants of a base version.
+-- Cells live as JSON (one writer: the sweep job); a cell becomes a real
+-- pipeline version only when the user promotes it.
+CREATE TABLE IF NOT EXISTS sweeps (
+    id              TEXT PRIMARY KEY,
+    project_id      TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    eval_set_id     TEXT NOT NULL REFERENCES eval_sets(id) ON DELETE CASCADE,
+    base_version_id TEXT NOT NULL,
+    axes            TEXT NOT NULL,                     -- JSON [{path, values}]
+    cells           TEXT NOT NULL,                     -- JSON [{overrides, config, status, metrics, error, pareto}]
+    status          TEXT NOT NULL DEFAULT 'running',   -- running | ready | failed | cancelled
+    error           TEXT,
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_sweeps_project ON sweeps(project_id, created_at);
+
+-- Corpus Health reports: coverage gaps from real questions, duplicate/contradicting
+-- passages, unused content. The whole report is one JSON result (one writer: the job).
+CREATE TABLE IF NOT EXISTS corpus_reports (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    version_id  TEXT NOT NULL,
+    build_id    TEXT,
+    questions   TEXT NOT NULL DEFAULT '[]',           -- JSON: pasted questions
+    status      TEXT NOT NULL DEFAULT 'running',      -- running | ready | failed
+    result      TEXT,                                 -- JSON: coverage, duplicates, contradictions, usage
+    error       TEXT,
+    created_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_corpus_reports_project ON corpus_reports(project_id, created_at);
+
+-- Config-prior instrumentation (PRD FR-2.35): one anonymised row per finished sweep —
+-- corpus fingerprint (aggregate numbers only, no names or text) -> winning settings -> score.
+-- No project id / FK on purpose: rows outlive the project. Nothing reads them yet.
+CREATE TABLE IF NOT EXISTS sweep_fingerprints (
+    id          TEXT PRIMARY KEY,
+    sweep_id    TEXT NOT NULL,
+    fingerprint TEXT NOT NULL,                        -- JSON
+    axes        TEXT NOT NULL,                        -- JSON: swept paths
+    winner      TEXT NOT NULL,                        -- JSON: overrides + config summary
+    score       TEXT NOT NULL,                        -- JSON: winner + runner-up metrics
+    n_cells     INTEGER NOT NULL,
+    n_questions INTEGER NOT NULL,
+    created_at  TEXT NOT NULL
+);

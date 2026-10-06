@@ -17,5 +17,5 @@ export function useProjectId(): string {
 }
 
 /** Workspace routes, for links: `projectPath(id, 'configure')`. */
-export type WorkspaceTab = 'documents' | 'configure' | 'versions' | 'playground' | 'evaluate' | 'api'
+export type WorkspaceTab = 'documents' | 'configure' | 'versions' | 'playground' | 'evaluate' | 'health' | 'api'
 export const projectPath = (id: string, tab: WorkspaceTab = 'documents') => `/projects/${id}/${tab}`

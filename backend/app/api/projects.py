@@ -14,6 +14,7 @@ from ..core.pipeline import (
     PipelineError, diff_pipelines, index_config_hash, recommended_pipeline, validate_pipeline, with_defaults,
 )
 from ..engine import stores, sync
+from . import eval as eval_api
 from ..ingest import builder, export as export_mod
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
@@ -240,11 +241,16 @@ async def create_version(project_id: str, body: VersionIn) -> dict[str, Any]:
     cfg = _validate(body.config)
     active = await sync.active_version(project_id)
     if active and with_defaults(db.loads(active["config"])) == cfg:
-        return {"version": _version_out(active, p["active_version_id"]), "job_id": None, "unchanged": True}
+        return {"version": _version_out(active, p["active_version_id"]), "job_id": None, "eval_job_id": None,
+                "unchanged": True}
     v = await _insert_version(project_id, cfg, body.note.strip(), active["id"] if active else None, body.activate)
     job_id = await _maybe_build(project_id, cfg) if body.build else None
+    # Regression guard: only when the index is being brought up anyway (or needs no work),
+    # so a wizard save with build=false doesn't start a build behind the user's back.
+    eval_job_id = await eval_api.regression_check(project_id, v) if body.build else None
     p = await _project(project_id)
-    return {"version": _version_out(v, p["active_version_id"]), "job_id": job_id, "unchanged": False}
+    return {"version": _version_out(v, p["active_version_id"]), "job_id": job_id, "eval_job_id": eval_job_id,
+            "unchanged": False}
 
 
 @router.post("/{project_id}/versions/{version_id}/activate")

@@ -3,7 +3,7 @@
 | | |
 |---|---|
 | **Status** | Draft v1.0 |
-| **Last updated** | 2026-09-23 |
+| **Last updated** | 2026-10-06 |
 | **Owner** | Anurag |
 | **Companion doc** | `IDEAS.md` — full idea catalogue, including rejected ideas and rationale |
 
@@ -236,6 +236,26 @@ Clone → `pip install -r requirements.txt` → `npm install` → two run comman
 ## 7. Phase 2 — Measure & Optimize
 
 **Goal:** the differentiator. Phase 1 users gain new tabs; nothing they had breaks.
+
+### 7.0 Build status (2026-10-06)
+
+| Area | Status | Notes |
+|---|---|---|
+| Eval sets (FR-2.1–2.3) | ✅ Built | Gold label = `document_id` + verbatim evidence quote, not `gold_chunk_id`, so one set scores any chunking |
+| Eval-set editing / CSV (FR-2.4) | ✅ Built | Add / edit / drop / restore / delete questions; CSV export + import. Hand-added evidence must be found (≥ 90% token coverage) in the chosen document's chunks, so the hit rule stays meaningful |
+| Eval-set versioning, facets (FR-2.5–2.6) | ⬜ Not started | Runs keep their per-item results, so an edit doesn't rewrite history, but sets aren't versioned |
+| Deterministic metrics (§7.2) | ✅ Hit@1/3/k, MRR, context inclusion, context tokens/query, p50 latency | nDCG and $ cost not yet: `cost_usd` is still a stub, so **context tokens per query** is the deterministic cost proxy |
+| LLM-judged metrics (FR-2.7–2.10) | 🟡 Answer correctness + groundedness | Opt-in per eval run. Discrete `yes/partial/no` verdicts, 95% Wilson interval on correctness, overlapping intervals reported as **tied** in the sweep insight. Not yet: median-of-3 near decision boundaries (FR-2.8), relevancy/precision/recall judges |
+| Failure taxonomy (§7.3) | 🟡 Modes 2–4 | Mode 2 → `ranked_below_k` / `dropped_by_rerank`, mode 3 → `dropped_by_budget`, mode 4 → `failed_to_extract` (evidence in context, answer graded wrong). Mode 1 lives in Corpus Health. One-click **Apply** (FR-2.13) built for `ranked_below_k` (raise `top_k`), `dropped_by_rerank` (raise `top_n`), `dropped_by_budget` (raise the context budget); the others need a sweep or a prompt/model change. Modes 5–7 not built |
+| Sweeps (FR-2.15–2.17, 2.20) | ✅ Built | Grid over any `slot.field`/`slot.type`, cap 48 cells, ordered by index hash, existing caches, cancel keeps finished cells. Cells run sequentially (one CPU-bound embedder) |
+| Auto-Optimize (FR-2.18) | ✅ Built | Sweep option: retrieval-score every cell, then answer-grade the top 25% by MRR (≤5 cells) |
+| MTEB-seeded embedders (FR-2.19) | ✅ Built | Local models carry their model-card MTEB English retrieval score (checked 2026-10-06; `null` where none is reported). The sweep's embedding axis is ordered by it, shows it, and offers an "MTEB top 3" preset |
+| Leaderboard (FR-2.21–2.25) | ✅ Built | Table + scatter, Pareto on MRR vs. context tokens, insight line, **Promote** = new active version (serves the endpoint at once) |
+| Corpus Health (§7.6) | ✅ Built (FR-2.26, 2.27, 2.29, 2.31) · ⬜ FR-2.28, 2.30 | Gaps come from **real** questions (Playground/API history + pasted, e.g. support tickets) graded covered/partial/missing by the LLM against what retrieval returns, clustered into a ranked backlog — not from eval-set misses, which by construction have content. Duplicates (cos ≥ 0.97, no LLM) and contradictions (LLM-checked close pairs). Staleness skipped: uploads carry no last-modified date and OKF metadata isn't ingested yet. Own **Health** tab + Markdown export |
+| Regression guard (FR-2.32) | ✅ Built | Every version saved with `build: true` is scored on the newest ready eval set; ▲/▼ vs. the previous run |
+| Cost simulator (FR-2.33) | ✅ Built | Leaderboard: queries/month × your $/1M input and output prices → $/month per config, from each config's context tokens + 150 prompt overhead + the project's average answer length |
+| Repo export (FR-2.34) | ✅ Built (pre-Phase 2) | `GET /versions/{vid}/export` |
+| Config-prior instrumentation (FR-2.35) | ✅ Instrumented | `sweep_fingerprints`: one anonymised row per finished sweep (aggregate corpus profile → winning overrides + config summary → winner/runner-up scores). Nothing reads it yet |
 
 ### 7.1 Eval sets
 
@@ -588,8 +608,12 @@ As built (`backend/app/schema.sql`):
 Parsed documents and chunk lists are cached as JSON under `data/cache/artifacts`, keyed by
 content hash + config.
 
-Phase 2 adds `eval_sets`, `eval_items`, `eval_results`, `sweeps`, `sweep_cells`,
-`diagnostics`, `corpus_findings`, `sweep_fingerprints`.
+Phase 2 so far adds `eval_sets`, `eval_items`, `eval_runs` (per-item results as JSON instead of an
+`eval_results` table) and `sweeps` (cells as JSON instead of a `sweep_cells` table: one writer, and
+a cell becomes a `pipeline_versions` row only when promoted). `corpus_reports` holds each
+Corpus Health report as one JSON result (instead of `corpus_findings` rows), and
+`sweep_fingerprints` logs the config-prior data. Not built: `diagnostics` (diagnoses live in
+`eval_runs.results`).
 
 ---
 

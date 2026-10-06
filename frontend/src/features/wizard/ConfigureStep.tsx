@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { ArrowLeft, ArrowRight, RotateCcw, Zap, ChevronDown } from 'lucide-react'
 import { ApiError, errorMessage, useCreateVersion, useRecommendedPipeline, useSmartRecommend } from '@/api/hooks'
 import type { PipelineConfig, PipelineFieldError, Project } from '@/api/types'
-import { Banner, Button, Spinner, Switch } from '@/components/ui'
+import { Banner, Button, Collapse, Spinner, Switch } from '@/components/ui'
 import { ConfigEditor } from '@/features/configure'
 import { StepIntro, WizardBody, WizardFooter } from './WizardShell'
 
@@ -97,12 +97,12 @@ export function ConfigureStep({
               onClick={() => setShowReasoning(!showReasoning)}
               className="flex items-center gap-2 text-label text-accent-default hover:text-accent-hover transition-colors"
             >
-              <ChevronDown size={14} style={{ transform: showReasoning ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 200ms' }} />
+              <ChevronDown size={14} style={{ transform: showReasoning ? 'rotate(180deg)' : 'rotate(0deg)', transition: 'transform 300ms ease-out' }} />
               {showReasoning ? 'Hide reasoning' : 'Show detailed reasoning'}
             </button>
 
             {/* Expanded reasoning details */}
-            {showReasoning && (
+            <Collapse open={showReasoning}>
               <div className="mt-4 space-y-4 border-t border-border-default pt-4">
                 <div className="space-y-3">
                   {Object.entries(smartRec.data.reasoning).map(([stage, reason]) => (
@@ -121,7 +121,7 @@ export function ConfigureStep({
                   </div>
                 </div>
               </div>
-            )}
+            </Collapse>
           </div>
         )}
 

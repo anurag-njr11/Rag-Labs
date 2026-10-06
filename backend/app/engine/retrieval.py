@@ -45,8 +45,14 @@ async def exact_search(build_id: str, question: str, limit: int) -> tuple[R.Rank
     if not keys:
         return [], {}
     wanted = {k for _, k in keys}
+    # Chunk-side `symbol` rows are incidental mentions (`model_dump` appears in dozens of
+    # chunks). Keyword search already finds those, ranked by IDF; as exact hits they all
+    # tie, and RRF turned the tie order into a strong boost (fused MRR 0.61 vs hybrid 0.96
+    # on the Pydantic docs). A question's symbols still match `heading` rows: the section
+    # *named* after the identifier is its definition.
     rows = await db.fetch_all(
-        f"SELECT chunk_id, kind, key FROM lookup_index WHERE build_id=? AND key IN ({','.join('?' * len(wanted))})",
+        f"SELECT chunk_id, kind, key FROM lookup_index WHERE build_id=? AND kind != 'symbol'"
+        f" AND key IN ({','.join('?' * len(wanted))})",
         (build_id, *sorted(wanted)),
     )
     scores: dict[str, float] = {}

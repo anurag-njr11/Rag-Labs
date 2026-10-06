@@ -91,3 +91,15 @@ const STORE_LABELS: Record<string, string> = {
 }
 /** "faiss" → "FAISS" (falls back to humanize). */
 export const storeLabel = (s: string | null | undefined) => (s ? STORE_LABELS[s] ?? humanize(s) : '—')
+
+/**
+ * The few inline HTML tags PDF parsers emit (<sup>, <sub>, <mark>, <b>, <i>, <u>, <br>). Anything else in
+ * angle brackets (e.g. `<class 'int'>` in code docs) is real content and stays.
+ */
+const PARSER_TAG = /<\/?(?:sup|sub|mark|b|strong|i|em|u)>|<br\s*\/?>/g
+
+/** Drop parser inline tags from a one-line string (headings, titles); `<br>` becomes a space. */
+export const stripTags = (s: string) => s.replace(PARSER_TAG, (t) => (t.startsWith('<br') ? ' ' : ''))
+
+/** Like `stripTags`, but `<br>` becomes a newline — for text shown with `white-space: pre-wrap`. */
+export const stripTagsPre = (s: string) => s.replace(PARSER_TAG, (t) => (t.startsWith('<br') ? '\n' : ''))

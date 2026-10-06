@@ -1,7 +1,7 @@
-import { Suspense } from 'react'
-import { Link, Outlet } from 'react-router-dom'
+import { Suspense, useRef } from 'react'
+import { Link, Outlet, useLocation } from 'react-router-dom'
 import { Moon, Sun } from 'lucide-react'
-import { Badge, Button, Spinner } from '@/components/ui'
+import { Badge, Button, Spinner, useSwapTransition } from '@/components/ui'
 import { BrandMark } from './BrandMark'
 import { useTheme } from './theme'
 
@@ -22,6 +22,11 @@ export function PageFallback() {
 /** App chrome: skip link + 64px sticky top bar + routed content. */
 export function AppLayout() {
   const [theme, setTheme] = useTheme()
+  // Fade/rise between top-level screens (Projects, Create wizard, a project workspace).
+  const { pathname } = useLocation()
+  const [, seg = '', id = ''] = pathname.split('/')
+  const main = useRef<HTMLElement>(null)
+  useSwapTransition(main, seg === 'projects' ? `projects/${id}` : seg)
   return (
     <div className="flex min-h-dvh flex-col" style={{ ['--topbar-h' as string]: `${TOPBAR_H}px` }}>
       <a
@@ -36,7 +41,7 @@ export function AppLayout() {
           <span className="text-[22px] font-semibold leading-none tracking-[-0.03em] text-text-primary">
             RAG<span className="text-accent-text">Labs</span>
           </span>
-          <Badge tone="neutral" className="ml-1 hidden sm:inline-flex">Phase 1</Badge>
+          <Badge tone="neutral" className="ml-1 hidden sm:inline-flex">Phase 2</Badge>
         </Link>
         <div className="flex items-center gap-1.5">
           <a
@@ -62,7 +67,7 @@ export function AppLayout() {
           </span>
         </div>
       </header>
-      <main id="main" tabIndex={-1} className="flex min-h-0 flex-1 flex-col outline-none">
+      <main ref={main} id="main" tabIndex={-1} className="flex min-h-0 flex-1 flex-col outline-none">
         <Suspense fallback={<PageFallback />}>
           <Outlet />
         </Suspense>

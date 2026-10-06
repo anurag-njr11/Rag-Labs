@@ -88,3 +88,21 @@ def test_old_versions_missing_new_fields_diff_cleanly():
     del old["generate"]["reasoning_effort"]
     assert diff_pipelines(old, new) == []
     assert diff_pipelines(new, old) == []
+
+
+def test_node_revision_changes_index_hash(monkeypatch):
+    cfg = recommended_pipeline()
+    cls = get_spec("parse", cfg["parse"]["type"]).cls
+    h = index_config_hash(cfg)
+    monkeypatch.setattr(cls, "revision", cls.revision + 1)
+    assert index_config_hash(cfg) != h
+
+
+def test_strip_inline_html():
+    from app.ingest.loaders import strip_inline_html
+
+    assert strip_inline_html("after the 4<sup>th</sup> semester") == "after the 4th semester"
+    assert strip_inline_html("<mark>Guidelines for <b>UG</b></mark>") == "Guidelines for **UG**"
+    assert strip_inline_html("| a<br>b | c |") == "| a b | c |"
+    assert strip_inline_html("cut <mark>off") == "cut off"
+    assert strip_inline_html("<class 'int'> and <div>") == "<class 'int'> and <div>"

@@ -1,12 +1,12 @@
 import { useState, type ReactNode } from 'react'
 import { ArrowDown, ArrowUp, Pin, Table } from 'lucide-react'
-import { formatPages } from '@/api/format'
+import { formatPages, stripTags } from '@/api/format'
 import type { Citation, RetrievedChunk } from '@/api/types'
 import { Badge, Card, ChunkStateBadge, FoundByBadge, ScoreChip, Tooltip, cn } from '@/components/ui'
 import { ProseChunk, TableChunk, normalizeSpans, previewStart, type Span } from './chunkText'
 
 /** "A > B > C" → "A › B › C" */
-export const formatHeading = (h: string) => h.split(/\s+>\s+/).filter(Boolean).join(' › ')
+export const formatHeading = (h: string) => stripTags(h).split(/\s+>\s+/).filter(Boolean).join(' › ')
 
 export function spansFor(chunk: RetrievedChunk, citations: Citation[]): Span[] {
   const raw = citations.filter((c) => c.chunk_id === chunk.id).flatMap((c) => c.spans)

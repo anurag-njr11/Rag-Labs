@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { ArrowRight } from 'lucide-react'
 import { formatValue } from '@/api/format'
 import type { Change, SlotCatalog } from '@/api/types'
-import { Button, EffectBadge, cn } from '@/components/ui'
+import { Button, EffectBadge, cn, Collapse } from '@/components/ui'
 
 const isLong = (v: unknown) => typeof v === 'string' && (v.includes('\n') || v.length > 48)
 
@@ -54,7 +54,7 @@ function TextChange({ before, after }: { before: unknown; after: unknown }) {
           {open ? 'Hide' : 'Show'}
         </Button>
       </div>
-      {open && (
+      <Collapse open={open}>
         <pre className="max-h-72 overflow-auto rounded-md bg-bg-code p-3 font-mono text-mono text-text-code">
           {lineDiff(a, b).map((l, i) => (
             <div
@@ -67,7 +67,7 @@ function TextChange({ before, after }: { before: unknown; after: unknown }) {
             </div>
           ))}
         </pre>
-      )}
+      </Collapse>
     </div>
   )
 }

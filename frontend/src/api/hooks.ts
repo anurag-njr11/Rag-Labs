@@ -8,7 +8,7 @@ import {
   type QueryClient,
   type UseQueryOptions,
 } from '@tanstack/react-query'
-import { api } from './client'
+import { api, buildUrl } from './client'
 import { subscribeJobEvents } from './sse'
 import type {
   AddUrlBody,
@@ -25,6 +25,10 @@ import type {
   EvalRunDetail,
   EvalSet,
   EvalSetDetail,
+  Sweep,
+  SweepAxes,
+  EvalFix,
+  HealthReport,
   Health,
   Job,
   JobDoneResult,
@@ -76,6 +80,11 @@ export const qk = {
   evalSet: (id: string, setId: string) => ['projects', id, 'eval', 'sets', setId] as const,
   evalRuns: (id: string, setId: string) => ['projects', id, 'eval', 'runs', setId] as const,
   evalRun: (id: string, runId: string) => ['projects', id, 'eval', 'run', runId] as const,
+  evalFixes: (id: string, runId: string) => ['projects', id, 'eval', 'run', runId, 'fixes'] as const,
+  sweeps: (id: string) => ['projects', id, 'eval', 'sweeps'] as const,
+  sweepAxes: (id: string) => ['projects', id, 'eval', 'sweep-axes'] as const,
+  healthReports: (id: string) => ['projects', id, 'health'] as const,
+  healthReport: (id: string, rid: string) => ['projects', id, 'health', rid] as const,
 }
 
 /** Invalidate everything under a project (project, versions, documents, builds, jobs, runs) + the list. */
@@ -563,8 +572,128 @@ export const useEvalRun = (projectId: string | undefined, runId: string | null |
 export function useRunEval(projectId: string, setId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (body: { version_id?: string }) =>
+    mutationFn: (body: { version_id?: string; answers?: boolean }) =>
       api.post<{ run: EvalRun; job_id: string }>(`${evalBase(projectId)}/sets/${setId}/runs`, body),
     onSuccess: () => void qc.invalidateQueries({ queryKey: qk.evalRuns(projectId, setId) }),
   })
 }
+
+// ------------------------------------------------------------------------------------------ sweeps
+
+export const useSweepAxes = (projectId: string | undefined) =>
+  useQuery({
+    queryKey: qk.sweepAxes(projectId ?? ''),
+    queryFn: () => api.get<SweepAxes>(`${evalBase(projectId!)}/sweep-axes`),
+    enabled: !!projectId,
+    staleTime: Infinity,
+  })
+
+/** All sweeps, newest first; polls while one is running so the leaderboard fills in live. */
+export const useSweeps = (projectId: string | undefined, o?: QOpts<Sweep[]>) =>
+  useQuery({
+    queryKey: qk.sweeps(projectId ?? ''),
+    queryFn: () => api.get<Sweep[]>(`${evalBase(projectId!)}/sweeps`),
+    enabled: !!projectId,
+    refetchInterval: (q) => pollWhileRunning(!!q.state.data?.some((s) => s.status === 'running')),
+    ...o,
+  })
+
+export function useStartSweep(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { set_id: string; version_id?: string; axes: { path: string; values: unknown[] }[]; auto_optimize?: boolean }) =>
+      api.post<{ sweep: Sweep; job_id: string }>(`${evalBase(projectId)}/sweeps`, body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.sweeps(projectId) }),
+  })
+}
+
+export function useCancelSweep(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (sweepId: string) => api.post<Sweep>(`${evalBase(projectId)}/sweeps/${sweepId}/cancel`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.sweeps(projectId) }),
+  })
+}
+
+// ------------------------------------------------------------------------------------------ corpus health
+
+const healthBase = (projectId: string) => `/projects/${projectId}/health`
+
+export const useHealthReports = (projectId: string | undefined) =>
+  useQuery({
+    queryKey: qk.healthReports(projectId ?? ''),
+    queryFn: () => api.get<HealthReport[]>(`${healthBase(projectId!)}/reports`),
+    enabled: !!projectId,
+    refetchInterval: (q) => pollWhileRunning(!!q.state.data?.some((r) => r.status === 'running')),
+  })
+
+export const useHealthReport = (projectId: string | undefined, reportId: string | null | undefined) =>
+  useQuery({
+    queryKey: qk.healthReport(projectId ?? '', reportId ?? ''),
+    queryFn: () => api.get<HealthReport>(`${healthBase(projectId!)}/reports/${reportId}`),
+    enabled: !!projectId && !!reportId,
+    refetchInterval: (q) => pollWhileRunning(q.state.data?.status === 'running'),
+  })
+
+export function useStartHealthReport(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { version_id?: string; questions?: string[] }) =>
+      api.post<{ report: HealthReport; job_id: string }>(`${healthBase(projectId)}/reports`, body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.healthReports(projectId) }),
+  })
+}
+
+export const healthReportUrl = (projectId: string, reportId: string) =>
+  buildUrl(`${healthBase(projectId)}/reports/${reportId}/report.md`)
+
+/** One-click fixes for a ready eval run's miss diagnoses. */
+export const useEvalFixes = (projectId: string, runId: string | null | undefined) =>
+  useQuery({
+    queryKey: qk.evalFixes(projectId, runId ?? ''),
+    queryFn: () => api.get<EvalFix[]>(`${evalBase(projectId)}/runs/${runId}/fixes`),
+    enabled: !!runId,
+  })
+
+// ------------------------------------------------------------------------------------------ eval-set edits
+
+const invalidateSet = (qc: ReturnType<typeof useQueryClient>, projectId: string, setId: string) =>
+  void qc.invalidateQueries({ queryKey: qk.evalSet(projectId, setId) })
+
+export function useAddEvalItem(projectId: string, setId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { question: string; gold_answer: string; evidence: string; document_id: string }) =>
+      api.post(`${evalBase(projectId)}/sets/${setId}/items`, body),
+    onSuccess: () => invalidateSet(qc, projectId, setId),
+  })
+}
+
+export function useUpdateEvalItem(projectId: string, setId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ itemId, ...body }: { itemId: string; question?: string; gold_answer?: string; evidence?: string; valid?: boolean }) =>
+      api.patch(`${evalBase(projectId)}/sets/${setId}/items/${itemId}`, body),
+    onSuccess: () => invalidateSet(qc, projectId, setId),
+  })
+}
+
+export function useDeleteEvalItem(projectId: string, setId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (itemId: string) => api.del(`${evalBase(projectId)}/sets/${setId}/items/${itemId}`),
+    onSuccess: () => invalidateSet(qc, projectId, setId),
+  })
+}
+
+export function useImportEvalCsv(projectId: string, setId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (csv: string) =>
+      api.post<{ added: number; error_count: number; errors: { row: number; message: string }[] }>(
+        `${evalBase(projectId)}/sets/${setId}/import`, { csv }),
+    onSuccess: () => invalidateSet(qc, projectId, setId),
+  })
+}
+
+export const evalSetCsvUrl = (projectId: string, setId: string) => buildUrl(`${evalBase(projectId)}/sets/${setId}/export.csv`)

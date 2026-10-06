@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { History, ListTree, RotateCcw, Square, TriangleAlert } from 'lucide-react'
-import { formatMs, formatNumber, formatPages } from '@/api/format'
+import { formatMs, formatNumber, formatPages, stripTags } from '@/api/format'
 import { Banner, Button, ButtonLink, CitationChip, CopyButton, SourceChip, Spinner, cn } from '@/components/ui'
 import { projectPath } from '@/app/workspace'
 import { Markdown } from './markdown'
@@ -33,7 +33,7 @@ function useElapsed(from: number, on: boolean) {
 }
 
 const lastHeading = (h: string) => {
-  const s = h.split(/\s+>\s+/).filter(Boolean).pop() ?? ''
+  const s = stripTags(h).split(/\s+>\s+/).filter(Boolean).pop() ?? ''
   return s.length > 26 ? `${s.slice(0, 25)}…` : s
 }
 
@@ -170,7 +170,7 @@ export function Message({ turn, projectId, inspected, activeN, maxTokens, onCite
                 key={c.chunk_id}
                 document={c.document}
                 meta={formatPages(c.page_start, c.page_end) || lastHeading(c.heading_path) || undefined}
-                title={`[${c.n}] ${c.document}${c.heading_path ? ` — ${c.heading_path}` : ''}`}
+                title={`[${c.n}] ${c.document}${c.heading_path ? ` — ${stripTags(c.heading_path)}` : ''}`}
                 aria-label={`Source ${c.n}: ${c.document}`}
                 onClick={() => onCite(turn, c.n)}
               />

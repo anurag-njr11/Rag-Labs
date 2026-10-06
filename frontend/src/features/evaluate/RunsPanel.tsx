@@ -1,9 +1,9 @@
 import { useState, type ReactNode } from 'react'
 import { ChevronRight, CircleCheck, CircleX, PartyPopper, Play } from 'lucide-react'
-import { errorMessage, useEvalRun, useEvalRuns, useRunEval, useVersions } from '@/api/hooks'
-import { formatMs } from '@/api/format'
-import type { EvalDiagnosis, EvalItem, EvalItemResult, EvalMetrics, EvalRun, EvalRunDetail } from '@/api/types'
-import { Badge, Button, Card, ProgressBar, Select, Spinner, Tabs, cn, useToast, type ProgressTone } from '@/components/ui'
+import { errorMessage, useCreateVersion, useEvalFixes, useEvalRun, useEvalRuns, useRunEval, useVersions } from '@/api/hooks'
+import { formatMs, stripTags } from '@/api/format'
+import type { EvalDiagnosis, EvalFix, EvalItem, EvalItemResult, EvalMetrics, EvalRun, EvalRunDetail, Grade } from '@/api/types'
+import { Badge, Button, Card, Dialog, EffectBadge, ProgressBar, Select, Spinner, Switch, Tabs, cn, useToast, type ProgressTone, Collapse, presence, usePresence } from '@/components/ui'
 import { EvalJobProgress } from './EvalJobProgress'
 
 const CELL = 'px-3 py-3 first:pl-5 last:pr-5 align-middle'
@@ -19,9 +19,17 @@ const TONE_TEXT: Record<ProgressTone, string> = {
 }
 
 const DIAGNOSIS: Record<EvalDiagnosis, { label: string; fix: string }> = {
+  failed_to_extract: { label: 'Wrong answer despite context', fix: 'The passage reached the model but the answer was wrong — try another prompt style or model, or fewer, cleaner passages.' },
+  dropped_by_budget: { label: 'Cut by context budget', fix: 'Retrieved, but it did not fit the prompt budget — raise Max context tokens or lower top-k.' },
   dropped_by_rerank: { label: 'Dropped by reranker', fix: 'Retrieved, but the reranker cut it — raise Keep top N.' },
   ranked_below_k: { label: 'Ranked below top-k', fix: 'Found deeper in the ranking — raise top-k or add a reranker.' },
   not_retrieved: { label: 'Not retrieved', fix: 'Not in the top 50 at all — try another retriever, embedder or chunking.' },
+}
+
+const GRADE: Record<Grade, { label: string; tone: 'success' | 'warning' | 'danger' }> = {
+  yes: { label: 'Correct', tone: 'success' },
+  partial: { label: 'Partly correct', tone: 'warning' },
+  no: { label: 'Wrong', tone: 'danger' },
 }
 
 function Delta({ now, before, pctFmt = true }: { now: number; before?: number; pctFmt?: boolean }) {
@@ -114,6 +122,18 @@ function Scorecard({ run, before }: { run: EvalRunDetail; before?: EvalMetrics }
         <Tile label="Hit@3" value={pct(m.hit_at_3)} meter={m.hit_at_3} hint="in the top three" delta={<Delta now={m.hit_at_3} before={before?.hit_at_3} />} />
         <Tile label="MRR" value={m.mrr.toFixed(2)} meter={m.mrr} hint="1.0 = always first" delta={<Delta now={m.mrr} before={before?.mrr} pctFmt={false} />} />
         <Tile label="Retrieval p50" value={formatMs(m.p50_ms)} hint="median per question" />
+        {m.answers && m.answers.n > 0 && (
+          <>
+            <Tile
+              label="Answers correct"
+              value={pct(m.answers.correct_rate)}
+              meter={m.answers.correct_rate}
+              hint={`95% CI ${pct(m.answers.correct_ci[0])}–${pct(m.answers.correct_ci[1])} · ${m.answers.partial} partly`}
+              delta={<Delta now={m.answers.correct_rate} before={before?.answers?.correct_rate} />}
+            />
+            <Tile label="Grounded" value={pct(m.answers.grounded_rate)} meter={m.answers.grounded_rate} hint="every claim backed by a source" />
+          </>
+        )}
       </dl>
     </div>
   )
@@ -122,9 +142,61 @@ function Scorecard({ run, before }: { run: EvalRunDetail; before?: EvalMetrics }
 // ------------------------------------------------------------------------------------------------ rail
 
 /** Where the misses come from, with the fix for each cause. */
-function MissBreakdown({ run }: { run: EvalRunDetail }) {
+/** Confirm + save a one-click fix as a new active version (the regression guard then re-scores it). */
+function ApplyFix({ projectId, fix }: { projectId: string; fix: EvalFix }) {
+  const [open, setOpen] = useState(false)
+  const save = useCreateVersion(projectId)
+  const { toast } = useToast()
+  const apply = () =>
+    save.mutate(
+      { config: fix.config, note: `Fix: ${DIAGNOSIS[fix.diagnosis].label} (from v${fix.base_version ?? '?'} eval)`, activate: true, build: true },
+      {
+        onSuccess: (r) => {
+          setOpen(false)
+          toast({
+            tone: 'success',
+            title: r.unchanged ? 'Already the active configuration' : `Saved v${r.version.version}`,
+            description: r.eval_job_id ? 'Now active — re-scoring it on this eval set.' : 'Now active.',
+          })
+        },
+        onError: (e) => toast({ tone: 'danger', title: 'Could not apply the fix', description: errorMessage(e) }),
+      },
+    )
+  return (
+    <>
+      <Button size="sm" variant="secondary" onClick={() => setOpen(true)}>Apply fix</Button>
+      <Dialog
+        open={open}
+        onClose={() => setOpen(false)}
+        title={`Fix: ${DIAGNOSIS[fix.diagnosis].label}`}
+        description={`Saves a new version from v${fix.base_version ?? '?'} with this change, makes it active, and re-scores it.`}
+        footer={
+          <>
+            <Button variant="secondary" onClick={() => setOpen(false)}>Cancel</Button>
+            <Button variant="primary" onClick={apply} loading={save.isPending}>Save as new version</Button>
+          </>
+        }
+      >
+        <ul className="flex flex-col gap-2">
+          {fix.changes.map((c) => (
+            <li key={`${c.slot}.${c.field}`} className="flex flex-wrap items-center gap-2 text-body">
+              <span className="font-mono text-mono text-text-primary">{c.slot}.{c.field}</span>
+              <span className="font-mono text-mono text-text-tertiary">{String(c.before)}</span>→
+              <span className="font-mono text-mono text-accent-text">{String(c.after)}</span>
+              <EffectBadge effect={c.effect} />
+            </li>
+          ))}
+        </ul>
+      </Dialog>
+    </>
+  )
+}
+
+function MissBreakdown({ run, projectId }: { run: EvalRunDetail; projectId: string }) {
   const m = run.metrics!
-  const misses = run.results.filter((r) => !r.hit).length
+  const fixes = useEvalFixes(projectId, run.id)
+  // A hit that the context budget cut never reaches the model either, so it counts here.
+  const misses = run.results.filter((r) => r.diagnosis).length
   if (misses === 0) {
     return (
       <Card padding="lg" className="flex items-start gap-3">
@@ -142,7 +214,7 @@ function MissBreakdown({ run }: { run: EvalRunDetail }) {
       <div>
         <h3 className="text-heading-lg text-text-primary">Why questions missed</h3>
         <p className="mt-0.5 text-body text-text-secondary">
-          {misses} of {m.n} missed. Fix the biggest cause first.
+          {misses} of {m.n} never reach the model. Fix the biggest cause first.
         </p>
       </div>
       <ul className="flex flex-col gap-4">
@@ -154,6 +226,9 @@ function MissBreakdown({ run }: { run: EvalRunDetail }) {
             </div>
             <ProgressBar value={n / misses} tone={n ? 'warning' : 'neutral'} aria-label={`${DIAGNOSIS[d].label}: ${n}`} />
             {n > 0 && <p className="text-body-sm text-text-tertiary">{DIAGNOSIS[d].fix}</p>}
+            {n > 0 && fixes.data?.find((f) => f.diagnosis === d) && (
+              <div><ApplyFix projectId={projectId} fix={fixes.data.find((f) => f.diagnosis === d)!} /></div>
+            )}
           </li>
         ))}
       </ul>
@@ -162,12 +237,8 @@ function MissBreakdown({ run }: { run: EvalRunDetail }) {
 }
 
 function RunHistory({ runs, selected, onSelect }: { runs: EvalRun[]; selected: string | null; onSelect: (id: string) => void }) {
-  let prev: EvalMetrics | undefined
-  const rows = runs.map((r) => {
-    const before = prev
-    if (r.metrics) prev = r.metrics
-    return { r, before }
-  })
+  // each run's "before" = the nearest earlier run that has metrics
+  const rows = runs.map((r, i) => ({ r, before: runs.slice(0, i).findLast((p) => p.metrics)?.metrics ?? undefined }))
   return (
     <Card padding="none" className="overflow-hidden">
       <div className="p-5 pb-3">
@@ -224,10 +295,15 @@ function RunHistory({ runs, selected, onSelect }: { runs: EvalRun[]; selected: s
 // ------------------------------------------------------------------------------------------------ per question
 
 function Outcome({ res }: { res: EvalItemResult }) {
-  return res.hit ? (
-    <Badge tone="success" icon={<CircleCheck aria-hidden />}>Rank #{res.rank}</Badge>
-  ) : (
-    <Badge tone="danger" icon={<CircleX aria-hidden />}>Miss</Badge>
+  return (
+    <span className="flex flex-wrap gap-1">
+      {res.hit ? (
+        <Badge tone="success" icon={<CircleCheck aria-hidden />}>Rank #{res.rank}</Badge>
+      ) : (
+        <Badge tone="danger" icon={<CircleX aria-hidden />}>Miss</Badge>
+      )}
+      {res.correct && <Badge tone={GRADE[res.correct].tone}>{GRADE[res.correct].label}</Badge>}
+    </span>
   )
 }
 
@@ -252,6 +328,14 @@ function ResultDetail({ res, item }: { res: EvalItemResult; item?: EvalItem }) {
             <dt className="text-text-tertiary">Expected answer</dt>
             <dd className="text-text-primary">{item.gold_answer}</dd>
           </div>
+          {res.answer != null && (
+            <div>
+              <dt className="text-text-tertiary">
+                Pipeline's answer{res.grounded ? ` · grounded: ${res.grounded === 'yes' ? 'yes' : res.grounded === 'partial' ? 'partly' : 'no'}` : ''}
+              </dt>
+              <dd className="whitespace-pre-line text-text-secondary">{res.answer || '(empty)'}</dd>
+            </div>
+          )}
           <div>
             <dt className="text-text-tertiary">Evidence</dt>
             <dd className="mt-0.5 rounded-md border-l-2 border-accent-default bg-bg-subtle px-2 py-1 text-text-secondary">{item.evidence}</dd>
@@ -267,7 +351,7 @@ function ResultDetail({ res, item }: { res: EvalItemResult; item?: EvalItem }) {
                 <span className="w-5 shrink-0 text-right font-mono text-mono-sm text-text-tertiary">{i + 1}</span>
                 <span className={cn('min-w-0 flex-1', t.hit ? 'text-success-fg' : 'text-text-secondary')}>
                   <span className="block truncate" title={t.document}>{t.document}</span>
-                  {t.heading_path && <span className="block truncate text-text-tertiary" title={t.heading_path}>{t.heading_path.split(/\s+>\s+/).join(' › ')}</span>}
+                  {t.heading_path && <span className="block truncate text-text-tertiary" title={stripTags(t.heading_path)}>{stripTags(t.heading_path).split(/\s+>\s+/).join(' › ')}</span>}
                 </span>
                 {t.hit && <CircleCheck size={14} aria-label="Contains the evidence" className="mt-0.5 shrink-0 text-success-fg" />}
               </li>
@@ -281,6 +365,7 @@ function ResultDetail({ res, item }: { res: EvalItemResult; item?: EvalItem }) {
 
 function ResultRow({ res, item }: { res: EvalItemResult; item?: EvalItem }) {
   const [open, setOpen] = useState(false)
+  const { ref: detailRef, mounted: detailMounted } = usePresence<HTMLDivElement>(open, presence.collapse())
   const question = item?.question ?? res.item_id
   return (
     <>
@@ -292,17 +377,19 @@ function ResultRow({ res, item }: { res: EvalItemResult; item?: EvalItem }) {
             onClick={() => setOpen((o) => !o)}
             className="focus-ring flex items-start gap-2 rounded-sm text-left text-body-lg text-text-primary hover:text-accent-text"
           >
-            <ChevronRight size={16} aria-hidden className={cn('mt-0.5 shrink-0 text-text-tertiary transition-transform', open && 'rotate-90')} />
+            <ChevronRight size={16} aria-hidden className={cn('mt-0.5 shrink-0 text-text-tertiary transition-transform duration-300', open && 'rotate-90')} />
             {question}
           </button>
         </td>
         <td className={cn(CELL, 'w-32')}><Outcome res={res} /></td>
         <td className={cn(CELL, 'w-72 max-w-72 text-body')}><Diagnosis res={res} item={item} /></td>
       </tr>
-      {open && (
+      {detailMounted && (
         <tr className="border-b border-border-default bg-bg-subtle/50">
-          <td colSpan={3} className="px-5 pb-4 pl-11 pt-0">
-            <ResultDetail res={res} item={item} />
+          <td colSpan={3} className="p-0">
+            <div ref={detailRef} className="px-5 pb-4 pl-11 pt-0">
+              <ResultDetail res={res} item={item} />
+            </div>
           </td>
         </tr>
       )}
@@ -321,7 +408,9 @@ function ResultCard({ res, item }: { res: EvalItemResult; item?: EvalItem }) {
           <span className="min-w-0 flex-1"><Diagnosis res={res} item={item} /></span>
         </span>
       </button>
-      {open && <div className="mt-3 border-t border-border-default pt-3"><ResultDetail res={res} item={item} /></div>}
+      <Collapse open={open}>
+        <div className="mt-3 border-t border-border-default pt-3"><ResultDetail res={res} item={item} /></div>
+      </Collapse>
     </li>
   )
 }
@@ -396,6 +485,7 @@ export function RunsPanel({ projectId, setId, items, side }: { projectId: string
   const [versionId, setVersionId] = useState('')
   const [jobId, setJobId] = useState<string | null>(null)
   const [picked, setPicked] = useState<string | null>(null)
+  const [answers, setAnswers] = useState(false)
 
   const list = runs.data ?? []
   const latestReady = [...list].reverse().find((r) => r.status === 'ready')
@@ -411,7 +501,7 @@ export function RunsPanel({ projectId, setId, items, side }: { projectId: string
 
   const go = () => {
     start.mutate(
-      { version_id: versionId || active?.id },
+      { version_id: versionId || active?.id, answers },
       {
         onSuccess: (r) => {
           setJobId(r.job_id)
@@ -441,6 +531,10 @@ export function RunsPanel({ projectId, setId, items, side }: { projectId: string
               onChange={(e) => setVersionId(e.target.value)}
               wrapperClassName="min-w-40"
             />
+            <label className="flex items-center gap-2 text-body-sm text-text-secondary" title="Writes each answer with the version's model and has the model grade it — about 1.2 LLM calls per question">
+              <Switch checked={answers} onChange={setAnswers} aria-label="Also grade answers" />
+              Also grade answers
+            </label>
             <Button variant="primary" icon={<Play size={14} aria-hidden />} onClick={go} loading={start.isPending} disabled={!!jobId}>
               Run evaluation
             </Button>
@@ -475,7 +569,7 @@ export function RunsPanel({ projectId, setId, items, side }: { projectId: string
             <PerQuestion run={run} items={items} />
           </div>
           <aside className="order-1 grid gap-6 md:grid-cols-2 xl:sticky xl:top-[calc(var(--topbar-h)+16px)] xl:order-2 xl:max-h-[calc(100dvh-var(--topbar-h)-32px)] xl:grid-cols-1 xl:overflow-y-auto xl:scrollbar-none" aria-label="Run insights">
-            <MissBreakdown run={run} />
+            <MissBreakdown run={run} projectId={projectId} />
             <RunHistory runs={list} selected={selected} onSelect={setPicked} />
             <div className="md:col-span-2 xl:col-span-1">{side}</div>
           </aside>

@@ -362,6 +362,7 @@ The **Evaluate** tab (between Playground and API) answers "is this configuration
    - Expand **Questions** and click any question to see its answer, the quoted evidence, and what the model said without documents.
    - Expand **Rejected by the filter** to see what was dropped and why.
 4. Under **Retrieval quality**, pick a version (the active one by default) → **Run evaluation**.
+   - Turn on **Also grade answers** to also write each answer with the version's prompt and model, and have the model grade it. That costs about 1.2 LLM calls per question.
 5. Change the configuration on the Configure tab and save a new version. Then come back, pick that version, and run again. Each run adds a row to the comparison table.
 
 ### Reading the Results
@@ -373,6 +374,10 @@ The **Evaluate** tab (between Playground and API) answers "is this configuration
 | **Hit@k** | ...made it into the final **k** results, the ones that reach the prompt. k = `top_k`, or reranker `top_n` when reranking is on | As close to 100% as possible |
 | **MRR** | Average of 1 / rank; 1.0 means always first, 0 means never found | Closer to 1.0 |
 | **Retrieval p50** | Median time to retrieve (and rerank) one question | Low |
+| **Answers correct** (graded runs) | Share of answers the model graded fully correct against the expected answer, with a 95% confidence range | High, and look at the range: with 20–30 questions it is wide |
+| **Grounded** (graded runs) | Share of answers whose every claim is backed by the passages sent | Close to 100% — lower means the model is adding things the documents don't say |
+| **In context** (sweeps) | Share of questions whose passage still fits the prompt's **Max context tokens** budget | As close to Hit@k as possible |
+| **Tokens / q** (sweeps) | Average context tokens sent to the model per question — what you pay the LLM for | Low, for the same quality |
 
 In the runs table, **▲ / ▼** show the change from the previous run in percentage points. Click a row to see its details.
 
@@ -382,11 +387,57 @@ Every miss gets a diagnosis and a suggested fix:
 
 | Diagnosis | What happened | Try |
 |---|---|---|
+| **Wrong answer despite context** (graded runs) | The right passage reached the model, but the answer was graded wrong | Try another prompt style or model, or fewer, cleaner passages |
+| **Cut by context budget** | The passage was retrieved, but didn't fit the prompt's token budget, so the model never saw it | Raise **Max context tokens** or lower `top_k` |
 | **Dropped by reranker** | Retrieval found the passage, but the reranker cut it | Raise the reranker's **Keep top N** (`top_n`) |
 | **Ranked below top-k (#n)** | The passage was found at rank *n*, below your cut-off | Raise `top_k`, or add a reranker to lift it |
 | **Not retrieved** | The passage isn't in the top 50 at all | Try another retriever (e.g. `fused`), a better embedding model, or different chunking |
 
 Tick **Only misses** to list just the failures.
+
+**Apply fix.** Under *Why questions missed*, some causes have an **Apply fix** button:
+
+| Cause | What Apply changes |
+|---|---|
+| Ranked below top-k | Raises `top_k` to the deepest rank the missed passages were found at |
+| Dropped by reranker | Raises the reranker's **Keep top N** by 3 (up to `top_k`) |
+| Cut by context budget | Raises **Max context tokens** by 50% |
+
+A dialog shows the exact change first. Saving creates a new active version, and it is scored on the eval set automatically, so the result appears in **Run history** with ▲ / ▼. *Not retrieved* and *Wrong answer despite context* have no one-setting fix: run a sweep, or try another prompt style or model.
+
+### Editing the eval set
+
+Click **Edit questions** on the eval-set card to:
+
+- **Add** your own question. Give the expected answer, pick the document, and paste a sentence from it **word for word** as evidence. It's rejected if that sentence isn't in the document, since it could never be scored.
+- **Edit** a question, answer or evidence (pencil), **drop** a bad question from scoring or **restore** a rejected one (✕ / ↺), or **delete** it.
+- **Export CSV** to review in a spreadsheet, or **Import CSV** with columns `question`, `gold_answer` (or `answer`), `evidence`, `document` (the file name). Rows that can't be used are listed with the reason.
+
+Edits apply to the next run. Earlier runs keep the questions they were scored on, so re-run before comparing.
+
+### Automatic re-scoring (regression guard)
+
+Once a project has an eval set, every version you save on the Configure tab is scored on the newest set automatically. The save toast says so, and the new run appears in **Run history** with ▲ / ▼ against the previous run. Versions saved in the Create Wizard are not auto-scored.
+
+### Sweeps: try many configurations at once
+
+Below the results, **Sweep configurations** scores every combination of the values you pick, on the same eval set, without any LLM calls.
+
+1. Click values on one or more axes: chunk size, chunking strategy, embedding model, retriever, top-k, reranker. Values marked *(current)* are what the base version uses. Include them so your current setup is in the comparison.
+2. Pick the **base version** (the active one by default). Everything you don't vary comes from it.
+3. Check the count (up to 48 configurations) → **Run sweep**. Click **Stop** to end it early. Results that already finished are kept.
+4. Read the **Leaderboard**:
+   - The blue line says what the best configuration gains over your current one, and whether a cheaper one is nearly as good.
+   - The chart plots quality (MRR) against cost (context tokens per question). ★ marks the **Pareto frontier**: configurations no other one beats on both. Pick from the frontier.
+   - **Promote** creates a new version from that row and makes it active, so the Playground and API use it immediately.
+
+Turn on **Auto-Optimize** to also grade answers for the best quarter of configurations (at most 5) once retrieval scoring finishes. An **Answers ✓** column appears. When the graded configurations' confidence ranges overlap, the blue line says they are *tied within noise*, so don't pick a winner on that column alone.
+
+**Embedding models** are listed best first by their self-reported MTEB retrieval score (shown on each chip; "—" where the model card reports none). **MTEB top 3** picks the three highest plus your current model. A public benchmark is a starting point, not a verdict, which is why the sweep measures them on *your* documents.
+
+**Cost.** Above the leaderboard, enter queries per month and your model's price per 1M input and output tokens. A **$ / month** column appears. It uses each configuration's context tokens, about 150 tokens of prompt overhead, and the average answer length from your chat history.
+
+Instant axes (retriever, top-k, reranker) reuse one index. Rebuild axes (chunking, embedding model) build one index per value, and parsing and embeddings come from cache whenever possible. A new embedding model downloads on first use. When chunk size varies, the overlap keeps the base version's overlap-to-size ratio.
 
 ### Tips
 
@@ -394,7 +445,40 @@ Tick **Only misses** to list just the failures.
 - **Mind the sample size.** With 20–30 questions, a difference under about 10 points may be noise. Use 50 questions for closer calls.
 - **Instant changes are cheap to test.** Retriever type, `top_k`, weights and the reranker don't need a rebuild, so you can compare them right away. Rebuild changes like chunking or the embedding model build the new index automatically on the first run.
 - **Regenerate after big document changes.** Questions whose source document was deleted will always miss.
-- **Cost and privacy.** Generating 30 questions takes about 14 LLM calls, and document passages are sent to your LLM provider. Scoring runs entirely on your machine.
+- **Cost and privacy.** Generating 30 questions takes about 14 LLM calls, and document passages are sent to your LLM provider. Retrieval scoring runs entirely on your machine. Answer grading sends questions, passages and answers to your provider.
+- **Grades are judgements.** Answer grades come from a model, so a re-run can differ by a question or two. Retrieval metrics are exact and repeatable — lead with them.
+
+---
+
+## Corpus Health
+
+The **Health** tab (between Evaluate and API) looks at the documents themselves rather than the configuration. Most bad answers come from documentation that is missing or wrong, and no setting can fix that.
+
+### What it checks
+
+| Section | What it means | How it's found |
+|---|---|---|
+| **Answered by the docs** | Share of **real** questions the pipeline can fully answer from your documents | Each question is searched with the version's retriever. Your Generate model then grades the passages that would reach the prompt: *covered*, *partial* or *missing* |
+| **Content backlog** | Questions that aren't fully answered, grouped into topics, biggest first | Similar questions are grouped together. Each topic is named after what the documentation would need to add |
+| **Contradictions** | Passages in different documents that state conflicting facts | The most similar passage pairs across documents (up to 30) are checked by the model |
+| **Duplicate content** | Near-identical passages in different documents | Vector similarity ≥ 0.97 — no model involved |
+| **Unused content** | Documents and chunks that none of the questions ever pulled into the prompt | Counted from the same searches |
+
+### Step by step
+
+1. Ask real questions in the Playground or through the API. They're collected automatically.
+2. Optional: paste more questions, one per line, into **Real user questions**. Support tickets and search logs are ideal.
+3. Click **Check corpus health**. Progress shows *Search each question* → *Check answers against the docs* → *Find overlapping passages* → *Check for contradictions*.
+4. Work through the **Content backlog** from the top. Expand a topic to see its questions and the closest passage that was found.
+5. Click **Download report (.md)** to hand the backlog to whoever owns the docs.
+
+### Tips
+
+- **Gaps vs. retrieval misses.** A gap means the pipeline couldn't answer from your documents. If you know a page covers it, retrieval is the problem: run a sweep on the Evaluate tab.
+- **Real questions only.** Eval-set questions are written *from* your documents, so they can't reveal missing content. That's why Health uses real ones.
+- **Off-topic questions show up too** (e.g. "What is the capital of France?"). Ignore topics that aren't yours to document.
+- **"Unused" needs volume.** With fewer than about 30 questions, unused mostly means nobody has asked yet.
+- **Cost.** About one LLM call per 5 questions plus up to 6 for contradictions. Up to 200 questions per report.
 
 ---
 
@@ -762,6 +846,13 @@ All paths are under `/api/projects/{project_id}/eval`. Generating a set and runn
 | `POST /sets/{set_id}/runs` | `{"version_id": "optional, default active"}` | `{run, job_id}` |
 | `GET /runs?set_id=...` | | Runs with `metrics` (`hit_at_1`, `hit_at_3`, `hit_at_k`, `mrr`, `p50_ms`, `diagnoses`, `config`) |
 | `GET /runs/{run_id}` | | One run plus per-question `results` (`rank`, `hit`, `diagnosis`, `deep_rank`) |
+| `GET /sweep-axes` | | Suggested sweep axes and the cell limit |
+| `POST /sweeps` | `{"set_id": "...", "axes": [{"path": "chunk.size", "values": [512, 1000]}]}` | `{sweep, job_id}` |
+| `GET /sweeps` / `GET /sweeps/{id}` | | Sweeps with every cell's `overrides`, `config`, `metrics` and `pareto` flag |
+| `POST /sweeps/{id}/cancel` | | Stops after the current configuration |
+| `GET /runs/{id}/fixes` | | One-click fixes for a run's misses (config + list of changes) |
+| `POST /sets/{id}/items` · `PATCH`/`DELETE /sets/{id}/items/{item}` | | Add, edit, drop/restore, delete eval questions |
+| `GET /sets/{id}/export.csv` · `POST /sets/{id}/import` | `{"csv": "..."}` | CSV export and import |
 
 ```bash
 # Generate a 30-question eval set
@@ -774,6 +865,17 @@ curl -X POST http://127.0.0.1:8000/api/projects/abc123/eval/sets/SET_ID/runs \
 ```
 
 Full response shapes are in [frontend/API.md](frontend/API.md) under "Evaluation".
+
+### Corpus Health Endpoints
+
+All under `/api/projects/{project_id}/health`:
+
+| Method & path | Body | Returns |
+|---|---|---|
+| `POST /reports` | `{"questions": ["optional real questions"], "version_id": "optional"}` | `{report, job_id}` |
+| `GET /reports` | | Reports, newest first, with headline numbers |
+| `GET /reports/{id}` | | Full report: coverage + backlog topics, duplicates, contradictions, usage |
+| `GET /reports/{id}/report.md` | | The report as a Markdown file |
 
 ---
 
@@ -790,13 +892,18 @@ Full response shapes are in [frontend/API.md](frontend/API.md) under "Evaluation
 | **Few questions kept** | Your documents may cover general knowledge the model already knows (rejected as *too generic*), or be mostly short or table-only passages. Add more specific documents or generate a larger set. |
 | **Eval set or run shows "Interrupted by a server restart"** | Restarting the backend cancels running jobs. Click **Generate** or **Run evaluation** again. |
 | **A question always misses and its source shows "—"** | Its source document was deleted. Regenerate the eval set. |
+| **"That grid has N configurations; the limit is 48"** | Untick some values. The count next to **Run sweep** updates as you click. |
+| **Health check: "couldn't be graded"** | One batch of the grading calls failed (often a rate limit). Run the check again. |
+| **A sweep row "couldn't run"** | Expand the list under the leaderboard to see why. Usually the combination is invalid (e.g. overlap ≥ chunk size) or a model failed to download. The other rows are still valid. |
 
 ---
 
 ## Next Steps
 
-- **Available now**: auto-generated eval sets, repeatable retrieval scoring, a diagnosis for every miss, and side-by-side version comparison (Evaluate tab)
-- **Phase 2** (next): automatic sweeps over many configurations, a leaderboard of quality against cost, answer-quality scoring, and reports of gaps and contradictions in your documents
+- **Available now**: auto-generated eval sets, repeatable retrieval scoring, optional answer grading with confidence ranges, a diagnosis for every miss, side-by-side version comparison, automatic re-scoring of saved versions, and configuration sweeps with a quality-vs-cost leaderboard, Auto-Optimize and one-click promote (Evaluate tab)
+- **Available now**: Corpus Health — a ranked backlog of what your documents can't answer, plus contradictions, duplicates and unused content (Health tab)
+- **Also available**: one-click fixes from diagnoses, eval-set editing with CSV import/export, MTEB-ranked embedding candidates, and a monthly cost projection in the sweep leaderboard
+- **Phase 2** (remaining): versioned eval sets, answer-facet scoring, a separate judge model (see `FOLLOW_UPS.md`)
 - **Phase 3** (future): Agentic retrieval, query decomposition, injection resistance testing, embed adapters
 
 The recommended loop is **upload → configure → chat → inspect → evaluate**. Use the Versions tab to keep what works, and the Evaluate tab to prove it.

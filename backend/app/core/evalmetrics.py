@@ -7,6 +7,7 @@ document counts as a hit if it contains the evidence.
 
 from __future__ import annotations
 
+import math
 import random
 import re
 from collections import Counter
@@ -84,6 +85,34 @@ def summarize(ranks: list[int | None], k: int) -> dict[str, Any]:
         "hit_at_3": rate(3),
         "hit_at_k": rate(k),
         "mrr": round(sum(1 / r for r in ranks if r is not None) / n, 4),
+    }
+
+
+def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
+    """95% Wilson score interval for k successes in n trials (sane at small n and at 0/n)."""
+    if n == 0:
+        return (0.0, 0.0)
+    p = k / n
+    d = 1 + z * z / n
+    centre = (p + z * z / (2 * n)) / d
+    half = z * math.sqrt(p * (1 - p) / n + z * z / (4 * n * n)) / d
+    return (round(max(0.0, centre - half), 4), round(min(1.0, centre + half), 4))
+
+
+def answer_summary(grades: list[dict[str, Any]]) -> dict[str, Any]:
+    """Roll up per-item {correct, grounded} verdicts ('yes'|'partial'|'no'; absent = ungraded)."""
+    graded = [g for g in grades if g.get("correct")]
+    n = len(graded)
+
+    def count(key: str, v: str) -> int:
+        return sum(1 for g in graded if g.get(key) == v)
+
+    yes = count("correct", "yes")
+    return {
+        "n": n, "ungraded": len(grades) - n,
+        "correct": yes, "partial": count("correct", "partial"), "wrong": count("correct", "no"),
+        "correct_rate": round(yes / n, 4) if n else 0.0, "correct_ci": list(wilson(yes, n)),
+        "grounded_rate": round(count("grounded", "yes") / n, 4) if n else 0.0,
     }
 
 

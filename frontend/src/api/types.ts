@@ -181,6 +181,8 @@ export interface CreateVersionBody {
 export interface CreateVersionResult {
   version: Version
   job_id: string | null
+  /** Regression guard: eval run started on the newest ready eval set (null when there is none). */
+  eval_job_id: string | null
   unchanged: boolean
 }
 export interface VersionJobResult {
@@ -261,7 +263,8 @@ export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 // ---- jobs --------------------------------------------------------------
 export type JobStage =
   | 'fetch' | 'parse' | 'embed' | 'store' | 'keywords' | 'ready'
-  | 'index' | 'generate' | 'validate' | 'evaluate'
+  | 'index' | 'generate' | 'validate' | 'evaluate' | 'sweep'
+  | 'retrieve' | 'judge' | 'scan' | 'contradictions' | 'answer' | 'grade' | 'grade_cells'
 export const JOB_STAGES: readonly JobStage[] = ['fetch', 'parse', 'embed', 'store', 'keywords', 'ready']
 
 export interface JobDoneResult {
@@ -467,7 +470,21 @@ export interface EvalSetDetail extends EvalSet {
   items: EvalItem[]
 }
 
-export type EvalDiagnosis = 'dropped_by_rerank' | 'ranked_below_k' | 'not_retrieved'
+export type EvalDiagnosis = 'failed_to_extract' | 'dropped_by_budget' | 'dropped_by_rerank' | 'ranked_below_k' | 'not_retrieved'
+export type Grade = 'yes' | 'partial' | 'no'
+
+/** LLM-graded answers (only on runs started with `answers: true`). */
+export interface AnswerSummary {
+  n: number
+  ungraded: number
+  correct: number
+  partial: number
+  wrong: number
+  correct_rate: number
+  /** 95% Wilson interval for correct_rate. */
+  correct_ci: [number, number]
+  grounded_rate: number
+}
 
 export interface EvalConfigSummary {
   parse: string
@@ -486,6 +503,11 @@ export interface EvalMetrics {
   hit_at_k: number
   mrr: number
   p50_ms: number
+  /** Share of questions whose evidence survives the prompt's context budget (absent on older runs). */
+  context_hit?: number
+  /** Mean tokens of context sent to the model per question (absent on older runs). */
+  ctx_tokens?: number
+  answers?: AnswerSummary
   diagnoses: Record<EvalDiagnosis, number>
   config: EvalConfigSummary
 }
@@ -495,6 +517,12 @@ export interface EvalItemResult {
   hit: boolean
   diagnosis: EvalDiagnosis | null
   deep_rank: number | null
+  in_context?: boolean
+  ctx_tokens?: number
+  /** Answer grading only. */
+  answer?: string
+  correct?: Grade
+  grounded?: Grade | null
   ms: number
   top: { id: string; document: string; heading_path: string; hit: boolean }[]
 }
@@ -511,4 +539,122 @@ export interface EvalRun {
 }
 export interface EvalRunDetail extends EvalRun {
   results: EvalItemResult[]
+}
+
+// ---- sweeps ----------------------------------------------------------------
+export type SweepStatus = 'running' | 'ready' | 'failed' | 'cancelled'
+export type SweepCellStatus = 'pending' | 'running' | 'ready' | 'failed' | 'invalid' | 'skipped'
+
+export interface SweepAxis {
+  path: string
+  label: string
+  effect: Effect
+  values: (string | number | boolean)[]
+  /** Only offer the axis when the base config matches, e.g. {"embed.type": "fastembed"}. */
+  requires?: Record<string, string>
+  /** Per-value tooltip, e.g. "MTEB retrieval 54.4 · 640 MB". */
+  notes?: Record<string, string>
+  /** Per-value benchmark score shown on the chip (null = not reported). */
+  scores?: Record<string, number | null>
+  /** Suggested starting values, e.g. the top 3 embedders by MTEB retrieval. */
+  seed?: SweepAxis['values']
+}
+export interface SweepAxes {
+  axes: SweepAxis[]
+  max_cells: number
+}
+export interface SweepCell {
+  overrides: Record<string, string | number | boolean>
+  config: PipelineConfig | null
+  status: SweepCellStatus
+  error: string | null
+  metrics?: EvalMetrics & { ctx_tokens: number; context_hit: number }
+  build_id?: string
+  /** On the quality (MRR) vs. context-token Pareto frontier. */
+  pareto?: boolean
+  /** Auto-Optimize: why answer grading failed for this cell. */
+  grade_error?: string
+}
+export interface Sweep {
+  id: string
+  project_id: string
+  eval_set_id: string
+  base_version_id: string
+  base_version: number | null
+  axes: { path: string; values: SweepAxis['values'] }[]
+  cells: SweepCell[]
+  counts: Partial<Record<SweepCellStatus, number>>
+  status: SweepStatus
+  error: string | null
+  created_at: string
+}
+
+// ---- corpus health -----------------------------------------------------------
+export type GapVerdict = 'covered' | 'partial' | 'missing'
+
+export interface HealthExcerpt {
+  chunk_id: string
+  document_id: string
+  document: string
+  heading_path: string
+  page_start: number | null
+  text: string
+}
+export interface CoverageSummary {
+  n: number
+  covered: number
+  partial: number
+  missing: number
+  covered_rate: number
+  ungraded: number
+  sources: { pasted: number; history: number }
+}
+export interface GapTopic {
+  /** What the docs need to add (the judge's words), or the first question. */
+  topic: string
+  count: number
+  missing: number
+  partial: number
+  questions: { question: string; verdict: GapVerdict; source: 'pasted' | 'history'; passages: HealthExcerpt[] }[]
+}
+export interface PassagePair {
+  a: HealthExcerpt
+  b: HealthExcerpt
+  similarity: number
+  explanation?: string
+}
+export interface DocumentUsage {
+  document_id: string
+  document: string
+  chunks: number
+  used: number
+}
+export interface HealthResult {
+  coverage: { summary: CoverageSummary; topics: GapTopic[] }
+  duplicates: PassagePair[]
+  contradictions: PassagePair[]
+  pairs_checked: number
+  usage: { questions: number; chunks: number; chunks_used: number; unused_documents: number; documents: DocumentUsage[] }
+}
+export interface HealthReport {
+  id: string
+  project_id: string
+  version_id: string
+  version: number | null
+  build_id: string | null
+  status: EvalStatus
+  error: string | null
+  created_at: string
+  /** Detail only. */
+  result?: HealthResult | null
+  /** List only. */
+  summary?: (CoverageSummary & { topics: number; contradictions: number; duplicates: number; unused_documents: number }) | null
+}
+
+/** A one-click fix for a miss diagnosis: the full config to save as a new version. */
+export interface EvalFix {
+  diagnosis: EvalDiagnosis
+  config: PipelineConfig
+  changes: Change[]
+  base_version: number | null
 }

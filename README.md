@@ -5,7 +5,14 @@ Upload documents, choose and tune every part of the pipeline (including the vect
 build the index, and chat with answers that cite their sources. An inspector shows which
 passages were found, by which search path, and what each step cost.
 
-**Phase 1 — Build & Chat.** See [`PRD.md`](PRD.md) for the full plan and [`IDEAS.md`](IDEAS.md)
+**Measure it, too.** The Evaluate tab writes test questions from your own documents (no
+labelling), scores any version's retrieval (and optionally grades its answers), explains every miss, re-scores each version you save,
+and **sweeps** a grid of configurations into a quality-vs-cost leaderboard with a Pareto frontier
+— promote the winner in one click. The Health tab turns real user questions into a ranked
+**content backlog** of what your documents can't answer, and flags contradicting and duplicate
+passages.
+
+**Phase 1 — Build & Chat** is complete; **Phase 2 — Measure & Optimize** is in progress. See [`PRD.md`](PRD.md) for the full plan and [`IDEAS.md`](IDEAS.md)
 for the idea catalogue.
 
 ## What you can tune
@@ -77,7 +84,7 @@ http://127.0.0.1:8000/docs.
 ## Tests
 
 ```bash
-cd backend && uv run pytest -q     # 40 tests: contracts, all vector stores, pipeline rules, retrieval
+cd backend && uv run pytest -q     # 85 tests: contracts, all vector stores, pipeline rules, retrieval, eval, answer grading, sweeps, corpus health, eval-set editing
 cd frontend && npm run build       # type-check + production build
 ```
 

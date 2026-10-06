@@ -3,7 +3,7 @@ import { ChevronRight, Circle, CircleCheck, CircleX, LoaderCircle, TriangleAlert
 import { useJobEvents, type StageProgress } from '@/api/hooks'
 import { formatNumber } from '@/api/format'
 import type { JobDoneResult, JobStage } from '@/api/types'
-import { Badge, ProgressBar, StatusBadge, cn } from '@/components/ui'
+import { Badge, Collapse, ProgressBar, StatusBadge, cn } from '@/components/ui'
 
 export const STAGE_LABELS: Record<JobStage, string> = {
   fetch: 'Fetch pages',
@@ -16,6 +16,14 @@ export const STAGE_LABELS: Record<JobStage, string> = {
   generate: 'Write questions',
   validate: 'Filter generic questions',
   evaluate: 'Score retrieval',
+  sweep: 'Score configurations',
+  retrieve: 'Search each question',
+  judge: 'Check answers against the docs',
+  scan: 'Find overlapping passages',
+  contradictions: 'Check for contradictions',
+  answer: 'Write answers',
+  grade: 'Grade answers',
+  grade_cells: 'Grade answers of the best configurations',
 }
 
 export interface JobProgressProps {
@@ -138,7 +146,7 @@ export function JobProgress({ jobId, projectId, showFetch, variant = 'full', tit
             onClick={() => setLogsOpen((o) => !o)}
             className="focus-ring flex items-center gap-1 rounded-sm text-label text-text-secondary hover:text-text-primary"
           >
-            <ChevronRight size={14} aria-hidden className={cn('transition-transform', logsOpen && 'rotate-90')} />
+            <ChevronRight size={14} aria-hidden className={cn('transition-transform duration-300', logsOpen && 'rotate-90')} />
             Log ({s.logs.length})
             {warnings.length > 0 && (
               <Badge tone="warning" icon={<TriangleAlert aria-hidden />} className="ml-1">
@@ -146,7 +154,7 @@ export function JobProgress({ jobId, projectId, showFetch, variant = 'full', tit
               </Badge>
             )}
           </button>
-          {logsOpen && (
+          <Collapse open={logsOpen}>
             <pre className="mt-2 max-h-56 overflow-auto rounded-lg bg-bg-code p-3 font-mono text-mono text-text-code" tabIndex={0}>
               {s.logs.map((l, i) => (
                 <div key={i} className={cn(l.level === 'error' && 'text-red-300', l.level === 'warning' && 'text-yellow-200')}>
@@ -155,7 +163,7 @@ export function JobProgress({ jobId, projectId, showFetch, variant = 'full', tit
                 </div>
               ))}
             </pre>
-          )}
+          </Collapse>
         </div>
       )}
     </div>

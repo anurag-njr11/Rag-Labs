@@ -174,3 +174,23 @@ async def test_run_eval_scores_across_chunkings(project):
         by_item = {r["item_id"]: r for r in results}
         assert by_item["i1"]["hit"] and by_item["i1"]["rank"] >= 1
         assert by_item["i2"]["diagnosis"] == "not_retrieved"
+
+
+def test_suggest_fix_per_diagnosis():
+    cfg = _cfg("numpy")
+    cfg["rerank"] = {"type": "cross_encoder", "model": "Xenova/ms-marco-MiniLM-L-6-v2", "top_n": 5}
+    cfg = validate_pipeline(cfg)
+    deep = [{"diagnosis": "ranked_below_k", "deep_rank": 14}, {"diagnosis": "ranked_below_k", "deep_rank": 11}]
+    fixed = evaluate.suggest_fix(cfg, "ranked_below_k", deep)
+    assert fixed["retrieve"]["top_k"] == 14 and fixed["retrieve"]["candidates"] >= 14
+    assert validate_pipeline(fixed) == fixed and cfg["retrieve"]["top_k"] == 8  # input untouched
+
+    rr = evaluate.suggest_fix(cfg, "dropped_by_rerank", [{"diagnosis": "dropped_by_rerank"}])
+    assert rr["rerank"]["top_n"] == 8  # min(top_k=8, 5 + 3)
+    budget = evaluate.suggest_fix(cfg, "dropped_by_budget", [{"diagnosis": "dropped_by_budget"}])
+    assert budget["prompt"]["max_context_tokens"] == 6000  # 4000 * 1.5, rounded up to 500
+
+    assert evaluate.suggest_fix(cfg, "not_retrieved", [{"diagnosis": "not_retrieved"}]) is None
+    assert evaluate.suggest_fix(cfg, "ranked_below_k", []) is None
+    no_rerank = _cfg("numpy")
+    assert evaluate.suggest_fix(no_rerank, "dropped_by_rerank", [{"diagnosis": "dropped_by_rerank"}]) is None

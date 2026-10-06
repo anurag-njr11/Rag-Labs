@@ -3,6 +3,7 @@ import {
 } from 'react'
 import { createPortal } from 'react-dom'
 import { cn } from './cn'
+import { presence, usePresence } from './motion'
 
 export type Placement = 'top' | 'bottom'
 
@@ -49,9 +50,9 @@ export function Tooltip({ content, children, placement = 'top', className, delay
   const [open, setOpen] = useState(false)
   const id = useId()
   const anchor = useRef<HTMLSpanElement>(null)
-  const floating = useRef<HTMLDivElement>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pos = useFloating(open, anchor, floating, placement, 'center')
+  const { ref: floating, mounted } = usePresence<HTMLDivElement>(open, presence.pop(placement))
+  const pos = useFloating(mounted, anchor, floating, placement, 'center')
 
   const show = () => {
     if (timer.current) clearTimeout(timer.current)
@@ -78,7 +79,7 @@ export function Tooltip({ content, children, placement = 'top', className, delay
       onKeyDown={(e) => e.key === 'Escape' && hide()}
     >
       {children}
-      {open &&
+      {mounted &&
         createPortal(
           <div
             ref={floating}
@@ -113,9 +114,9 @@ export function HoverCard({ trigger, children, placement = 'bottom', align = 'st
   const [open, setOpen] = useState(false)
   const id = useId()
   const anchor = useRef<HTMLSpanElement>(null)
-  const floating = useRef<HTMLDivElement>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | null>(null)
-  const pos = useFloating(open, anchor, floating, placement, align)
+  const { ref: floating, mounted } = usePresence<HTMLDivElement>(open, presence.pop(placement))
+  const pos = useFloating(mounted, anchor, floating, placement, align)
 
   const show = () => {
     if (timer.current) clearTimeout(timer.current)
@@ -154,7 +155,7 @@ export function HoverCard({ trigger, children, placement = 'bottom', align = 'st
       }}
     >
       {trigger}
-      {open &&
+      {mounted &&
         createPortal(
           <div
             ref={floating}
@@ -197,8 +198,8 @@ export interface PopoverProps {
 
 /** Controlled click popover (e.g. delete confirmation). Closes on outside click and Escape; focuses first focusable. */
 export function Popover({ open, onClose, anchor, children, placement = 'bottom', align = 'end', width = 280, className, ...aria }: PopoverProps) {
-  const floating = useRef<HTMLDivElement>(null)
-  const pos = useFloating(open, anchor, floating, placement, align)
+  const { ref: floating, mounted } = usePresence<HTMLDivElement>(open, presence.pop(placement))
+  const pos = useFloating(mounted, anchor, floating, placement, align)
 
   useEffect(() => {
     if (!open) return
@@ -220,9 +221,9 @@ export function Popover({ open, onClose, anchor, children, placement = 'bottom',
       document.removeEventListener('mousedown', onDown)
       document.removeEventListener('keydown', onKey)
     }
-  }, [open, onClose, anchor])
+  }, [open, onClose, anchor, floating])
 
-  if (!open) return null
+  if (!mounted) return null
   return createPortal(
     <div
       ref={floating}

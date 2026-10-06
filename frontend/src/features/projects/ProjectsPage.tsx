@@ -1,9 +1,9 @@
-import { useState, type ReactNode } from 'react'
+import { useRef, useState, type ReactNode } from 'react'
 import { FolderOpen, Plus, Search, SlidersHorizontal, TriangleAlert, Upload, MessageCircle } from 'lucide-react'
 import { errorMessage, useDeleteProject, useProjects, useProviders } from '@/api/hooks'
 import { formatNumber } from '@/api/format'
 import type { Project } from '@/api/types'
-import { Button, ButtonLink, Dialog, EmptyState, Input, useToast } from '@/components/ui'
+import { Button, ButtonLink, Dialog, EmptyState, Input, useStaggerIn, useToast } from '@/components/ui'
 import { ProjectCard } from './ProjectCard'
 
 const GRID = 'grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4'
@@ -13,6 +13,8 @@ export default function ProjectsPage() {
   const providers = useProviders()
   const [query, setQuery] = useState('')
   const [toDelete, setToDelete] = useState<Project | null>(null)
+  const grid = useRef<HTMLUListElement>(null)
+  useStaggerIn(grid, !!q.data && q.data.length > 0)
 
   const all = q.data ?? []
   const list = query
@@ -71,7 +73,7 @@ export default function ProjectsPage() {
         <EmptyProjects action={newButton} />
       ) : (
         <>
-          <ul className={GRID}>
+          <ul ref={grid} className={GRID}>
             {list.map((p) => (
               <li key={p.id}>
                 <ProjectCard project={p} providers={providers.data} onDelete={() => setToDelete(p)} />
@@ -95,8 +97,10 @@ function EmptyProjects({ action }: { action: ReactNode }) {
     { icon: <SlidersHorizontal aria-hidden />, title: 'Configure the pipeline', text: 'Pick parsing, chunking, embeddings, store, retrieval and model.' },
     { icon: <MessageCircle aria-hidden />, title: 'Ask questions', text: 'Answers cite their sources; inspect every retrieval step.' },
   ]
+  const intro = useRef<HTMLDivElement>(null)
+  useStaggerIn(intro, true, { selector: ':scope > div > *, :scope > ol > li', stagger: 0.07 })
   return (
-    <div className="mx-auto flex max-w-3xl flex-col items-center gap-8 rounded-xl border border-dashed border-border-strong bg-bg-surface px-6 py-14 text-center">
+    <div ref={intro} className="mx-auto flex max-w-3xl flex-col items-center gap-8 rounded-xl border border-dashed border-border-strong bg-bg-surface px-6 py-14 text-center">
       <div className="flex flex-col items-center gap-3">
         <span className="flex size-12 items-center justify-center rounded-xl bg-bg-subtle text-text-secondary">
           <FolderOpen size={22} aria-hidden />

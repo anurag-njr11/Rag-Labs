@@ -1,10 +1,10 @@
-import { useState } from 'react'
+import { useRef, useState } from 'react'
 import { ArrowLeft, ArrowRight, FileText, Globe, Link as LinkIcon, Trash2, Upload } from 'lucide-react'
 import { errorMessage, useDeleteDocument, useDocuments, useUploadDocuments } from '@/api/hooks'
 import { fileTypeLabel, formatBytes, formatNumber } from '@/api/format'
 import type { Document, Project } from '@/api/types'
 import { JobProgress } from '@/app/JobProgress'
-import { Badge, Button, Card, Spinner, Tabs, tabPanelProps, useToast } from '@/components/ui'
+import { Badge, Button, Card, Spinner, Tabs, tabPanelProps, useSwapTransition, useToast } from '@/components/ui'
 import { AddUrlForm } from '@/features/documents/AddUrlForm'
 import { UploadDropzone } from '@/features/documents/UploadDropzone'
 import { uploadSummary } from '@/features/documents/files'
@@ -17,6 +17,8 @@ export function DocumentsStep({ project, onBack, onNext }: { project: Project; o
   const pid = project.id
   const { toast } = useToast()
   const [source, setSource] = useState<Source>('files')
+  const sourcePanel = useRef<HTMLDivElement>(null)
+  useSwapTransition(sourcePanel, source, source === 'url' ? 1 : -1)
   const [urlJobs, setUrlJobs] = useState<{ id: string; url: string }[]>([])
   const docsQ = useDocuments(pid, { refetchInterval: urlJobs.length ? 2500 : false })
   const upload = useUploadDocuments(pid)
@@ -60,7 +62,7 @@ export function DocumentsStep({ project, onBack, onNext }: { project: Project; o
             ]}
             className="self-start"
           />
-          <div {...tabPanelProps('wiz-src', source)}>
+          <div ref={sourcePanel} {...tabPanelProps('wiz-src', source)}>
             {source === 'files' ? (
               <UploadDropzone onFiles={onFiles} uploading={upload.isPending} />
             ) : (
