@@ -297,7 +297,9 @@ The Embed slot's `api` type still only accepts `gemini` / `nvidia`.
 `Provider`: `{name, title, description, base_url, default_model, signup_url, key_required,
 supports_reasoning, headers: string[] (names only), source: 'preset'|'env'|'ui'|'custom-env'|'custom-ui',
 preset: string|null, custom, key_set, key_hint ('…abcd'), key_env, available, reason, enabled}`.
-The API key and header values are never returned.
+The API key and header values are never returned (they're encrypted at rest); credentials in
+`base_url` are masked. Saving refuses a `base_url` that contains credentials, and refuses a
+`base_url` change unless `api_key` (and `headers`, if any were set) are sent again (422).
 
 `ProviderInput`: `{name?, title?, base_url?, api_key?, default_model?, supports_reasoning?,
 key_required?, headers?: {[name]: value}}`.

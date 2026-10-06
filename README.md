@@ -34,6 +34,19 @@ Every saved configuration is an immutable version you can diff and switch back t
   any other supported provider, or a local server such as Ollama. Connect it in the app under
   **LLM providers**, or via `.env`.
 
+## Security of API keys
+
+- Keys entered in the app are encrypted at rest (AES-256-GCM). The master key is created
+  on first run in your user config directory, **not** in `data/`, so a copied database
+  can't be read on its own. Back it up, or supply your own via `RAGLABS_SECRET_KEY`
+  (see `.env.example`).
+- Keys are never returned by the API (only `…abcd`), are scrubbed from logs, error
+  messages and run history, and are never written into exports.
+- A stored key is only ever sent to the base URL it was saved with. Changing the URL
+  means re-entering the key.
+- The backend only answers to `localhost`/`127.0.0.1` Host headers (`ALLOWED_HOSTS`),
+  which blocks DNS-rebinding attacks from web pages.
+
 ## Run it
 
 ```bash

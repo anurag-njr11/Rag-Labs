@@ -8,6 +8,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..core.pipeline import PipelineError, catalog, index_config_hash, recommended_pipeline, validate_pipeline
 from ..ingest import jobs
+from .. import vault
 from ..llm import provider as llm
 from ..llm.presets import PRESETS
 
@@ -106,8 +107,12 @@ async def test_draft_provider(body: ProviderIn) -> dict:
     base_url = body.base_url or (base.base_url if base else "")
     if not base_url:
         raise HTTPException(422, "base_url is required")
-    key = body.api_key or (base.api_key if base else "")
-    headers = body.headers if body.headers is not None else (base.headers if base else {})
+    if vault.url_has_credentials(base_url):
+        raise HTTPException(422, "Put credentials in the API key or headers fields, not in the base URL.")
+    # Stored secrets are only ever sent to the URL they were saved for.
+    same_server = base is not None and base_url.rstrip("/") == base.base_url.rstrip("/")
+    key = body.api_key or (base.api_key if same_server else "")
+    headers = body.headers if body.headers is not None else (base.headers if same_server else {})
     return await llm.probe(base_url, key, headers, title=body.title or (base.title if base else "Provider"))
 
 

@@ -19,6 +19,11 @@ class Settings(BaseSettings):
     # LLM providers are configured via <NAME>_API_KEY etc. (see app/llm/provider.py),
     # which pydantic-settings can't enumerate ahead of time.
 
+    # Host headers the API answers to. Blocks DNS-rebinding attacks, where a web
+    # page re-points its own domain at 127.0.0.1 to drive this API (and its stored
+    # keys) from the browser. Comma-separated; "*" disables the check.
+    allowed_hosts: str = "localhost,127.0.0.1,::1,[::1],testserver"
+
     # Upper bounds that keep a runaway sitemap or upload from eating the machine.
     max_upload_mb: int = 100
     sitemap_max_pages: int = 200

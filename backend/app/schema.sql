@@ -205,16 +205,17 @@ CREATE INDEX IF NOT EXISTS ix_eval_runs_set ON eval_runs(eval_set_id, created_at
 -- Generate-slot LLM providers added or edited in Settings → Providers. A row named after a
 -- built-in preset overrides that preset's fields; any other row is a custom
 -- OpenAI-compatible endpoint. Empty/NULL columns mean "inherit".
--- Keys are stored in plain text: this database is local to the developer's machine.
+-- api_key and headers are AES-256-GCM ciphertext ("enc:v1:…", see app/vault.py); the
+-- master key lives outside the data directory.
 CREATE TABLE IF NOT EXISTS llm_providers (
     name                TEXT PRIMARY KEY,
     title               TEXT NOT NULL DEFAULT '',
     base_url            TEXT NOT NULL DEFAULT '',
-    api_key             TEXT NOT NULL DEFAULT '',
+    api_key             TEXT NOT NULL DEFAULT '',     -- encrypted
     default_model       TEXT NOT NULL DEFAULT '',
     supports_reasoning  INTEGER,                      -- NULL = inherit
     key_required        INTEGER,                      -- NULL = inherit
-    headers             TEXT NOT NULL DEFAULT '{}',   -- JSON: extra HTTP headers
+    headers             TEXT NOT NULL DEFAULT '{}',   -- encrypted JSON of extra HTTP headers
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 );

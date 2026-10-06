@@ -2,8 +2,9 @@ import logging
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
-from . import db
+from . import db, vault
 from . import nodes  # noqa: F401  (registers every node type)
 from .api import chat, documents, projects, system
 from .api import eval as eval_api
@@ -12,6 +13,7 @@ from .engine import stores
 from .llm import provider as llm
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s %(name)s: %(message)s")
+vault.install_log_redaction()
 log = logging.getLogger("raglabs")
 
 
@@ -19,6 +21,8 @@ log = logging.getLogger("raglabs")
 async def lifespan(app: FastAPI):
     settings = get_settings()
     settings.ensure_dirs()
+    vault.install_log_redaction()  # again: uvicorn sets up its handlers after import
+    vault.master_key()  # fail fast on a malformed RAGLABS_SECRET_KEY
     db.check_fts5()
     await db.connect(settings.db_path)
     # A server restart interrupts any build that was running.
@@ -40,6 +44,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="RAGLabs", version="0.1.0", lifespan=lifespan)
+_hosts = [h.strip() for h in get_settings().allowed_hosts.split(",") if h.strip()]
+if "*" not in _hosts:
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=_hosts)
 for r in (system.router, projects.router, documents.router, chat.router, eval_api.router):
     app.include_router(r)
 

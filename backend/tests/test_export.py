@@ -125,6 +125,18 @@ def test_env_example_and_config_carry_custom_provider_endpoint(monkeypatch):
     assert "openai" in export_mod._requirements(cfg)
 
 
+def test_credentials_in_base_url_are_not_exported(monkeypatch):
+    from app.llm import provider as llm
+
+    p = llm.Provider(name="gw", title="GW", base_url="https://user:pa55word@gw.example/v1?key=abc123",
+                     source="custom-env")
+    monkeypatch.setitem(llm.PROVIDERS, "gw", p)
+    cfg = {"embed": {"type": "export_test_hash"}, "rerank": {"type": "none"}, "generate": {"type": "gw"}}
+    section = json.dumps(export_mod._providers_section(cfg))
+    assert "pa55word" not in section and "abc123" not in section
+    assert "GW_BASE_URL=" in export_mod._env_example(cfg)
+
+
 def test_readme_mentions_first_run_download_only_for_local_models():
     project, version = {"name": "Demo"}, {"version": 1}
     local = export_mod._readme(project, version, _cfg(embed_type="fastembed", rerank_type="cross_encoder"))

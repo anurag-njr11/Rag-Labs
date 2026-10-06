@@ -10,7 +10,7 @@ import re
 import time
 from typing import Any, AsyncIterator
 
-from .. import db
+from .. import db, vault
 from ..core import runs
 from ..core.node import RunContext, build_node
 from ..core.pipeline import index_config_hash
@@ -173,6 +173,7 @@ async def answer(project_id: str, version: dict[str, Any], question: str) -> Asy
         raise
     except Exception as e:
         msg = str(e) if isinstance(e, (llm.ProviderError, ChatError)) else f"{type(e).__name__}: {e}"
+        msg = vault.redact(msg)
         await runs.finish_run(run_id, ctx, status="error", answer=answer_text, error=msg, result=result,
                               latency_ms=(time.perf_counter() - t0) * 1000)
         raise ChatError(msg) from e

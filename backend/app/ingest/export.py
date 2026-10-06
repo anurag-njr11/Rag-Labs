@@ -18,7 +18,7 @@ from typing import Any
 
 import numpy as np
 
-from .. import db
+from .. import db, vault
 from ..core.node import build_node
 from ..core.pipeline import PipelineConfig, with_defaults
 from ..llm import provider as llm
@@ -68,11 +68,17 @@ def _used_providers(cfg: PipelineConfig) -> list[str]:
 def _providers_section(cfg: PipelineConfig) -> dict[str, dict[str, Any]]:
     """Connection details rag.py needs for each provider the pipeline calls.
     Keys are never exported, only the env var to read them from; header values
-    may be secrets too, so only header names are listed."""
+    may be secrets too, so only header names are listed; credentials inside a
+    base URL are masked."""
     out = {}
     for name in _used_providers(cfg):
         p = llm.get(name)
-        out[name] = {"title": p.title, "base_url": p.base_url, "api_key_env": p.key_env,
+        # A URL with embedded credentials (only possible via .env) is exported masked;
+        # rag.py then needs the real one in <NAME>_BASE_URL.
+        out[name] = {"title": p.title, "base_url": vault.redact_url(p.base_url),
+                     "base_url_env": llm.env_prefix(name) + "_BASE_URL",
+                     "base_url_has_credentials": vault.url_has_credentials(p.base_url),
+                     "api_key_env": p.key_env,
                      "key_required": p.key_required, "default_model": p.default_model,
                      "default_embed_model": p.default_embed_model,
                      "extra_header_names": sorted(p.headers)}
@@ -83,6 +89,8 @@ def _env_example(cfg: PipelineConfig) -> str:
     lines = []
     for name, info in _providers_section(cfg).items():
         lines.append(f"{info['api_key_env']}=" + ("" if info["key_required"] else "  # optional for this endpoint"))
+        if info["base_url_has_credentials"]:
+            lines.append(f"{info['base_url_env']}=  # required: the full {info['title']} URL (exported masked)")
         if info["extra_header_names"]:
             lines.append(f"# {info['title']} also needs these HTTP headers (set them in rag.py's generate()): "
                          + ", ".join(info["extra_header_names"]))

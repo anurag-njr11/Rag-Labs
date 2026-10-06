@@ -12,7 +12,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable
 
-from .. import db
+from .. import db, vault
 
 log = logging.getLogger("raglabs.jobs")
 
@@ -94,7 +94,7 @@ def start(kind: str, project_id: str, fn: Callable[[Job], Awaitable[dict[str, An
         except Exception as e:  # surfaced to the UI, not swallowed
             log.exception("job %s (%s) failed", job.id, kind)
             job.status = "failed"
-            job.error = str(e) or type(e).__name__
+            job.error = vault.redact(str(e)) or type(e).__name__
             job.publish({"type": "failed", "error": job.error})
 
     job._task = asyncio.create_task(runner())

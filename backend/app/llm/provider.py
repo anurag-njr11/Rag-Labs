@@ -38,7 +38,7 @@ import openai
 from dotenv import dotenv_values
 from openai import AsyncOpenAI
 
-from .. import db
+from .. import db, vault
 from ..config import BACKEND_DIR, REPO_DIR
 from .presets import PRESETS, Preset
 
@@ -53,17 +53,20 @@ class Provider:
     name: str
     title: str
     base_url: str
-    api_key: str = ""
+    # repr=False: a logged or traceback-printed Provider never shows its secrets.
+    api_key: str = field(default="", repr=False)
     default_model: str = ""
     default_embed_model: str = ""
     signup_url: str = ""
     description: str = ""
     key_required: bool = True
     supports_reasoning: bool = False
-    headers: dict[str, str] = field(default_factory=dict)
+    headers: dict[str, str] = field(default_factory=dict, repr=False)
     # "preset" (untouched built-in), "env", "ui", or "custom-env" / "custom-ui".
     source: str = "preset"
     preset: str | None = None
+    # Set when a stored secret couldn't be decrypted (e.g. the secret key changed).
+    secret_error: str = ""
 
     @property
     def key_env(self) -> str:
@@ -78,6 +81,7 @@ class Provider:
         d = asdict(self)
         d.pop("api_key")
         d["headers"] = sorted(self.headers)
+        d["base_url"] = vault.redact_url(self.base_url)
         d["key_set"] = bool(self.api_key)
         d["key_hint"] = ("…" + self.api_key[-4:]) if len(self.api_key) >= 8 else ("set" if self.api_key else "")
         d["key_env"] = self.key_env
@@ -123,6 +127,8 @@ def _merge(base: Provider, over: dict[str, Any], source: str) -> Provider:
     kw = {k: over[k] for k in _OVERRIDABLE if over.get(k) not in (None, "", {})}
     if over.get("api_key_env"):
         kw["api_key"] = _env(over["api_key_env"]) or kw.get("api_key", "")
+    if over.get("_secret_error"):
+        kw["secret_error"] = over["_secret_error"]
     return Provider(**{**asdict(base), **kw, "source": source})
 
 
@@ -195,6 +201,7 @@ def refresh() -> None:
     global _dotenv
     _dotenv = None
     every = resolve_all()
+    _secrets[:] = [s for p in every.values() for s in (p.api_key, *p.headers.values()) if s]
     offered = {n: p for n, p in every.items()
                if (n in PRESETS and PRESETS[n].pinned) or _configured(p)}
     PROVIDERS.clear()
@@ -205,32 +212,64 @@ def refresh() -> None:
         fn()
 
 
+def _ctx(name: str, column: str) -> str:
+    return f"llm_providers:{name}:{column}"
+
+
+def _decrypt_row(r: dict[str, Any]) -> bool:
+    """Decrypt a DB row in place. Returns True if it held plaintext secrets
+    (written before encryption existed) and should be re-saved encrypted."""
+    name, legacy = r["name"], False
+    raw_key, raw_headers = r.get("api_key") or "", r.get("headers") or ""
+    try:
+        if vault.is_encrypted(raw_key):
+            r["api_key"] = vault.decrypt(raw_key, _ctx(name, "api_key"))
+        elif raw_key:
+            legacy = True
+        if vault.is_encrypted(raw_headers):
+            r["headers"] = db.loads(vault.decrypt(raw_headers, _ctx(name, "headers")), {})
+        else:
+            r["headers"] = db.loads(raw_headers, {})
+            legacy = legacy or bool(r["headers"])
+    except vault.VaultError as e:
+        log.error("Stored secrets for provider %r can't be decrypted: %s", name, e)
+        r["api_key"], r["headers"] = "", {}
+        r["_secret_error"] = ("Its stored API key can't be decrypted (the secret key changed?). "
+                              "Re-enter the key in Settings → Providers.")
+        r["_raw"] = (raw_key, raw_headers)  # kept untouched in the DB until the user re-enters
+    return legacy
+
+
 async def load() -> None:
-    """Read UI-managed providers from the database. Call once after connecting."""
+    """Read UI-managed providers from the database (decrypting their secrets),
+    and encrypt any secrets still stored in plain text. Call once after connecting."""
     rows = await db.fetch_all("SELECT * FROM llm_providers")
     _db_rows.clear()
+    legacy = []
     for r in rows:
-        r["headers"] = db.loads(r.get("headers"), {})
+        if _decrypt_row(r):
+            legacy.append(r["name"])
         for b in ("supports_reasoning", "key_required"):
             if r.get(b) is not None:
                 r[b] = bool(r[b])
         _db_rows[r["name"]] = r
+    for name in legacy:
+        await _write(name, _db_rows[name])
+    if legacy:
+        # secure_delete zeroed the old pages; flush the WAL so no plaintext copy lingers there either.
+        await db.conn().execute("PRAGMA wal_checkpoint(TRUNCATE)")
+        log.info("Encrypted stored API keys for %d provider(s).", len(legacy))
     refresh()
 
 
-async def save(name: str, fields: dict[str, Any]) -> Provider:
-    """Create or update a UI-managed provider (or a preset's UI overrides).
-    Fields left out keep their stored value; an empty api_key keeps the stored key."""
-    if name in RESERVED:
-        raise ProviderError(f"{name!r} is reserved; pick another name.")
-    if not NAME_RE.match(name):
-        raise ProviderError("Name must be 2–32 chars: lowercase letters, digits, '-' or '_', starting with a letter.")
-    row = {**_db_rows.get(name, {}), **{k: v for k, v in fields.items() if v is not None}}
-    if fields.get("api_key") == "" and name in _db_rows:
-        row["api_key"] = _db_rows[name].get("api_key", "")
-    if name not in PRESETS and not (row.get("base_url") or resolve_all().get(name, _blank(name, {})).base_url):
-        raise ProviderError("A custom provider needs a base URL.")
+async def _write(name: str, row: dict[str, Any]) -> None:
     now = db.now_iso()
+    if row.get("_raw"):  # undecryptable secrets: leave the stored ciphertext as it was
+        enc_key, enc_headers = row["_raw"]
+    else:
+        enc_key = vault.encrypt(row.get("api_key") or "", _ctx(name, "api_key"))
+        headers = row.get("headers") or {}
+        enc_headers = vault.encrypt(db.dumps(headers), _ctx(name, "headers")) if headers else "{}"
     async with db.tx() as c:
         await c.execute(
             """INSERT INTO llm_providers (name, title, base_url, api_key, default_model,
@@ -240,15 +279,56 @@ async def save(name: str, fields: dict[str, Any]) -> Provider:
                    api_key=excluded.api_key, default_model=excluded.default_model,
                    supports_reasoning=excluded.supports_reasoning, key_required=excluded.key_required,
                    headers=excluded.headers, updated_at=excluded.updated_at""",
-            (name, row.get("title") or "", row.get("base_url") or "", row.get("api_key") or "",
+            (name, row.get("title") or "", row.get("base_url") or "", enc_key,
              row.get("default_model") or "", _opt_bool(row.get("supports_reasoning")),
-             _opt_bool(row.get("key_required")), db.dumps(row.get("headers") or {}),
-             row.get("created_at") or now, now),
+             _opt_bool(row.get("key_required")), enc_headers, row.get("created_at") or now, now),
         )
     row.setdefault("created_at", now)
+
+
+async def save(name: str, fields: dict[str, Any]) -> Provider:
+    """Create or update a UI-managed provider (or a preset's UI overrides).
+    Fields left out keep their stored value; an empty api_key keeps the stored key.
+    Secrets are encrypted before they reach the database."""
+    if name in RESERVED:
+        raise ProviderError(f"{name!r} is reserved; pick another name.")
+    if not NAME_RE.match(name):
+        raise ProviderError("Name must be 2–32 chars: lowercase letters, digits, '-' or '_', starting with a letter.")
+    fields = {k: v for k, v in fields.items() if v is not None}
+    if fields.get("api_key") == "":
+        fields.pop("api_key")
+    base_url = fields.get("base_url")
+    if base_url and vault.url_has_credentials(base_url):
+        raise ProviderError("Put credentials in the API key or headers fields, not in the base URL — "
+                            "URLs are stored and shown unencrypted.")
+    current = resolve_all().get(name)
+    if (base_url and current and base_url.rstrip("/") != current.base_url.rstrip("/")
+            and ((current.api_key and "api_key" not in fields) or (current.headers and "headers" not in fields))):
+        # Otherwise a stored key could be redirected to a server it was never meant for.
+        raise ProviderError("Re-enter the API key (and any headers) when changing the base URL, "
+                            "so a stored key is never sent to a different server.")
+    row = {**_db_rows.get(name, {}), **fields}
+    if "api_key" in fields or "headers" in fields:  # re-entered: replaces undecryptable secrets
+        row.pop("_raw", None)
+        row.pop("_secret_error", None)
+    if name not in PRESETS and not (row.get("base_url") or (current.base_url if current else "")):
+        raise ProviderError("A custom provider needs a base URL.")
+    await _write(name, row)
     _db_rows[name] = row
     refresh()
     return resolve_all()[name]
+
+
+_secrets: list[str] = []
+
+
+def known_secrets() -> list[str]:
+    """Every secret value currently configured (refreshed by `refresh()`), for redaction.
+    Cached rather than computed per call: the log filter calls this for every record."""
+    return _secrets
+
+
+vault.register_known_secrets(known_secrets)
 
 
 async def remove(name: str) -> None:
@@ -280,6 +360,8 @@ def availability(name: str) -> tuple[bool, str]:
         return False, f"Unknown provider {name!r} — add it in Settings → Providers."
     if not p.base_url:
         return False, f"{p.title} has no base URL. Set it in Settings → Providers."
+    if p.secret_error:
+        return False, p.secret_error
     if p.key_required and not p.api_key:
         hint = f" (key: {p.signup_url})" if p.signup_url else ""
         return False, f"Add an API key in Settings → Providers, or set {p.key_env} in .env{hint}"
@@ -316,7 +398,11 @@ async def probe(base_url: str, api_key: str = "", headers: dict[str, str] | None
         page = await _make_client(base_url, api_key, headers).with_options(max_retries=0).models.list()
         ids = [m.id.removeprefix("models/") for m in page.data]
     except Exception as e:
-        return {"ok": False, "error": str(friendly_error(title, e)),
+        msg = str(friendly_error(title, e))
+        for secret in (api_key, *(headers or {}).values()):  # a draft's secrets aren't registered yet
+            if secret and len(secret) >= 4:
+                msg = msg.replace(secret, "***")
+        return {"ok": False, "error": msg,
                 "ms": round((time.perf_counter() - t0) * 1000)}
     return {"ok": True, "models": len(ids), "sample": sorted(ids)[:10],
             "ms": round((time.perf_counter() - t0) * 1000)}
@@ -335,6 +421,13 @@ PREFERRED: dict[tuple[str, str], tuple[str, ...]] = {
 
 
 def friendly_error(provider: str, e: Exception) -> ProviderError:
+    """A user-facing error with every secret scrubbed out — provider error
+    bodies sometimes echo (part of) the key or the request headers."""
+    err = _friendly_error(provider, e)
+    return err if isinstance(e, ProviderError) and err is e else ProviderError(vault.redact(str(err)))
+
+
+def _friendly_error(provider: str, e: Exception) -> ProviderError:
     title = PROVIDERS[provider].title if provider in PROVIDERS else provider
     if isinstance(e, ProviderError):
         return e

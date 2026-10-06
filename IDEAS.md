@@ -627,7 +627,9 @@ in Settings → Providers. See `backend/app/llm/provider.py`.
 - **Non-OpenAI-compatible APIs** (native Anthropic features, Bedrock, Vertex) via an optional
   LiteLLM adapter behind the same `Provider` record.
 - **Per-model pricing** so `cost_usd` is real for paid providers.
-- **Encrypted key storage** (OS keychain) instead of plain text in the local SQLite.
+- ~~Encrypted key storage~~ — done 2026-10-06: AES-256-GCM at rest (`backend/app/vault.py`), master key
+  outside `data/`, secrets redacted from logs/errors/exports. Still open: OS keychain as a key source,
+  and a `rotate-key` command that re-encrypts stored secrets under a new master key.
 
 ### 10.7 Vector store: use what you already have
 **Value: high · Cost: — · Phase: 1–2 · Source: Infosys**

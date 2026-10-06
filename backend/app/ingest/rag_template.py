@@ -81,6 +81,12 @@ def _provider(name: str) -> dict[str, Any]:
     info.setdefault("key_required", True)
     info.setdefault("default_model", PROVIDER_DEFAULT_MODEL.get(name, ""))
     info.setdefault("default_embed_model", PROVIDER_DEFAULT_EMBED_MODEL.get(name, ""))
+    env_url = os.environ.get(info.get("base_url_env") or re.sub(r"[^A-Z0-9]", "_", name.upper()) + "_BASE_URL")
+    if env_url:
+        info["base_url"] = env_url
+    elif info.get("base_url_has_credentials"):
+        raise RuntimeError(f"Set {info['base_url_env']} in .env: the {name} URL holds credentials, "
+                           "so it was not exported.")
     if not info["base_url"]:
         raise RuntimeError(f"No base URL for provider {name!r} in config.json.")
     return info

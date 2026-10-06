@@ -57,8 +57,8 @@ export default function ProvidersPage() {
           <h1 className="text-display text-text-primary">LLM providers</h1>
           <p className="mt-1 text-body text-text-secondary">
             The model that writes answers (Configure → Generate) can be any OpenAI-compatible endpoint: a hosted API with
-            your own key, a gateway, or a server on your machine. Keys are kept in the local database and never sent back
-            to the browser.
+            your own key, a gateway, or a server on your machine. Keys are encrypted (AES-256-GCM) in the local database and never sent back to
+            the browser.
           </p>
         </div>
         <Button variant="primary" icon={<Plus size={14} aria-hidden />} onClick={() => setEditing({ provider: null, create: true })}>
@@ -248,10 +248,12 @@ function ProviderDialog({ provider: p, create, onClose }: { provider: Provider |
   const [reasoning, setReasoning] = useState(p?.supports_reasoning ?? false)
   // Header values are write-only: existing ones show as "Name: (unchanged)" and are kept unless edited.
   const [headersText, setHeadersText] = useState('')
+  const urlChanged = !!p && baseUrl.trim().replace(/\/+$/, '') !== p.base_url.replace(/\/+$/, '')
   const models = useProviderModels(!create && p?.available ? p.name : undefined, 'chat')
 
   const nameError = create && name && !NAME_RE.test(name) ? 'Lowercase letters, digits, - or _; starts with a letter; 2–32 chars.' : undefined
-  const canSave = (!create || (NAME_RE.test(name) && baseUrl.trim())) && (!isCustom || baseUrl.trim())
+  const needsKey = urlChanged && !!p?.key_set && !apiKey.trim()
+  const canSave = (!create || (NAME_RE.test(name) && baseUrl.trim())) && (!isCustom || baseUrl.trim()) && !needsKey
 
   const body = (): ProviderInput => {
     const b: ProviderInput = { base_url: baseUrl.trim(), default_model: model.trim(), supports_reasoning: reasoning }
@@ -333,16 +335,17 @@ function ProviderDialog({ provider: p, create, onClose }: { provider: Provider |
         </Field>
         <Field
           label="API key"
+          error={urlChanged && p?.key_set && !apiKey.trim() ? 'Re-enter the key: a stored key is never sent to a new base URL.' : undefined}
           help={
             p?.key_set
-              ? `Stored key ${p.key_hint}. Leave empty to keep it.`
+              ? `Stored encrypted (${p.key_hint}). Leave empty to keep it.`
               : p
                 ? `Or set ${p.key_env} in .env instead.`
                 : `Or set ${name ? name.toUpperCase().replace(/[^A-Z0-9]/g, '_') : 'ID'}_API_KEY in .env and restart.`
           }
         >
           {(f) => (
-            <Input id={f.id} aria-describedby={f.describedBy} type="password" autoComplete="off" mono
+            <Input id={f.id} aria-describedby={f.describedBy} type="password" autoComplete="new-password" spellCheck={false} mono
               icon={<KeyRound aria-hidden />} value={apiKey}
               placeholder={p?.key_set ? p.key_hint : isCustom && !keyRequired ? 'optional' : 'sk-…'}
               onChange={(e) => setApiKey(e.target.value)} />
