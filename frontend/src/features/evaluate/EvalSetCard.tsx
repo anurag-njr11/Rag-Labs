@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { ChevronRight, FileText } from 'lucide-react'
 import type { EvalItem, EvalSetDetail } from '@/api/types'
-import { Badge, Card, Collapse, Disclosure, cn } from '@/components/ui'
+import { Badge, Banner, Card, Collapse, Disclosure, cn } from '@/components/ui'
 import { EditQuestions } from './EditQuestions'
 
 /** One eval question as an expandable list row (fits the narrow side panel). */
@@ -31,6 +31,12 @@ function ItemRow({ item, n }: { item: EvalItem; n: number }) {
             <dt className="text-text-tertiary">Answer</dt>
             <dd className="text-text-primary">{item.gold_answer}</dd>
           </div>
+          {item.facets?.length > 0 && (
+            <div>
+              <dt className="text-text-tertiary">Required facts</dt>
+              <dd className="text-text-secondary">{item.facets.join(' · ')}</dd>
+            </div>
+          )}
           <div>
             <dt className="text-text-tertiary">Evidence (verbatim from the source)</dt>
             <dd className="mt-0.5 rounded-md border-l-2 border-accent-default bg-bg-subtle px-2 py-1 text-text-secondary">{item.evidence}</dd>
@@ -91,9 +97,14 @@ export function EvalSetCard({
           questions kept
           <span className="block text-body-sm text-text-tertiary">
             from {st.sampled ?? '—'} sampled chunks · {set.items.filter((i) => !i.gold_chunk_id).length} added by hand
+            {set.revision > 0 ? ` · revision ${set.revision}` : ''}
           </span>
         </span>
       </div>
+
+      {set.corpus_changed && (
+        <Banner tone="warning">Documents changed since this set was generated. Questions about changed text may no longer find their evidence — regenerate if scores drop.</Banner>
+      )}
 
       {(!!st.too_generic || !!st.bad_evidence) && (
         <div className="flex flex-wrap gap-2">

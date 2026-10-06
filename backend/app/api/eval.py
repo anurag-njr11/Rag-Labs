@@ -11,6 +11,7 @@ from .. import db
 from ..core.pipeline import diff_pipelines
 from ..engine import evaluate, sweep, sync
 from ..ingest import jobs
+from ..llm import provider as llm
 
 router = APIRouter(prefix="/api/projects/{project_id}/eval", tags=["eval"])
 
@@ -25,12 +26,14 @@ class ItemIn(BaseModel):
     gold_answer: str = Field(min_length=1, max_length=2000)
     evidence: str = Field(min_length=1, max_length=4000)
     document_id: str
+    facets: list[str] = Field(default_factory=list, max_length=8)  # required facts (FR-2.6)
 
 
 class ItemPatch(BaseModel):
     question: str | None = Field(None, min_length=3, max_length=1000)
     gold_answer: str | None = Field(None, min_length=1, max_length=2000)
     evidence: str | None = Field(None, min_length=1, max_length=4000)
+    facets: list[str] | None = Field(None, max_length=8)
     valid: bool | None = None  # restore a rejected item / drop a kept one
 
 
@@ -38,12 +41,24 @@ class CsvIn(BaseModel):
     csv: str = Field(max_length=2_000_000)
 
 
-CSV_COLUMNS = ["question", "gold_answer", "evidence", "document", "valid", "reject_reason"]
+CSV_COLUMNS = ["question", "gold_answer", "evidence", "document", "valid", "reject_reason", "facets"]
+
+
+class JudgeIn(BaseModel):
+    """Answer grader (FOLLOW_UPS #2): any configured provider/model; omitted = the version's own."""
+    provider: str
+    model: str = ""
+
+    def checked(self) -> dict[str, str]:
+        if self.provider not in llm.PROVIDERS:
+            raise HTTPException(422, f"Unknown judge provider {self.provider!r}.")
+        return self.model_dump()
 
 
 class EvalRunIn(BaseModel):
     version_id: str | None = None
     answers: bool = False  # also generate + LLM-grade each answer
+    judge: JudgeIn | None = None
 
 
 class AxisIn(BaseModel):
@@ -57,6 +72,7 @@ class SweepIn(BaseModel):
     axes: list[AxisIn] = Field(min_length=1, max_length=4)
     # Successive halving: answer-grade the top 25% of cells by retrieval (at most 5) after scoring all.
     auto_optimize: bool = False
+    judge: JudgeIn | None = None
 
 
 async def _version(project_id: str, version_id: str | None) -> dict[str, Any]:
@@ -79,12 +95,27 @@ async def _set(project_id: str, set_id: str) -> dict[str, Any]:
     return s
 
 
-def _set_out(s: dict[str, Any]) -> dict[str, Any]:
-    return {**s, "stats": db.loads(s["stats"], {})}
+def _set_out(s: dict[str, Any], corpus_sha: str | None = None) -> dict[str, Any]:
+    # corpus_changed: the project's documents differ from the ones the set was generated from
+    # (None for sets generated before this was recorded).
+    changed = None if not s.get("corpus_sha") or corpus_sha is None else s["corpus_sha"] != corpus_sha
+    return {**s, "stats": db.loads(s["stats"], {}), "corpus_changed": changed}
+
+
+def _item_out(i: dict[str, Any]) -> dict[str, Any]:
+    return {**i, "valid": bool(i["valid"]), "facets": db.loads(i.get("facets"), []) or []}
+
+
+_BUMP = "UPDATE eval_sets SET revision = revision + 1 WHERE id=?"  # FR-2.5: every edit is a new revision
+
+
+def _facets(raw: list[str] | None) -> str | None:
+    return None if raw is None else db.dumps(evaluate.clean_facets(raw))
 
 
 def _run_out(r: dict[str, Any], full: bool = False) -> dict[str, Any]:
-    out = {k: r[k] for k in ("id", "eval_set_id", "version_id", "build_id", "status", "error", "created_at")}
+    out = {k: r[k] for k in ("id", "eval_set_id", "version_id", "build_id", "status", "error", "created_at",
+                             "set_revision")}
     out["version"] = r.get("version")
     out["metrics"] = db.loads(r["metrics"], None)
     if full:
@@ -111,16 +142,17 @@ async def create_set(project_id: str, body: EvalSetIn) -> dict[str, Any]:
 async def list_sets(project_id: str) -> list[dict[str, Any]]:
     rows = await db.fetch_all("SELECT * FROM eval_sets WHERE project_id=? ORDER BY created_at DESC, rowid DESC",
                               (project_id,))
-    return [_set_out(r) for r in rows]
+    sha = await evaluate.corpus_sha(project_id)
+    return [_set_out(r, sha) for r in rows]
 
 
 @router.get("/sets/{set_id}")
 async def get_set(project_id: str, set_id: str) -> dict[str, Any]:
-    s = _set_out(await _set(project_id, set_id))
+    s = _set_out(await _set(project_id, set_id), await evaluate.corpus_sha(project_id))
     items = await db.fetch_all(
         "SELECT i.*, d.filename AS document FROM eval_items i LEFT JOIN documents d ON d.id = i.document_id"
         " WHERE i.eval_set_id=? ORDER BY i.ordinal", (set_id,))
-    s["items"] = [{**i, "valid": bool(i["valid"])} for i in items]
+    s["items"] = [_item_out(i) for i in items]
     return s
 
 
@@ -147,9 +179,10 @@ async def _add_item(s: dict[str, Any], body: ItemIn) -> str:
                                      (s["id"],))).fetchone()
         await c.execute(
             "INSERT INTO eval_items (id, eval_set_id, ordinal, question, gold_answer, evidence, document_id,"
-            " gold_chunk_id, valid) VALUES (?,?,?,?,?,?,?,'',1)",
+            " gold_chunk_id, valid, facets) VALUES (?,?,?,?,?,?,?,'',1,?)",
             (item_id, s["id"], row[0], body.question.strip(), body.gold_answer.strip(), body.evidence.strip(),
-             body.document_id))
+             body.document_id, _facets(body.facets)))
+        await c.execute(_BUMP, (s["id"],))
     return item_id
 
 
@@ -158,7 +191,7 @@ async def add_item(project_id: str, set_id: str, body: ItemIn) -> dict[str, Any]
     s = await _set(project_id, set_id)
     if s["status"] != "ready":
         raise HTTPException(409, "This eval set isn't ready yet.")
-    return {**await _item(set_id, await _add_item(s, body)), "valid": True}
+    return _item_out(await _item(set_id, await _add_item(s, body)))
 
 
 @router.patch("/sets/{set_id}/items/{item_id}")
@@ -174,6 +207,8 @@ async def update_item(project_id: str, set_id: str, item_id: str, body: ItemPatc
         reason = await evaluate.check_evidence(s["build_id"], it["document_id"], it["evidence"])
         if reason:
             raise HTTPException(422, f"Can't restore it: {reason}")
+    if "facets" in changes:
+        changes["facets"] = _facets(changes["facets"])
     if "valid" in changes:
         changes["valid"] = int(changes["valid"])
         if changes["valid"]:
@@ -184,8 +219,8 @@ async def update_item(project_id: str, set_id: str, item_id: str, body: ItemPatc
         cols = ", ".join(f"{k}=?" for k in changes)
         async with db.tx() as c:
             await c.execute(f"UPDATE eval_items SET {cols} WHERE id=?", (*changes.values(), item_id))
-    it = await _item(set_id, item_id)
-    return {**it, "valid": bool(it["valid"])}
+            await c.execute(_BUMP, (set_id,))
+    return _item_out(await _item(set_id, item_id))
 
 
 @router.delete("/sets/{set_id}/items/{item_id}", status_code=204)
@@ -194,6 +229,7 @@ async def delete_item(project_id: str, set_id: str, item_id: str) -> None:
     await _item(set_id, item_id)
     async with db.tx() as c:
         await c.execute("DELETE FROM eval_items WHERE id=?", (item_id,))
+        await c.execute(_BUMP, (set_id,))
 
 
 @router.get("/sets/{set_id}/export.csv")
@@ -206,7 +242,8 @@ async def export_csv(project_id: str, set_id: str) -> Response:
     w = csv.DictWriter(buf, fieldnames=CSV_COLUMNS, extrasaction="ignore", lineterminator="\n")
     w.writeheader()
     for i in items:
-        w.writerow({**i, "valid": "yes" if i["valid"] else "no", "reject_reason": i["reject_reason"] or ""})
+        w.writerow({**i, "valid": "yes" if i["valid"] else "no", "reject_reason": i["reject_reason"] or "",
+                    "facets": " | ".join(db.loads(i["facets"], []) or [])})
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": f'attachment; filename="eval-set-{set_id[:8]}.csv"'})
 
@@ -214,7 +251,8 @@ async def export_csv(project_id: str, set_id: str) -> Response:
 @router.post("/sets/{set_id}/import")
 async def import_csv(project_id: str, set_id: str, body: CsvIn) -> dict[str, Any]:
     """Add rows from a CSV with columns question, gold_answer (or answer), evidence, document
-    (the filename). Rows marked valid=no are skipped. Each row is checked like a hand-added item."""
+    (the filename), and optionally facets (`|`-separated required facts). Rows marked valid=no are
+    skipped. Each row is checked like a hand-added item."""
     s = await _set(project_id, set_id)
     if s["status"] != "ready":
         raise HTTPException(409, "This eval set isn't ready yet.")
@@ -235,7 +273,8 @@ async def import_csv(project_id: str, set_id: str, body: CsvIn) -> dict[str, Any
             continue
         try:
             body_in = ItemIn(question=row.get("question", ""), gold_answer=row.get("gold_answer") or row.get("answer", ""),
-                             evidence=row.get("evidence", ""), document_id=doc_id)
+                             evidence=row.get("evidence", ""), document_id=doc_id,
+                             facets=[f for f in row.get("facets", "").split("|") if f.strip()])
             await _add_item(s, body_in)
             added += 1
         except HTTPException as e:
@@ -251,17 +290,19 @@ async def create_run(project_id: str, set_id: str, body: EvalRunIn) -> dict[str,
     if s["status"] != "ready":
         raise HTTPException(409, "This eval set isn't ready yet.")
     v = await _version(project_id, body.version_id)
-    run_id, job_id = await start_run(project_id, set_id, v, body.answers)
+    judge = body.judge.checked() if body.judge else None
+    run_id, job_id = await start_run(project_id, set_id, v, body.answers, judge)
     return {"run": await _get_run(project_id, run_id), "job_id": job_id}
 
 
-async def start_run(project_id: str, set_id: str, v: dict[str, Any], answers: bool = False) -> tuple[str, str]:
+async def start_run(project_id: str, set_id: str, v: dict[str, Any], answers: bool = False,
+                    judge: dict[str, str] | None = None) -> tuple[str, str]:
     run_id = db.new_id()
     async with db.tx() as c:
         await c.execute("INSERT INTO eval_runs (id, eval_set_id, project_id, version_id, created_at)"
                         " VALUES (?,?,?,?,?)", (run_id, set_id, project_id, v["id"], db.now_iso()))
     job = jobs.start("eval", project_id,
-                     lambda job: evaluate.run_eval(job, run_id, project_id, set_id, v, answers))
+                     lambda job: evaluate.run_eval(job, run_id, project_id, set_id, v, answers, judge))
     return run_id, job.id
 
 
@@ -345,6 +386,7 @@ async def create_sweep(project_id: str, body: SweepIn) -> dict[str, Any]:
     if s["status"] != "ready":
         raise HTTPException(409, "This eval set isn't ready yet.")
     v = await _version(project_id, body.version_id)
+    judge = body.judge.checked() if body.judge else None
     axes = [a.model_dump() for a in body.axes]
     try:
         cells = sweep.expand_grid(sync.version_config(v), axes)
@@ -355,7 +397,7 @@ async def create_sweep(project_id: str, body: SweepIn) -> dict[str, Any]:
         await c.execute("INSERT INTO sweeps (id, project_id, eval_set_id, base_version_id, axes, cells, created_at)"
                         " VALUES (?,?,?,?,?,?,?)", (sweep_id, project_id, s["id"], v["id"], db.dumps(axes),
                                                     db.dumps(cells), db.now_iso()))
-    job = jobs.start("sweep", project_id, lambda job: sweep.run_sweep(job, sweep_id, body.auto_optimize))
+    job = jobs.start("sweep", project_id, lambda job: sweep.run_sweep(job, sweep_id, body.auto_optimize, judge))
     return {"sweep": await _sweep(project_id, sweep_id), "job_id": job.id}
 
 

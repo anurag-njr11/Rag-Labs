@@ -1,13 +1,13 @@
 import { useState, type ReactNode } from 'react'
-import { Copy, Download, FileQuestion, GitCompareArrows, HeartPulse, Stethoscope } from 'lucide-react'
+import { CalendarClock, Copy, Download, FileQuestion, GitCompareArrows, HeartPulse, SearchX, Stethoscope } from 'lucide-react'
 import {
   errorMessage, healthReportUrl, useHealthReport, useHealthReports, useStartHealthReport,
 } from '@/api/hooks'
 import { formatNumber, stripTags } from '@/api/format'
-import type { GapTopic, GapVerdict, HealthExcerpt, HealthResult, PassagePair } from '@/api/types'
+import type { GapTopic, GapVerdict, HealthExcerpt, HealthResult, PassagePair, StaleReason } from '@/api/types'
 import { useWorkspace } from '@/app/workspace'
 import {
-  Badge, Banner, Button, Card, Disclosure, EmptyState, ProgressBar, Select, Spinner, Textarea, buttonClasses, cn, useToast,
+  Badge, Banner, Button, Card, Disclosure, EmptyState, Input, ProgressBar, Select, Spinner, Textarea, buttonClasses, cn, useToast,
   type BadgeTone,
 } from '@/components/ui'
 import { EvalJobProgress } from '@/features/evaluate/EvalJobProgress'
@@ -54,8 +54,8 @@ function Backlog({ result }: { result: HealthResult }) {
       <div>
         <h2 className="flex items-center gap-2 text-title-lg text-text-primary"><FileQuestion size={20} aria-hidden /> Content backlog</h2>
         <p className="mt-1 text-body text-text-secondary">
-          Real questions the pipeline can't fully answer from your documents, grouped by topic, biggest first. Usually
-          the content is missing; if you know a page covers it, it's a retrieval miss instead — try a sweep on the Evaluate tab.
+          Real questions your documents can't fully answer, grouped by topic, biggest first. Each was re-checked against a
+          deeper search; ones that search could answer are listed below as retrieval misses, not content gaps.
         </p>
       </div>
       {summary.n === 0 ? (
@@ -71,8 +71,75 @@ function Backlog({ result }: { result: HealthResult }) {
           {topics.map((t, i) => <TopicRow key={i} rank={i + 1} topic={t} />)}
         </ol>
       )}
+      <RetrievalMisses result={result} />
       {summary.ungraded > 0 && (
         <p className="text-body-sm text-text-tertiary">{summary.ungraded} question(s) couldn't be graded (the model call failed).</p>
+      )}
+    </Card>
+  )
+}
+
+function RetrievalMisses({ result }: { result: HealthResult }) {
+  const misses = result.coverage.retrieval_misses ?? []
+  if (!misses.length) return null
+  return (
+    <div className="flex flex-col gap-2 rounded-lg border border-border-default p-3">
+      <h3 className="flex items-center gap-2 text-heading text-text-primary">
+        <SearchX size={16} aria-hidden /> Retrieval misses <Badge tone="info">{misses.length}</Badge>
+      </h3>
+      <p className="text-body-sm text-text-secondary">
+        The content exists — a deeper search found passages that answer these — but the active retrieval didn't put
+        them in the prompt. Run a sweep on the Evaluate tab, or raise the Retrieve step's <code className="font-mono">top_k</code>.
+      </p>
+      <ul className="flex flex-col gap-1.5">
+        {misses.map((m, i) => (
+          <li key={i} className="flex flex-wrap items-center gap-2 text-body text-text-primary">
+            <Badge tone="info">Retrieval miss</Badge>
+            {m.question}
+            <span className="text-caption text-text-tertiary">{m.source === 'pasted' ? 'pasted' : 'asked in chat'}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  )
+}
+
+const STALE_REASON: Record<StaleReason, string> = {
+  deprecated: 'Deprecated',
+  past_stale_after: 'Past stale-after date',
+  old: 'Not modified recently',
+}
+
+function Staleness({ result }: { result: HealthResult }) {
+  const st = result.staleness
+  if (!st) return null
+  return (
+    <Card padding="lg" className="flex flex-col gap-4">
+      <div>
+        <h2 className="flex items-center gap-2 text-title-lg text-text-primary">
+          <CalendarClock size={20} aria-hidden /> Stale documents <Badge tone={st.documents.length ? 'warning' : 'neutral'}>{st.documents.length}</Badge>
+        </h2>
+        <p className="mt-1 text-body text-text-secondary">
+          Marked deprecated, past their stale-after date, or not modified in over {formatNumber(st.max_age_days)} days.{' '}
+          {st.with_dates} of {st.documents_checked} documents carry a date; set the others' metadata on the Documents tab.
+        </p>
+      </div>
+      {st.documents.length === 0 ? (
+        <p className="text-body text-text-secondary">None found.</p>
+      ) : (
+        <ul className="flex flex-col gap-2">
+          {st.documents.map((d) => (
+            <li key={d.document_id} className="flex flex-wrap items-center gap-2">
+              <span className="min-w-0 truncate font-mono text-mono text-text-primary" title={d.document}>{d.document}</span>
+              {d.reasons.map((r) => <Badge key={r} tone={r === 'deprecated' ? 'danger' : 'warning'}>{STALE_REASON[r]}</Badge>)}
+              <span className="ml-auto text-body-sm text-text-tertiary">
+                {[d.stale_after && `stale after ${d.stale_after}`,
+                  d.last_modified && `modified ${new Date(d.last_modified).toLocaleDateString()}${d.age_days != null ? ` (${formatNumber(d.age_days)} days ago)` : ''}`]
+                  .filter(Boolean).join(' · ')}
+              </span>
+            </li>
+          ))}
+        </ul>
       )}
     </Card>
   )
@@ -176,6 +243,7 @@ export default function HealthTab() {
   const [pasted, setPasted] = useState('')
   const [jobId, setJobId] = useState<string | null>(null)
   const [picked, setPicked] = useState<string | null>(null)
+  const [staleDays, setStaleDays] = useState('365')
 
   const list = reports.data ?? []
   const latest = list[0]
@@ -187,7 +255,7 @@ export default function HealthTab() {
 
   const run = () =>
     start.mutate(
-      { questions },
+      { questions, stale_days: Math.max(1, Math.round(Number(staleDays)) || 365) },
       {
         onSuccess: (r) => {
           setJobId(r.job_id)
@@ -204,7 +272,7 @@ export default function HealthTab() {
         <h1 className="text-display text-text-primary">Corpus health</h1>
         <p className="mt-1 text-body-lg text-text-secondary">
           Retrieval can't find what isn't written down. See which real questions your documents can't answer, where they
-          contradict each other, and what nobody reads.
+          contradict each other, what's out of date, and what nobody reads.
         </p>
       </header>
 
@@ -225,8 +293,15 @@ export default function HealthTab() {
           <div className="flex flex-col justify-end gap-3">
             <p className="text-body-sm text-text-tertiary">
               Each question is searched with the active version; your Generate model grades whether the top passages answer it
-              (about one call per 5 questions). Similar passages from different documents are checked for contradictions.
+              (about one call per 5 questions, plus one per 5 gaps for the retrieval-miss re-check). Similar passages from
+              different documents are checked for contradictions.
             </p>
+            <label className="flex items-center gap-2 text-body-sm text-text-secondary">
+              Flag documents not modified in
+              <Input type="number" min={1} value={staleDays} onChange={(e) => setStaleDays(e.target.value)} size="sm"
+                wrapperClassName="w-20" aria-label="Staleness threshold in days" />
+              days
+            </label>
             <Button variant="primary" icon={<Stethoscope size={14} aria-hidden />} onClick={run} loading={start.isPending}
               disabled={running || project.documents === 0} title={project.documents === 0 ? 'Add documents first' : undefined}>
               {list.length ? 'Run the check again' : 'Check corpus health'}
@@ -272,12 +347,14 @@ export default function HealthTab() {
               <Download size={14} aria-hidden /> Download report (.md)
             </a>
           </div>
-          <dl className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-5">
+          <dl className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
             <Stat label="Answered by the docs" value={s.n ? pct(s.covered_rate) : '—'} hint={s.n ? `${s.covered} of ${s.n} real questions` : 'no questions yet'} />
-            <Stat label="Gap topics" value={result.coverage.topics.length} hint={s.n ? `${s.missing} missing · ${s.partial} partial` : undefined} />
+            <Stat label="Gap topics" value={result.coverage.topics.length} hint={s.n ? `${s.missing} missing · ${s.partial} partial${s.retrieval_miss ? ` · ${s.retrieval_miss} retrieval miss${s.retrieval_miss === 1 ? '' : 'es'}` : ''}` : undefined} />
             <Stat label="Contradictions" value={result.contradictions.length} hint={`of ${result.pairs_checked} similar pairs checked`} />
             <Stat label="Duplicates" value={result.duplicates.length} hint="near-identical passages" />
             <Stat label="Unused documents" value={result.usage.questions ? result.usage.unused_documents : '—'} hint="never reached the prompt" />
+            <Stat label="Stale documents" value={result.staleness ? result.staleness.documents.length : '—'}
+              hint={result.staleness ? `deprecated, expired or > ${formatNumber(result.staleness.max_age_days)} days old` : 'not in this report'} />
           </dl>
           <Backlog result={result} />
           <div className="grid items-start gap-6 xl:grid-cols-2">
@@ -286,6 +363,7 @@ export default function HealthTab() {
             <Pairs title="Duplicate content" icon={<Copy size={20} aria-hidden />} pairs={result.duplicates}
               empty="No near-identical passages across documents." />
           </div>
+          <Staleness result={result} />
           <Usage result={result} />
         </>
       ) : null}

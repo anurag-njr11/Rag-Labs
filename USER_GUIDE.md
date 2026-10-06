@@ -119,6 +119,18 @@ An **eval set** is a list of test questions written automatically from your docu
 - Optionally enable **"Crawl sitemap"** (depth-limited) to fetch multiple pages
 - Click **"Fetch"**
 
+**Document metadata (optional):**
+- Each file's last-modified date is kept (from your computer, or the page's `Last-Modified` header for URLs) and shown in the **Modified** column of the Documents tab.
+- Markdown files can carry front matter with `status` (e.g. draft / published / deprecated), `stale_after` (a date), `verified` (true or a date) and `sources` (a list):
+  ```markdown
+  ---
+  status: published
+  stale_after: 2027-01-31
+  sources: [https://example.com/spec]
+  ---
+  ```
+- Edit these for any document with the tag icon on its Documents-tab row. Saving never rebuilds the index. The dialog also shows the **usage count**: how often the document's passages appeared in Playground/API answers.
+
 **After Upload:**
 - You'll see a **Parse Quality Indicator** (✅ good, ⚠️ fair, ❌ poor)
 - Shows: extracted char count, detected tables, OCR used?, empty pages
@@ -133,7 +145,7 @@ For each stage card, click to expand and adjust parameters:
 - Effect: **🔁 Rebuild** (different parsing = different chunks)
 
 #### Chunk
-- **Type**: `fixed` (simple), `recursive` (sentence-aware), or `structure_aware` (heading-aware)
+- **Type**: `fixed` (simple), `recursive` (sentence-aware), `sentence` (whole sentences), `structure_aware` (heading-aware), or `semantic` (splits where the topic shifts between sentences, judged by a local embedding model; tune with **Breakpoint percentile** — higher = fewer, larger chunks — and min/max chunk size)
 - **Size**: 256–2048 (chars or tokens). Smaller = more specific; larger = more context per chunk.
 - **Overlap**: 0–256. Prevents cutting mid-sentence.
 - **Unit**: `chars` or `tokens`
@@ -181,6 +193,8 @@ For each stage card, click to expand and adjust parameters:
 - **Min score**: Drop dense results below this similarity (0.0 = keep all)
 - **MMR** (Maximal Marginal Relevance): Reorder results to avoid near-duplicates. `mmr_lambda=1.0` is pure relevance; 0.0 is pure diversity.
 - **Pin defining sections**: Boost chunks whose heading exactly matches your question.
+- **Query expansion** (works with any type): `multi_query` has your Generate model rewrite the question a few ways and searches with all of them; `hyde` has it write a hypothetical answer and searches for passages like it (dense path only). Costs one extra LLM call per question (shown in the Playground trace); if the call fails, the plain question is used.
+- **Context window**: 1–3 adds that many neighbouring chunks (same document) around each result before reranking and the prompt — search small, answer with more context. Raises context tokens.
 - Effect: **⚡ Instant** (all retrieval params are instant — no rebuild needed)
 
 **Example**: For a code docs chatbot, use `fused` with `exact_weight=1.5` to boost error message matches. Enable `pin_definitions` to prioritize sections titled with the function you asked about.
@@ -460,6 +474,8 @@ The **Health** tab (between Evaluate and API) looks at the documents themselves 
 |---|---|---|
 | **Answered by the docs** | Share of **real** questions the pipeline can fully answer from your documents | Each question is searched with the version's retriever. Your Generate model then grades the passages that would reach the prompt: *covered*, *partial* or *missing* |
 | **Content backlog** | Questions that aren't fully answered, grouped into topics, biggest first | Similar questions are grouped together. Each topic is named after what the documentation would need to add |
+| **Retrieval misses** | Questions your documents *do* answer, but the active pipeline didn't find the passage | Each unanswered question is searched again much deeper (top 15) and re-graded. If that answers it, it's a retrieval miss, not a content gap |
+| **Stale documents** | Documents marked *deprecated*, past their *stale after* date, or not modified for longer than the threshold (365 days by default) | From each document's metadata and last-modified date. Documents without either can't be checked |
 | **Contradictions** | Passages in different documents that state conflicting facts | The most similar passage pairs across documents (up to 30) are checked by the model |
 | **Duplicate content** | Near-identical passages in different documents | Vector similarity ≥ 0.97 — no model involved |
 | **Unused content** | Documents and chunks that none of the questions ever pulled into the prompt | Counted from the same searches |
@@ -468,17 +484,18 @@ The **Health** tab (between Evaluate and API) looks at the documents themselves 
 
 1. Ask real questions in the Playground or through the API. They're collected automatically.
 2. Optional: paste more questions, one per line, into **Real user questions**. Support tickets and search logs are ideal.
-3. Click **Check corpus health**. Progress shows *Search each question* → *Check answers against the docs* → *Find overlapping passages* → *Check for contradictions*.
-4. Work through the **Content backlog** from the top. Expand a topic to see its questions and the closest passage that was found.
-5. Click **Download report (.md)** to hand the backlog to whoever owns the docs.
+3. Optional: change **Flag documents not modified in … days**.
+4. Click **Check corpus health**. Progress shows *Search each question* → *Check answers against the docs* → *Re-check gaps with a deeper search* → *Find overlapping passages* → *Check for contradictions*.
+5. Work through the **Content backlog** from the top. Expand a topic to see its questions and the closest passage that was found.
+6. Click **Download report (.md)** to hand the backlog to whoever owns the docs.
 
 ### Tips
 
-- **Gaps vs. retrieval misses.** A gap means the pipeline couldn't answer from your documents. If you know a page covers it, retrieval is the problem: run a sweep on the Evaluate tab.
+- **Gaps vs. retrieval misses.** A backlog topic means even a deep search found nothing that answers it: write the content. A retrieval miss means the content exists but the pipeline ranks it too low: run a sweep on the Evaluate tab or raise the Retrieve step's `top_k`.
 - **Real questions only.** Eval-set questions are written *from* your documents, so they can't reveal missing content. That's why Health uses real ones.
 - **Off-topic questions show up too** (e.g. "What is the capital of France?"). Ignore topics that aren't yours to document.
 - **"Unused" needs volume.** With fewer than about 30 questions, unused mostly means nobody has asked yet.
-- **Cost.** About one LLM call per 5 questions plus up to 6 for contradictions. Up to 200 questions per report.
+- **Cost.** About one LLM call per 5 questions, one more per 5 unanswered questions for the deeper re-check, plus up to 6 for contradictions. Up to 200 questions per report.
 
 ---
 
@@ -872,9 +889,9 @@ All under `/api/projects/{project_id}/health`:
 
 | Method & path | Body | Returns |
 |---|---|---|
-| `POST /reports` | `{"questions": ["optional real questions"], "version_id": "optional"}` | `{report, job_id}` |
+| `POST /reports` | `{"questions": ["optional real questions"], "version_id": "optional", "stale_days": 365}` | `{report, job_id}` |
 | `GET /reports` | | Reports, newest first, with headline numbers |
-| `GET /reports/{id}` | | Full report: coverage + backlog topics, duplicates, contradictions, usage |
+| `GET /reports/{id}` | | Full report: coverage + backlog topics + retrieval misses, duplicates, contradictions, usage, staleness |
 | `GET /reports/{id}/report.md` | | The report as a Markdown file |
 
 ---

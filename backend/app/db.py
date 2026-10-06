@@ -53,8 +53,27 @@ async def connect(path: Path) -> aiosqlite.Connection:
     await conn.execute("PRAGMA foreign_keys=ON")
     await conn.execute("PRAGMA busy_timeout=5000")
     await conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
+    await _add_columns(conn)
     _conn = conn
     return conn
+
+
+# Columns added to existing tables after release. schema.sql has them for fresh databases;
+# CREATE TABLE IF NOT EXISTS can't add them to an older one, so add any that are missing.
+ADDED_COLUMNS = [
+    ("eval_sets", "revision", "INTEGER NOT NULL DEFAULT 0"),
+    ("eval_sets", "corpus_sha", "TEXT"),
+    ("eval_items", "facets", "TEXT"),
+    ("eval_runs", "set_revision", "INTEGER"),
+]
+
+
+async def _add_columns(conn: aiosqlite.Connection) -> None:
+    for table, column, decl in ADDED_COLUMNS:
+        async with conn.execute(f"PRAGMA table_info({table})") as cur:
+            have = {r[1] for r in await cur.fetchall()}
+        if column not in have:
+            await conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {decl}")
 
 
 async def close() -> None:

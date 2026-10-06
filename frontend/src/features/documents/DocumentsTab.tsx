@@ -1,5 +1,5 @@
 import { useMemo, useRef, useState, type DragEvent } from 'react'
-import { FileText, Globe, Link as LinkIcon, RefreshCw, Search, Trash2, TriangleAlert, Upload, X } from 'lucide-react'
+import { FileText, Globe, Link as LinkIcon, RefreshCw, Search, Tag, Trash2, TriangleAlert, Upload, X } from 'lucide-react'
 import {
   errorMessage, useDeleteDocument, useDocuments, useProjectJobs, useReindexDocument, useUploadDocuments,
 } from '@/api/hooks'
@@ -8,10 +8,11 @@ import type { Document } from '@/api/types'
 import { useWorkspace } from '@/app/workspace'
 import { JobProgress } from '@/app/JobProgress'
 import {
-  Button, Card, Dialog, EmptyState, Input, Popover, StatusBadge, Tooltip, cn, useToast,
+  Badge, Button, Card, Dialog, EmptyState, Input, Popover, StatusBadge, Tooltip, cn, useToast,
 } from '@/components/ui'
 import { AddUrlForm } from './AddUrlForm'
 import { ChunkViewer } from './ChunkViewer'
+import { MetadataForm } from './MetadataForm'
 import { ParseQualityBadge } from './ParseQualityCard'
 import { UploadDropzone } from './UploadDropzone'
 import { ACCEPT_ATTR, documentStatus, uploadSummary, validateFiles } from './files'
@@ -22,7 +23,7 @@ interface LocalJob {
   url?: boolean
 }
 
-// Columns (DESIGN §3 Table row/Document): file (fill) · type 80 · size 80 · status 100 · chunks 72 · parse 100 · actions 132
+// Columns (DESIGN §3 Table row/Document): file (fill) · type 80 · size 80 · modified 100 · status 100 · chunks 72 · parse 100 · actions 180
 const CELL = 'px-2 first:pl-4 last:pr-4 align-middle'
 
 export default function DocumentsTab() {
@@ -37,6 +38,7 @@ export default function DocumentsTab() {
   const [query, setQuery] = useState('')
   const [urlOpen, setUrlOpen] = useState(false)
   const [viewing, setViewing] = useState<Document | null>(null)
+  const [editing, setEditing] = useState<Document | null>(null)
   const [dragging, setDragging] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
 
@@ -216,17 +218,18 @@ export default function DocumentsTab() {
       ) : (
         <Card padding="none" className="overflow-hidden">
           <div className="overflow-x-auto">
-            <table className="w-full min-w-[860px] table-fixed border-collapse text-left">
+            <table className="w-full min-w-[960px] table-fixed border-collapse text-left">
               <caption className="sr-only">Documents in {project.name}</caption>
               <thead>
                 <tr className="h-9 border-b border-border-default bg-bg-subtle text-caption text-text-tertiary">
                   <th scope="col" className={cn(CELL, 'font-medium')}>File</th>
                   <th scope="col" className={cn(CELL, 'w-20 font-medium')}>Type</th>
                   <th scope="col" className={cn(CELL, 'w-20 text-right font-medium')}>Size</th>
+                  <th scope="col" className={cn(CELL, 'w-[100px] font-medium')}>Modified</th>
                   <th scope="col" className={cn(CELL, 'w-[100px] font-medium')}>Status</th>
                   <th scope="col" className={cn(CELL, 'w-[72px] text-right font-medium')}>Chunks</th>
                   <th scope="col" className={cn(CELL, 'w-[100px] font-medium')}>Parse</th>
-                  <th scope="col" className={cn(CELL, 'w-[148px] text-right font-medium')}><span className="sr-only">Actions</span></th>
+                  <th scope="col" className={cn(CELL, 'w-[180px] text-right font-medium')}><span className="sr-only">Actions</span></th>
                 </tr>
               </thead>
               <tbody>
@@ -237,12 +240,13 @@ export default function DocumentsTab() {
                     projectId={pid}
                     building={running}
                     onView={() => setViewing(d)}
+                    onEdit={() => setEditing(d)}
                     onJob={(id) => addJob({ id, label: `Re-indexing ${d.filename}` })}
                   />
                 ))}
                 {filtered.length === 0 && (
                   <tr>
-                    <td colSpan={7} className="px-4 py-10 text-center text-text-tertiary">
+                    <td colSpan={8} className="px-4 py-10 text-center text-text-tertiary">
                       No documents match “{query}”.
                       <Button size="sm" variant="ghost" className="ml-2" icon={<X size={12} aria-hidden />} onClick={() => setQuery('')}>Clear</Button>
                     </td>
@@ -274,14 +278,21 @@ export default function DocumentsTab() {
         />
       </Dialog>
 
+      <Dialog open={!!editing} onClose={() => setEditing(null)} title="Document metadata"
+        description={editing ? `${editing.filename} · optional OKF fields. Corpus Health flags deprecated and stale documents.` : undefined}>
+        {editing && <MetadataForm key={editing.id} projectId={pid} doc={editing} onDone={() => setEditing(null)} />}
+      </Dialog>
+
       <ChunkViewer projectId={pid} doc={viewing} onClose={() => setViewing(null)} />
     </div>
   )
 }
 
+const STATUS_TONE: Record<string, 'danger' | 'warning' | 'success'> = { deprecated: 'danger', draft: 'warning', published: 'success' }
+
 function DocumentRow({
-  doc, projectId, building, onView, onJob,
-}: { doc: Document; projectId: string; building: boolean; onView: () => void; onJob: (jobId: string) => void }) {
+  doc, projectId, building, onView, onEdit, onJob,
+}: { doc: Document; projectId: string; building: boolean; onView: () => void; onEdit: () => void; onJob: (jobId: string) => void }) {
   const { toast } = useToast()
   const del = useDeleteDocument(projectId)
   const reindex = useReindexDocument(projectId)
@@ -318,10 +329,14 @@ function DocumentRow({
             <span className="block truncate font-mono text-mono text-text-primary hover:underline">{doc.filename}</span>
             {doc.source_url && <span className="block truncate text-body-sm text-text-tertiary">{doc.source_url}</span>}
           </span>
+          {doc.okf.status && <Badge tone={STATUS_TONE[doc.okf.status.toLowerCase()] ?? 'neutral'} className="shrink-0">{doc.okf.status}</Badge>}
         </button>
       </td>
       <td className={cn(CELL, 'text-body text-text-secondary')}>{fileTypeLabel(doc.filename)}</td>
       <td className={cn(CELL, 'text-right font-mono text-mono text-text-secondary')}>{formatBytes(doc.size_bytes)}</td>
+      <td className={cn(CELL, 'text-body text-text-secondary')} title={doc.last_modified ? new Date(doc.last_modified).toLocaleString() : 'Unknown'}>
+        {doc.last_modified ? new Date(doc.last_modified).toLocaleDateString() : '—'}
+      </td>
       <td className={CELL}>
         {st.error ? (
           <Tooltip content={st.error}>
@@ -344,6 +359,8 @@ function DocumentRow({
         <Button variant="ghost" size="sm" loading={reindex.isPending} onClick={doReindex} icon={<RefreshCw size={12} aria-hidden />}>
           Re-index
         </Button>
+        <Button variant="ghost" size="sm" iconOnly aria-label={`Edit metadata of ${doc.filename}`} title="Edit metadata"
+          onClick={onEdit} icon={<Tag size={14} aria-hidden />} />
         <Button
           ref={trash}
           variant="ghost"

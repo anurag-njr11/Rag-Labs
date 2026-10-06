@@ -87,3 +87,12 @@ async def test_cancelled_sweep_keeps_finished_cells(project):  # noqa: F811
     row = await db.fetch_one("SELECT * FROM sweeps WHERE id='sw'")
     assert row["status"] == "cancelled"
     assert {c["status"] for c in db.loads(row["cells"])} == {"skipped"}
+
+
+def test_suggested_axes_cover_registered_types_and_expand():
+    axes = {a["path"]: a for a in sweep.AXES}
+    assert "semantic" in axes["chunk.type"]["values"] and "fused" in axes["retrieve.type"]["values"]
+    base = _cfg("numpy")
+    cells = sweep.expand_grid(base, [{"path": p, "values": axes[p]["values"]}
+                                     for p in ("retrieve.query_expansion", "retrieve.context_window")])
+    assert len(cells) == 9 and all(c["status"] == "pending" for c in cells)

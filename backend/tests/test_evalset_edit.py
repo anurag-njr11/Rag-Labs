@@ -1,6 +1,9 @@
+import sqlite3
+
 import httpx
 
 from app import db
+from app.engine import evaluate
 from app.ingest import builder
 from app.main import app
 from test_eval import _new_set, _version, project  # noqa: F401  (fixture)
@@ -37,7 +40,7 @@ async def test_hand_edits_and_csv_roundtrip(project):  # noqa: F811
         assert restored.json()["valid"] is True and restored.json()["question"] == "Max upload size?"
 
         csv_text = (await client.get(f"{BASE}/export.csv")).text
-        assert csv_text.splitlines()[0] == "question,gold_answer,evidence,document,valid,reject_reason"
+        assert csv_text.splitlines()[0] == "question,gold_answer,evidence,document,valid,reject_reason,facets"
         assert "Max upload size?" in csv_text and "uploads.md" in csv_text
 
         imported = await client.post(f"{BASE}/import", json={"csv": (
@@ -54,3 +57,60 @@ async def test_hand_edits_and_csv_roundtrip(project):  # noqa: F811
 
         assert (await client.delete(f"{BASE}/items/{item}")).status_code == 204
         assert (await client.patch(f"{BASE}/items/{item}", json={"valid": True})).status_code == 404
+
+
+async def test_facets_revision_and_corpus_fingerprint(project):  # noqa: F811
+    doc = await _ready_set()
+    async with db.tx() as c:
+        await c.execute("UPDATE eval_sets SET corpus_sha=? WHERE id='s'", (await evaluate.corpus_sha("p"),))
+
+    async def revision():
+        return (await db.fetch_one("SELECT revision FROM eval_sets WHERE id='s'"))["revision"]
+
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+        assert (await client.get(BASE)).json()["corpus_changed"] is False
+        ok = await client.post(f"{BASE}/items", json={
+            "question": "How big can uploads be?", "gold_answer": "250 MB", "facets": ["250 MB", " ", "250 mb"],
+            "evidence": "Each upload is capped at 250 megabytes", "document_id": doc})
+        item = ok.json()
+        assert item["facets"] == ["250 MB"] and await revision() == 1
+        patched = await client.patch(f"{BASE}/items/{item['id']}", json={"facets": ["250 MB", "rejected"]})
+        assert patched.json()["facets"] == ["250 MB", "rejected"] and await revision() == 2
+
+        csv_text = (await client.get(f"{BASE}/export.csv")).text
+        assert "250 MB | rejected" in csv_text
+        imported = await client.post(f"{BASE}/import", json={"csv": (
+            "question,answer,evidence,document,facets\n"
+            "How often are uploads retried?,three times,retries failed uploads three times with exponential backoff,"
+            "uploads.md,three times | exponential backoff\n")})
+        assert imported.json()["added"] == 1 and await revision() == 3
+        items = (await client.get(BASE)).json()["items"]
+        assert [i["facets"] for i in items if i["question"] == "How often are uploads retried?"] == [
+            ["three times", "exponential backoff"]]
+        assert (await client.delete(f"{BASE}/items/{item['id']}")).status_code == 204 and await revision() == 4
+
+        # a changed document -> the set says it was generated from different documents
+        async with db.tx() as c:
+            await c.execute("UPDATE documents SET content_sha='changed' WHERE id=?", (doc,))
+        assert (await client.get(BASE)).json()["corpus_changed"] is True
+        assert (await client.get("/api/projects/p/eval/sets")).json()[0]["corpus_changed"] is True
+
+
+async def test_old_database_gets_new_columns(tmp_path):
+    path = tmp_path / "old.db"
+    old = sqlite3.connect(path)
+    old.execute("CREATE TABLE eval_items (id TEXT PRIMARY KEY, eval_set_id TEXT, ordinal INTEGER, question TEXT,"
+                " gold_answer TEXT, evidence TEXT, document_id TEXT, gold_chunk_id TEXT, valid INTEGER,"
+                " reject_reason TEXT, closed_book_answer TEXT)")
+    old.execute("INSERT INTO eval_items (id) VALUES ('kept')")
+    old.commit()
+    old.close()
+    await db.connect(path)
+    try:
+        await db.close()
+        await db.connect(path)  # second start: nothing left to add, no error
+        cols = {r["name"] for r in await db.fetch_all("PRAGMA table_info(eval_items)")}
+        assert "facets" in cols and (await db.fetch_one("SELECT id, facets FROM eval_items")) == {"id": "kept", "facets": None}
+        assert "revision" in {r["name"] for r in await db.fetch_all("PRAGMA table_info(eval_sets)")}
+    finally:
+        await db.close()

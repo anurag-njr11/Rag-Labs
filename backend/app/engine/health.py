@@ -8,12 +8,16 @@ One report = one background job over a version's build:
 - duplicates / contradictions: a blockwise cosine scan over the build's cached vectors
   finds cross-document pairs; near-identical pairs are duplicates (no LLM), close pairs
   get an LLM contradiction check.
+- retrieval misses: each gap question is re-judged against the top DEEP_PASSAGES of a deep
+  retrieval (evaluate.deep_config); if those answer it, the content exists and retrieval missed it.
 - unused content: chunks and documents never retrieved by any analysed question.
+- staleness: documents marked deprecated, past their OKF `stale_after`, or last modified too long ago.
 """
 
 from __future__ import annotations
 
 import asyncio
+from datetime import UTC, date, datetime
 from typing import Any
 
 import numpy as np
@@ -34,6 +38,9 @@ DUPLICATE_SIM = 0.97
 NEAR_SIM = 0.85      # candidate pairs for the contradiction check
 MAX_PAIRS = 30
 VERDICTS = ("covered", "partial", "missing")
+DEEP_PASSAGES = 15   # re-judge gaps against this many deep-retrieval passages...
+DEEP_CHARS = 600     # ...cut shorter, so a batch of 5 stays ~11k tokens
+STALE_DAYS = 365
 
 JUDGE_SYSTEM = """You check whether a documentation search result can answer user questions.
 For each numbered question you get the top passages the search returned.
@@ -102,6 +109,27 @@ def similar_pairs(vectors: np.ndarray, doc_ids: list[str], threshold: float,
     return found[:limit]
 
 
+def staleness(docs: list[dict[str, Any]], today: date, max_age_days: int = STALE_DAYS) -> list[dict[str, Any]]:
+    """Stale documents (FR-2.28), oldest first. `docs`: {id, filename, okf (dict), last_modified (ISO|None)}.
+    Reasons: `deprecated` (OKF status), `past_stale_after`, `old` (last modified > max_age_days ago)."""
+    out = []
+    for d in docs:
+        okf = d["okf"]
+        reasons = []
+        if str(okf.get("status") or "").strip().lower() == "deprecated":
+            reasons.append("deprecated")
+        if okf.get("stale_after") and okf["stale_after"] < today.isoformat():
+            reasons.append("past_stale_after")
+        age = (today - date.fromisoformat(d["last_modified"][:10])).days if d["last_modified"] else None
+        if age is not None and age > max_age_days:
+            reasons.append("old")
+        if reasons:
+            out.append({"document_id": d["id"], "document": d["filename"], "reasons": reasons,
+                        "status": okf.get("status"), "stale_after": okf.get("stale_after"),
+                        "last_modified": d["last_modified"], "age_days": age})
+    return sorted(out, key=lambda r: (-(r["age_days"] or 0), r["document"]))
+
+
 def coverage_summary(verdicts: list[str]) -> dict[str, Any]:
     n = len(verdicts)
     counts = {v: verdicts.count(v) for v in VERDICTS}
@@ -110,10 +138,11 @@ def coverage_summary(verdicts: list[str]) -> dict[str, Any]:
 
 # --- LLM steps --------------------------------------------------------------------
 
-async def _judge(provider: str, opts: dict[str, Any], batch: list[dict[str, Any]]) -> dict[int, dict[str, str]]:
+async def _judge(provider: str, opts: dict[str, Any], batch: list[dict[str, Any]],
+                 key: str = "passages", chars: int = PASSAGE_CHARS) -> dict[int, dict[str, str]]:
     parts = []
     for i, q in enumerate(batch, start=1):
-        passages = "\n".join(f"  [{k}] {p['text'][:PASSAGE_CHARS]}" for k, p in enumerate(q["passages"], start=1))
+        passages = "\n".join(f"  [{k}] {p['text'][:chars]}" for k, p in enumerate(q[key], start=1))
         parts.append(f"### Question {i}: {q['question']}\nPassages:\n{passages or '  (none found)'}")
     raw = await evaluate.complete(provider, opts, JUDGE_SYSTEM, "\n\n".join(parts))
     out: dict[int, dict[str, str]] = {}
@@ -192,7 +221,9 @@ async def _coverage(job: Job, build: dict[str, Any], cfg: dict[str, Any],
             q["missing"] = v["missing"] if v else ""
 
     graded = [q for q in questions if q["verdict"]]
-    gaps = [q for q in graded if q["verdict"] != "covered"]
+    gaps = await _recheck(job, build, cfg, [q for q in graded if q["verdict"] != "covered"])
+    misses = [q for q in gaps if q["cause"] == "retrieval_miss"]
+    gaps = [q for q in gaps if q["cause"] != "retrieval_miss"]
     topics = []
     if gaps:
         embedder = build_node("embed", cfg["embed"])
@@ -210,8 +241,30 @@ async def _coverage(job: Job, build: dict[str, Any], cfg: dict[str, Any],
             })
     summary = coverage_summary([q["verdict"] for q in graded])
     summary["ungraded"] = len(questions) - len(graded)
+    summary["retrieval_miss"] = len(misses)
     summary["sources"] = {s: sum(q["source"] == s for q in questions) for s in ("pasted", "history")}
-    return {"summary": summary, "topics": topics}, used
+    retrieval_misses = [{"question": m["question"], "verdict": m["verdict"], "source": m["source"]} for m in misses]
+    return {"summary": summary, "topics": topics, "retrieval_misses": retrieval_misses}, used
+
+
+async def _recheck(job: Job, build: dict[str, Any], cfg: dict[str, Any],
+                   gaps: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Sets each gap's `cause`: `retrieval_miss` if a deep retrieval's top passages answer it, else
+    `content_missing`. One extra judge call per JUDGE_BATCH gaps; a failed batch stays a content gap."""
+    if not gaps:
+        return gaps
+    deep = evaluate.deep_config(cfg)
+    for q in gaps:
+        q["deep"] = (await retrieval.retrieve(RunContext(), build=build, cfg=deep, question=q["question"]))[:DEEP_PASSAGES]
+    provider, opts = evaluate.llm_settings(cfg)
+    batches = [gaps[i:i + JUDGE_BATCH] for i in range(0, len(gaps), JUDGE_BATCH)]
+    judged, _ = await evaluate.gather_tolerant(
+        [_judge(provider, opts, b, key="deep", chars=DEEP_CHARS) for b in batches], job, "recheck")
+    for b, res in zip(batches, judged):
+        for j, q in enumerate(b):
+            v = (res or {}).get(j)
+            q["cause"] = "retrieval_miss" if v and v["verdict"] == "covered" else "content_missing"
+    return gaps
 
 
 async def _overlaps(job: Job, build: dict[str, Any], cfg: dict[str, Any],
@@ -261,10 +314,20 @@ def _usage(chunks: list[dict[str, Any]], used: set[str], n_questions: int) -> di
             "unused_documents": sum(d["used"] == 0 for d in rows), "documents": rows}
 
 
+async def stale_documents(project_id: str, max_age_days: int = STALE_DAYS) -> dict[str, Any]:
+    rows = await db.fetch_all("SELECT d.id, d.filename, o.metadata, o.last_modified FROM documents d"
+                              " LEFT JOIN document_okf o ON o.document_id = d.id WHERE d.project_id=?"
+                              " ORDER BY d.filename, d.id", (project_id,))
+    docs = [{**r, "okf": db.loads(r["metadata"], {})} for r in rows]
+    return {"max_age_days": max_age_days, "documents_checked": len(docs),
+            "with_dates": sum(bool(d["last_modified"] or d["okf"].get("stale_after")) for d in docs),
+            "documents": staleness(docs, datetime.now(UTC).date(), max_age_days)}
+
+
 async def run_report(job: Job, report_id: str, project_id: str, version: dict[str, Any],
-                     extra: list[str]) -> dict[str, Any]:
+                     extra: list[str], stale_days: int = STALE_DAYS) -> dict[str, Any]:
     try:
-        return await _run_report(job, report_id, project_id, version, extra)
+        return await _run_report(job, report_id, project_id, version, extra, stale_days)
     except Exception as e:
         async with db.tx() as c:
             await c.execute("UPDATE corpus_reports SET status='failed', error=? WHERE id=?", (str(e), report_id))
@@ -272,7 +335,7 @@ async def run_report(job: Job, report_id: str, project_id: str, version: dict[st
 
 
 async def _run_report(job: Job, report_id: str, project_id: str, version: dict[str, Any],
-                      extra: list[str]) -> dict[str, Any]:
+                      extra: list[str], stale_days: int) -> dict[str, Any]:
     cfg = sync.version_config(version)
     build = await evaluate.ready_build(project_id, cfg, job)
     chunks = await db.fetch_all(
@@ -282,7 +345,8 @@ async def _run_report(job: Job, report_id: str, project_id: str, version: dict[s
     questions = await real_questions(project_id, extra)
     coverage, used = await _coverage(job, build, cfg, questions)
     overlaps = await _overlaps(job, build, cfg, chunks)
-    result = {"coverage": coverage, **overlaps, "usage": _usage(chunks, used, len(questions))}
+    result = {"coverage": coverage, **overlaps, "usage": _usage(chunks, used, len(questions)),
+              "staleness": await stale_documents(project_id, stale_days)}
     async with db.tx() as c:
         await c.execute("UPDATE corpus_reports SET status='ready', result=?, build_id=? WHERE id=?",
                         (db.dumps(result), build["id"], report_id))
@@ -311,6 +375,12 @@ def to_markdown(report: dict[str, Any], project_name: str) -> str:
         out.append(f"{i}. **{t['topic']}** — {t['count']} question{'s' if t['count'] != 1 else ''} "
                    f"({t['missing']} missing, {t['partial']} partial)")
         out += [f"   - {q['question']}" for q in t["questions"][:5]]
+    misses = cov.get("retrieval_misses") or []
+    if misses:
+        out += ["", "## Retrieval misses", "",
+                "The documents answer these (a deeper search found it), but the configured retrieval didn't surface "
+                "the passage. Run a sweep on the Evaluate tab or raise `top_k`.", ""]
+        out += [f"- {m['question']}" for m in misses]
     out += ["", "## Contradictions", ""]
     if not r["contradictions"]:
         out.append(f"None found in the {r['pairs_checked']} most similar passage pairs checked.")
@@ -319,6 +389,21 @@ def to_markdown(report: dict[str, Any], project_name: str) -> str:
     out += ["", "## Duplicate content", ""]
     out += [f"- {d['a']['document']} ≈ {d['b']['document']} (similarity {d['similarity']:.2f})"
             for d in r["duplicates"]] or ["None found."]
+    stale = r.get("staleness")  # absent in reports made before staleness existed
+    if stale is not None:
+        out += ["", "## Stale documents", ""]
+        why = {"deprecated": "marked deprecated", "past_stale_after": "past stale_after",
+               "old": f"not modified in over {stale['max_age_days']} days"}
+
+        def reason(d: dict[str, Any], x: str) -> str:
+            extra = {"past_stale_after": f" ({d['stale_after']})",
+                     "old": f" (last modified {(d['last_modified'] or '')[:10]})"}.get(x, "")
+            return why[x] + extra
+
+        out += [f"- **{d['document']}** — " + "; ".join(reason(d, x) for x in d["reasons"])
+                for d in stale["documents"]] or [
+            f"None. {stale['with_dates']} of {stale['documents_checked']} documents carry a last-modified "
+            "or stale_after date; the rest can't be checked."]
     out += ["", "## Unused content", ""]
     if usage["questions"]:
         out += [f"{usage['chunks_used']} of {usage['chunks']} chunks were retrieved by the {usage['questions']} "

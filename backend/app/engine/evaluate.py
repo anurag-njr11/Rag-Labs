@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import hashlib
 import json
 import math
 import re
@@ -46,8 +47,9 @@ Rules:
 - Never refer to "the passage", "the text", "the document" or "the author".
 - "answer": the correct answer in at most 30 words.
 - "evidence": copy, character for character, the one or two sentences from the passage that contain the answer.
+- "facets": the 1 to 4 short facts a complete answer must state (a few words each), e.g. ["3 retries", "exponential backoff"].
 - If a passage has no answerable factual content (navigation, table of contents, boilerplate), use an empty question.
-Reply with JSON only: {"items": [{"passage": 1, "question": "...", "answer": "...", "evidence": "..."}]}"""
+Reply with JSON only: {"items": [{"passage": 1, "question": "...", "answer": "...", "evidence": "...", "facets": ["..."]}]}"""
 
 VAL_SYSTEM = """Answer each question from your own general knowledge in at most 25 words.
 You have no documents. If you do not know, answer "unknown".
@@ -55,13 +57,22 @@ Reply with JSON only: {"answers": [{"id": 1, "answer": "..."}]}"""
 
 
 GRADE_SYSTEM = """You grade answers from a document question-answering system.
-Each numbered item has the question, the reference answer, the system's answer, and the sources the system was given.
+Each numbered item has the question, the reference answer, sometimes the required facts, the system's answer,
+and the sources the system was given.
 - "correct": "yes" if the system's answer states the reference answer's facts (wording may differ);
   "partial" if some facts are missing or vague; "no" if wrong, missing, or it says it doesn't know.
 - "grounded": "yes" if every claim in the system's answer is supported by its sources;
   "partial" if some claims are not; "no" if it is mostly unsupported.
-Reply with JSON only: {"results": [{"id": 1, "correct": "yes", "grounded": "yes"}]}"""
+- "relevant": "yes" if the answer addresses the question asked; "partial" if it only partly does or drifts;
+  "no" if it answers something else.
+- "specificity": "ok" if its level of detail fits the question; "too_vague" if it is generic or hedged where the
+  reference is specific; "too_verbose" if the answer is buried in detail nobody asked for.
+- "facts": only when required facts are listed: one "yes" or "no" per fact, in order. Does the system's answer state it?
+Reply with JSON only: {"results": [{"id": 1, "correct": "yes", "grounded": "yes", "relevant": "yes",
+"specificity": "ok", "facts": ["yes", "no"]}]}"""
 LEVELS = ("yes", "partial", "no")
+SPECIFICITY = ("ok", "too_vague", "too_verbose")
+MAX_FACETS = 4
 
 
 def parse_json(text: str) -> Any:
@@ -86,14 +97,14 @@ def llm_settings(cfg: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 
 
 async def complete(provider: str, opts: dict[str, Any], system: str, user: str) -> str:
-    opts = dict(opts)
+    opts = {"temperature": 0.3, **opts}  # judge calls pass temperature=0 in opts
     if not opts["model"]:
         opts["model"] = await llm.resolve_model(provider, "chat")
     async with _llm_slots:
         try:
             resp = await llm.client(provider).chat.completions.create(
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
-                temperature=0.3, max_tokens=4096, stream=False, **opts)
+                max_tokens=4096, stream=False, **opts)
         except Exception as e:
             raise llm.friendly_error(provider, e) from e
     return resp.choices[0].message.content or ""
@@ -130,8 +141,24 @@ async def _generate_batch(provider: str, opts: dict[str, Any], batch: list[dict[
         if not (0 <= idx < len(batch)) or not q:
             continue
         out.append({"chunk": batch[idx], "question": q, "answer": str(entry.get("answer") or "").strip(),
-                    "evidence": str(entry.get("evidence") or "").strip()})
+                    "evidence": str(entry.get("evidence") or "").strip(), "facets": clean_facets(entry.get("facets"))})
     return out
+
+
+def clean_facets(raw: Any) -> list[str]:
+    """At most 4 short, non-empty, de-duplicated facts; anything else is dropped."""
+    out: list[str] = []
+    for f in raw if isinstance(raw, list) else []:
+        f = str(f or "").strip()[:200]
+        if f and f.lower() not in {x.lower() for x in out}:
+            out.append(f)
+    return out[:MAX_FACETS]
+
+
+async def corpus_sha(project_id: str) -> str:
+    """Fingerprint of the project's documents: sha256 of their sorted content hashes (FR-2.5)."""
+    rows = await db.fetch_all("SELECT content_sha FROM documents WHERE project_id=?", (project_id,))
+    return hashlib.sha256("\n".join(sorted(r["content_sha"] for r in rows)).encode()).hexdigest()
 
 
 async def _closed_book(provider: str, opts: dict[str, Any], questions: list[str]) -> dict[int, str]:
@@ -237,14 +264,17 @@ async def _generate_set(job: Job, set_id: str, project_id: str, version: dict[st
             else:
                 stats["other"] += 1
             rows.append((db.new_id(), set_id, len(rows), cand["question"], cand["answer"], cand["evidence"],
-                         cand["chunk"]["document_id"], cand["chunk"]["id"], int(valid), reason, cb))
+                         cand["chunk"]["document_id"], cand["chunk"]["id"], int(valid), reason, cb,
+                         db.dumps(cand.get("facets") or [])))
 
+    fingerprint = await corpus_sha(project_id)
     async with db.tx() as c:
         await c.executemany(
             "INSERT INTO eval_items (id, eval_set_id, ordinal, question, gold_answer, evidence, document_id,"
-            " gold_chunk_id, valid, reject_reason, closed_book_answer) VALUES (?,?,?,?,?,?,?,?,?,?,?)", rows)
-        await c.execute("UPDATE eval_sets SET status='ready', stats=?, build_id=? WHERE id=?",
-                        (db.dumps(stats), build["id"], set_id))
+            " gold_chunk_id, valid, reject_reason, closed_book_answer, facets) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+            rows)
+        await c.execute("UPDATE eval_sets SET status='ready', stats=?, build_id=?, corpus_sha=? WHERE id=?",
+                        (db.dumps(stats), build["id"], fingerprint, set_id))
     return {"eval_set_id": set_id, **stats}
 
 
@@ -323,7 +353,9 @@ def deep_config(cfg: dict[str, Any]) -> dict[str, Any]:
     return deep
 
 
-DIAGNOSES = ("failed_to_extract", "dropped_by_budget", "dropped_by_rerank", "ranked_below_k", "not_retrieved")
+# Answer-level modes (need answer grading), tried in this order once the evidence reached the prompt.
+ANSWER_DIAGNOSES = ("incorrect_format", "incomplete_answer", "wrong_specificity", "failed_to_extract")
+DIAGNOSES = (*ANSWER_DIAGNOSES, "dropped_by_budget", "dropped_by_rerank", "ranked_below_k", "not_retrieved")
 
 
 async def score_item(build: dict[str, Any], cfg: dict[str, Any], deep: dict[str, Any],
@@ -366,9 +398,9 @@ async def score_item(build: dict[str, Any], cfg: dict[str, Any], deep: dict[str,
 
 
 async def run_eval(job: Job, run_id: str, project_id: str, set_id: str, version: dict[str, Any],
-                   answers: bool = False) -> dict[str, Any]:
+                   answers: bool = False, judge: dict[str, str] | None = None) -> dict[str, Any]:
     try:
-        return await _run_eval(job, run_id, project_id, set_id, version, answers)
+        return await _run_eval(job, run_id, project_id, set_id, version, answers, judge)
     except Exception as e:
         async with db.tx() as c:
             await c.execute("UPDATE eval_runs SET status='failed', error=? WHERE id=?", (str(e), run_id))
@@ -376,13 +408,15 @@ async def run_eval(job: Job, run_id: str, project_id: str, set_id: str, version:
 
 
 async def _run_eval(job: Job, run_id: str, project_id: str, set_id: str, version: dict[str, Any],
-                    answers: bool = False) -> dict[str, Any]:
+                    answers: bool = False, judge: dict[str, str] | None = None) -> dict[str, Any]:
+    row = await db.fetch_one("SELECT revision FROM eval_sets WHERE id=?", (set_id,))
     items = await valid_items(set_id)
     build, metrics, results = await score_config(job, project_id, sync.version_config(version), items,
-                                                 answers=answers)
+                                                 answers=answers, judge=judge)
     async with db.tx() as c:
-        await c.execute("UPDATE eval_runs SET status='ready', metrics=?, results=?, build_id=? WHERE id=?",
-                        (db.dumps(metrics), db.dumps(results), build["id"], run_id))
+        await c.execute("UPDATE eval_runs SET status='ready', metrics=?, results=?, build_id=?, set_revision=?"
+                        " WHERE id=?", (db.dumps(metrics), db.dumps(results), build["id"],
+                                        row["revision"] if row else None, run_id))
     return {"eval_run_id": run_id, **{k_: metrics[k_] for k_ in ("hit_at_1", "hit_at_k", "mrr")}}
 
 
@@ -395,10 +429,13 @@ async def valid_items(set_id: str) -> list[dict[str, Any]]:
 
 
 async def score_config(job: Job, project_id: str, cfg: dict[str, Any], items: list[dict[str, Any]],
-                       stage: str | None = "evaluate",
-                       answers: bool = False) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+                       stage: str | None = "evaluate", answers: bool = False,
+                       judge: dict[str, str] | None = None, judged: list[dict[str, Any]] | None = None,
+                       ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
     """Score one pipeline config against eval items -> (build, metrics, per-item results).
-    `answers=True` also generates each answer and has the LLM grade it (costs LLM calls)."""
+    `answers=True` also generates each answer and has an LLM grade it (costs LLM calls); the grader
+    is `judge` = {provider, model}, default the version's own model. `judged`, if given, receives
+    the grader's inputs so a caller can re-judge them (sweep median-of-3)."""
     build = await ready_build(project_id, cfg, job)
     deep = deep_config(cfg)
     results = []
@@ -412,11 +449,14 @@ async def score_config(job: Job, project_id: str, cfg: dict[str, Any], items: li
 
     metrics = M.summarize([r["rank"] for r in results], final_k(cfg))
     metrics["p50_ms"] = round(M.percentile([r["ms"] for r in results], 0.5), 1)
+    metrics["p95_ms"] = round(M.percentile([r["ms"] for r in results], 0.95), 1)
     metrics["context_hit"] = round(sum(r["in_context"] for r in results) / len(results), 4) if results else 0.0
     metrics["ctx_tokens"] = round(sum(r["ctx_tokens"] for r in results) / len(results)) if results else 0
     if answers:
-        await grade_answers(job, cfg, items, results, finals)
-        metrics["answers"] = M.answer_summary(results)
+        todo, label = await grade_answers(job, cfg, items, results, finals, judge)
+        metrics["answers"] = {**M.answer_summary(results), "judge": label}
+        if judged is not None:
+            judged.extend(todo)
     metrics["diagnoses"] = {d: sum(1 for r in results if r["diagnosis"] == d) for d in DIAGNOSES}
     metrics["config"] = config_summary(cfg)
     return build, metrics, results
@@ -433,12 +473,24 @@ async def generate_answer(cfg: dict[str, Any], question: str, final: list[dict[s
     return {"answer": text.strip(), "sources": [c["text"][:GRADE_CONTEXT_CHARS] for c in built["included"]]}
 
 
+def judge_settings(cfg: dict[str, Any], judge: dict[str, str] | None) -> tuple[str, dict[str, Any], str]:
+    """(provider, opts, label) for the answer grader: `judge` if given, else the version's own
+    Generate model. Always temperature 0: Gemini and NVIDIA accept it, and it lowers judge variance."""
+    if judge:
+        provider, opts = judge["provider"], {"model": judge.get("model") or ""}
+    else:
+        provider, opts = llm_settings(cfg)
+    return provider, {**opts, "temperature": 0}, f"{provider}/{opts['model'] or 'default model'}"
+
+
 async def _grade_batch(provider: str, opts: dict[str, Any], batch: list[dict[str, Any]]) -> dict[int, dict[str, Any]]:
     parts = []
     for i, b in enumerate(batch, start=1):
         sources = "\n".join(f"  [{k}] {t}" for k, t in enumerate(b["sources"], start=1)) or "  (none)"
+        facts = "".join(f"\n  {k}. {f}" for k, f in enumerate(b["facets"], start=1))
         parts.append(f"### Item {i}\nQuestion: {b['question']}\nReference answer: {b['gold']}\n"
-                     f"System answer: {b['answer'] or '(empty)'}\nSources:\n{sources}")
+                     + (f"Required facts:{facts}\n" if facts else "")
+                     + f"System answer: {b['answer'] or '(empty)'}\nSources:\n{sources}")
     raw = await complete(provider, opts, GRADE_SYSTEM, "\n\n".join(parts))
     out: dict[int, dict[str, Any]] = {}
     for r in (parse_json(raw) or {}).get("results", []):
@@ -446,31 +498,107 @@ async def _grade_batch(provider: str, opts: dict[str, Any], batch: list[dict[str
             idx = int(r.get("id")) - 1
         except (TypeError, ValueError):
             continue
-        correct, grounded = str(r.get("correct") or "").lower(), str(r.get("grounded") or "").lower()
-        if correct in LEVELS:
-            out[idx] = {"correct": correct, "grounded": grounded if grounded in LEVELS else None}
+        if not 0 <= idx < len(batch):
+            continue
+        g = {k: str(r.get(k) or "").lower() for k in ("correct", "grounded", "relevant", "specificity")}
+        if g["correct"] not in LEVELS:
+            continue
+        out[idx] = {"correct": g["correct"],
+                    **{k: g[k] if g[k] in LEVELS else None for k in ("grounded", "relevant")},
+                    "specificity": g["specificity"] if g["specificity"] in SPECIFICITY else None}
+        facets, facts = batch[idx]["facets"], r.get("facts")
+        if facets and isinstance(facts, list) and len(facts) == len(facets):
+            out[idx]["missing_facts"] = [f for f, v in zip(facets, facts) if str(v).lower() != "yes"]
     return out
 
 
+def format_problem(answer: str, n_sources: int) -> str | None:
+    """Mode 5: the answer breaks the prompt's citation contract — no [n] markers, or numbers
+    outside the sources it was given. A plain "I don't know" needs no citation."""
+    if n_sources == 0:
+        return None
+    nums = [int(x) for m in chat._CITE.finditer(answer) for x in re.split(r"\s*[,;]\s*", m.group(1))]
+    if not nums:
+        return None if _REFUSAL.search(answer) else "no [n] citations"
+    bad = sorted({n for n in nums if not 1 <= n <= n_sources})
+    if bad:
+        return f"cites [{bad[0]}] but only {n_sources} source(s) were given"
+    return None
+
+
+_REFUSAL = re.compile(r"\b(don't|do not|doesn't|does not|cannot|can't|unable to)\b.{0,20}\b(know|contain|say|mention"
+                      r"|provide|find|answer)", re.I)
+
+
+def asks_for_citations(cfg: dict[str, Any]) -> bool:
+    p = cfg["prompt"]
+    return p["type"] != "custom" or bool(re.search(r"\[1\]|\bcit", p.get("system_prompt", ""), re.I))
+
+
+def diagnose_answer(r: dict[str, Any]) -> None:
+    """FR-2.11: one diagnosis per failed question, most upstream first. Retrieval modes (2, 3) are
+    already set; for a wrong/partial answer whose evidence reached the prompt: format (5) →
+    missing facts (7) → judged specificity (6) → otherwise failed to extract (4)."""
+    if r.get("diagnosis") in ANSWER_DIAGNOSES:
+        r["diagnosis"] = None
+    if r.get("diagnosis") or not r.get("in_context") or r.get("correct") not in ("no", "partial"):
+        return
+    if r.get("format_error"):
+        r["diagnosis"] = "incorrect_format"
+    elif r.get("missing_facts"):
+        r["diagnosis"] = "incomplete_answer"
+    elif r.get("specificity") in ("too_vague", "too_verbose"):
+        r["diagnosis"] = "wrong_specificity"
+    else:
+        r["diagnosis"] = "failed_to_extract"
+
+
+async def _judge(job: Job, provider: str, opts: dict[str, Any], todo: list[dict[str, Any]],
+                 stage: str = "grade") -> dict[int, dict[str, Any]]:
+    """Grade every todo entry -> {result index: verdicts}; a failed batch leaves its entries out."""
+    batches = [todo[i:i + GRADE_BATCH] for i in range(0, len(todo), GRADE_BATCH)]
+    graded, _ = await gather_tolerant([_grade_batch(provider, opts, b) for b in batches], job, stage)
+    return {t["i"]: g for b, res in zip(batches, graded) for j, t in enumerate(b) if (g := (res or {}).get(j))}
+
+
 async def grade_answers(job: Job, cfg: dict[str, Any], items: list[dict[str, Any]],
-                        results: list[dict[str, Any]], finals: list[list[dict[str, Any]]]) -> None:
-    """Fill results[i] with answer/correct/grounded. A wrong answer whose evidence was in
-    context is diagnosed `failed_to_extract`: the passage was there, the model missed it."""
+                        results: list[dict[str, Any]], finals: list[list[dict[str, Any]]],
+                        judge: dict[str, str] | None = None) -> tuple[list[dict[str, Any]], str]:
+    """Fill results[i] with answer + verdicts, then diagnose the in-context failures (modes 4–7).
+    Returns (the grader's inputs, judge label)."""
     answered, _ = await gather_tolerant(
         [generate_answer(cfg, it["question"], f) for it, f in zip(items, finals)], job, "answer")
-    todo = [{"i": i, "question": it["question"], "gold": it["gold_answer"], **a}
+    cites = asks_for_citations(cfg)
+    todo = [{"i": i, "question": it["question"], "gold": it["gold_answer"],
+             "facets": db.loads(it.get("facets"), []) or [], **a}
             for i, (it, a) in enumerate(zip(items, answered)) if a]
     for t in todo:
-        results[t["i"]]["answer"] = t["answer"]
-    provider, opts = llm_settings(cfg)
-    batches = [todo[i:i + GRADE_BATCH] for i in range(0, len(todo), GRADE_BATCH)]
-    graded, _ = await gather_tolerant([_grade_batch(provider, opts, b) for b in batches], job, "grade")
-    for b, res in zip(batches, graded):
-        for j, t in enumerate(b):
-            g = (res or {}).get(j)
-            if not g:
-                continue
-            r = results[t["i"]]
-            r.update(g)
-            if g["correct"] == "no" and r["in_context"] and r["diagnosis"] is None:
-                r["diagnosis"] = "failed_to_extract"
+        r = results[t["i"]]
+        r["answer"] = t["answer"]
+        if cites and (problem := format_problem(t["answer"], len(t["sources"]))):
+            r["format_error"] = problem
+    provider, opts, label = judge_settings(cfg, judge)
+    for i, g in (await _judge(job, provider, opts, todo)).items():
+        results[i].update(g)
+        diagnose_answer(results[i])
+    return todo, label
+
+
+def median_verdict(votes: list[str | None]) -> str | None:
+    """Median of yes > partial > no verdicts (an even count takes the lower one); None if no votes."""
+    v = sorted((x for x in votes if x in LEVELS), key=LEVELS.index)
+    return v[len(v) // 2] if v else None
+
+
+async def rejudge(job: Job, cfg: dict[str, Any], judge: dict[str, str] | None, todo: list[dict[str, Any]],
+                  results: list[dict[str, Any]], times: int = 2) -> None:
+    """FR-2.8: grade the same answers `times` more and keep each question's median verdict."""
+    provider, opts, _ = judge_settings(cfg, judge)
+    extra = [await _judge(job, provider, opts, todo, "rejudge") for _ in range(times)]
+    for t in todo:
+        r = results[t["i"]]
+        if not r.get("correct"):
+            continue
+        for key in ("correct", "grounded", "relevant"):
+            r[key] = median_verdict([r.get(key), *(e.get(t["i"], {}).get(key) for e in extra)])
+        diagnose_answer(r)

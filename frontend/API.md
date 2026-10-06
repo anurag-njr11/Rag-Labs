@@ -141,6 +141,15 @@ interface Document {
   created_at: string
   chunks: number | null        // in the ACTIVE index; null = not indexed there yet
   index_error: string | null   // active index couldn't process this doc
+  last_modified: string | null // ISO; upload's File.lastModified or the URL's HTTP Last-Modified
+  okf: DocumentOkf & {usage_count: number}  // usage_count: computed — this doc's chunks in recorded runs' retrieval results
+}
+// OKF fields (FR-2.30): from Markdown YAML front matter at upload, or PATCH below. Not index config: never rebuilds.
+interface DocumentOkf {
+  status?: string               // e.g. draft | published | deprecated (≤40 chars)
+  stale_after?: string          // ISO date
+  verified?: boolean | string   // true or an ISO date
+  sources?: string[]            // URLs or references, ≤50
 }
 interface ParseQuality {
   score: 'good' | 'fair' | 'poor'
@@ -154,8 +163,9 @@ interface ParseQuality {
 | Method & path | Body | Returns |
 |---|---|---|
 | `GET /api/projects/{id}/documents` | | `Document[]` |
-| `POST /api/projects/{id}/documents?build=true` | multipart, field `files` repeated | `201 {created: {id, filename}[], duplicates: {id, filename}[], errors: {filename, error}[], job_id: string\|null}` |
+| `POST /api/projects/{id}/documents?build=true` | multipart, field `files` repeated; optional field `last_modified` repeated, one per file in the same order (epoch ms, e.g. `File.lastModified`; `0` = unknown) | `201 {created: {id, filename}[], duplicates: {id, filename}[], errors: {filename, error}[], job_id: string\|null}` |
 | `POST /api/projects/{id}/documents/url` | `{url, sitemap?: boolean, max_pages?: number, build?: boolean = true}` | `202 {job_id}` — job fetches, then builds (`build: false` = fetch only; the job's result has no `build`) |
+| `PATCH /api/projects/{id}/documents/{doc_id}/metadata` | `DocumentOkf` (replaces all OKF fields; omit one to clear it) | `Document` · 404 · 422 bad date |
 | `DELETE /api/projects/{id}/documents/{doc_id}` | | `204` (removed from every index) |
 | `POST /api/projects/{id}/documents/{doc_id}/reindex` | | `{job_id}` |
 | `GET /api/projects/{id}/documents/{doc_id}/chunks?limit=200` | | `{chunks: {id, ordinal, text, token_count, is_table, page_start, page_end, heading_path}[], total}` |
@@ -194,37 +204,57 @@ set scores any version, whatever its chunking. Status is `running | ready | fail
 | `POST /sets` | `{size?: 5–100 = 30, version_id?}` | 201 `{eval_set: EvalSet, job_id}` · 409 no documents |
 | `GET /sets` | | `EvalSet[]` newest first |
 | `GET /sets/{set_id}` | | `EvalSet & {items: EvalItem[]}` (rejected items included, `valid: false` + `reject_reason`) |
-| `POST /sets/{set_id}/runs` | `{version_id?, answers?: false}` (default active) | 201 `{run: EvalRun, job_id}` · 409 set not ready. `answers: true` also writes each answer with the version's prompt+model and LLM-grades it (extra stages `answer`, `grade`) |
+| `POST /sets/{set_id}/runs` | `{version_id?, answers?: false, judge?: {provider, model?}}` (default active) | 201 `{run: EvalRun, job_id}` · 409 set not ready · 422 unknown judge provider. `answers: true` also writes each answer with the version's prompt+model and LLM-grades it (extra stages `answer`, `grade`); the grader is `judge` (any provider from `GET /providers`, `model: ''` = its default), else the version's own Generate model. Judge calls use temperature 0 |
 | `GET /runs?set_id=` | | `EvalRun[]` oldest first (no `results`) |
 | `GET /runs/{run_id}` | | `EvalRun & {results: EvalItemResult[]}` |
 | `GET /runs/{run_id}/fixes` | | `EvalFix[]` — one-click fixes for the run's diagnoses: `{diagnosis, config, changes: Change[], base_version}`. Save `config` via `POST /versions` |
-| `POST /sets/{set_id}/items` | `{question, gold_answer, evidence, document_id}` | 201 `EvalItem` (`valid: true`, `gold_chunk_id: ''`) · 422 evidence not found in that document's chunks / unknown document · 409 set not ready |
-| `PATCH /sets/{set_id}/items/{item_id}` | `{question?, gold_answer?, evidence?, valid?}` | `EvalItem`. `valid: false` drops it from scoring (`reject_reason: 'removed by hand'`); `valid: true` restores it (evidence re-checked) |
+| `POST /sets/{set_id}/items` | `{question, gold_answer, evidence, document_id, facets?: string[]}` | 201 `EvalItem` (`valid: true`, `gold_chunk_id: ''`) · 422 evidence not found in that document's chunks / unknown document · 409 set not ready |
+| `PATCH /sets/{set_id}/items/{item_id}` | `{question?, gold_answer?, evidence?, facets?, valid?}` | `EvalItem`. `valid: false` drops it from scoring (`reject_reason: 'removed by hand'`); `valid: true` restores it (evidence re-checked) |
 | `DELETE /sets/{set_id}/items/{item_id}` | | 204 |
-| `GET /sets/{set_id}/export.csv` | | CSV download: `question,gold_answer,evidence,document,valid,reject_reason` |
-| `POST /sets/{set_id}/import` | `{csv: string}` | `{added, error_count, errors: {row, message}[] (≤50)}` — columns `question`, `gold_answer` (or `answer`), `evidence`, `document` (file name); rows with `valid=no` skipped; 422 missing columns |
+| `GET /sets/{set_id}/export.csv` | | CSV download: `question,gold_answer,evidence,document,valid,reject_reason,facets` (`facets` joined with ` \| `) |
+| `POST /sets/{set_id}/import` | `{csv: string}` | `{added, error_count, errors: {row, message}[] (≤50)}` — columns `question`, `gold_answer` (or `answer`), `evidence`, `document` (file name), optional `facets` (`\|`-separated); rows with `valid=no` skipped; 422 missing columns |
 
 ```ts
 EvalSet = {id, project_id, version_id, build_id, status, size_requested, error, created_at,
-           stats: {sampled, generated, kept, too_generic, bad_evidence, other}}
+           stats: {sampled, generated, kept, too_generic, bad_evidence, other},
+           revision,              // +1 on every add / edit / drop / restore / delete / imported row (FR-2.5)
+           corpus_sha,            // sha256 of the sorted document content hashes at generation (null on older sets)
+           corpus_changed}        // boolean: documents differ now; null when corpus_sha wasn't recorded
 EvalItem = {id, ordinal, question, gold_answer, evidence, document_id, document, gold_chunk_id,
-            valid, reject_reason, closed_book_answer}
+            valid, reject_reason, closed_book_answer,
+            facets: string[]}     // 0-4 required facts (FR-2.6); [] on older items
 EvalRun = {id, eval_set_id, version_id, version, build_id, status, error, created_at,
+           set_revision,   // the set's revision when scored (null on older runs) — compare with EvalSet.revision
            metrics: {n, k, hit_at_1, hit_at_3, hit_at_k, mrr, p50_ms,
+                     ndcg_at_k?, p95_ms?,   // binary-relevance nDCG@k; 95th-percentile retrieval latency
                      context_hit?,   // share whose evidence survives the prompt's context budget
                      ctx_tokens?,    // mean context tokens sent to the model per question
                      answers?: {n, ungraded, correct, partial, wrong, correct_rate,
-                                correct_ci: [lo, hi] /* 95% Wilson */, grounded_rate},  // answers: true only
-                     diagnoses: {failed_to_extract?, dropped_by_budget?, dropped_by_rerank, ranked_below_k, not_retrieved},
+                                correct_ci: [lo, hi] /* 95% Wilson */, grounded_rate,
+                                relevant_rate?, judge?: 'provider/model',
+                                rejudged?: true /* sweep cells only: median of 3 judgings */},  // answers: true only
+                     diagnoses: {incorrect_format?, incomplete_answer?, wrong_specificity?, failed_to_extract?,
+                                 dropped_by_budget?, dropped_by_rerank, ranked_below_k, not_retrieved},
                      config: {parse, chunk, embed, store, retrieve, top_k, rerank}} | null}
 EvalItemResult = {item_id, rank: number | null, hit,
-                  diagnosis: 'failed_to_extract' | 'dropped_by_budget' | 'dropped_by_rerank' | 'ranked_below_k' | 'not_retrieved' | null,
+                  diagnosis: 'incorrect_format' | 'incomplete_answer' | 'wrong_specificity' | 'failed_to_extract'
+                           | 'dropped_by_budget' | 'dropped_by_rerank' | 'ranked_below_k' | 'not_retrieved' | null,
                   deep_rank, in_context?, ctx_tokens?, ms, top: {id, document, heading_path, hit}[],
-                  answer?, correct?: 'yes'|'partial'|'no', grounded?: 'yes'|'partial'|'no'|null}   // answers: true only
+                  // answers: true only
+                  answer?, correct?: 'yes'|'partial'|'no', grounded?: 'yes'|'partial'|'no'|null,
+                  relevant?: 'yes'|'partial'|'no'|null, specificity?: 'ok'|'too_vague'|'too_verbose'|null,
+                  missing_facts?: string[],   // facets the judge found missing (items with facets)
+                  format_error?: string}      // broken citation contract, e.g. "no [n] citations"
 ```
 `dropped_by_budget` is set on a **hit** (rank ≠ null) whose chunk the prompt packer cut for
 `prompt.max_context_tokens`. `failed_to_extract` (answer grading only) is a hit whose evidence was in
-the prompt but whose answer was graded wrong. Fields marked `?` are absent on runs scored before they existed.
+the prompt but whose answer was graded wrong or partial. Every failed question gets exactly one diagnosis
+(FR-2.11): retrieval modes first (`not_retrieved`/`ranked_below_k`/`dropped_by_rerank` → `dropped_by_budget`), then,
+for a wrong/partial answer whose evidence was in the prompt: `incorrect_format` (deterministic: no `[n]` citation,
+or a number outside the sources given; only when the prompt asks for citations) → `incomplete_answer` (judge says
+a required fact is missing) → `wrong_specificity` (judge: too vague / too verbose) → `failed_to_extract`.
+`GET /runs/{id}/fixes` returns nothing for the four answer-level modes (no single setting fixes them).
+Fields marked `?` are absent on runs scored before they existed.
 
 ### Sweeps
 
@@ -236,7 +266,7 @@ Cells live inside the sweep; one becomes a real version only when promoted (`POS
 | Method & path | Body | Returns |
 |---|---|---|
 | `GET /sweep-axes` | | `{axes: SweepAxis[], max_cells: 48}` — suggested axes (any `slot.field` is accepted) |
-| `POST /sweeps` | `{set_id, version_id?, axes: {path, values}[], auto_optimize?: false}` (1–4 axes) | 201 `{sweep: Sweep, job_id}` (job kind `sweep`) · 409 set not ready · 422 bad axis / over `max_cells` / no valid config |
+| `POST /sweeps` | `{set_id, version_id?, axes: {path, values}[], auto_optimize?: false, judge?: {provider, model?}}` (1–4 axes) | 201 `{sweep: Sweep, job_id}` (job kind `sweep`) · 409 set not ready · 422 bad axis / over `max_cells` / no valid config |
 | `GET /sweeps` | | `Sweep[]` newest first |
 | `GET /sweeps/{sweep_id}` | | `Sweep` |
 | `POST /sweeps/{sweep_id}/cancel` | | `Sweep` — stops after the current cell; finished cells stay, the rest become `skipped` |
@@ -252,7 +282,9 @@ Sweep = {id, project_id, eval_set_id, base_version_id, base_version, axes: {path
                  error, metrics?: EvalRun['metrics'], build_id?, pareto?: boolean}[]}
 ```
 `auto_optimize: true` → after all cells, the top 25% by MRR (≤5) are re-scored with answer grading
-(stage `grade_cells`); their `metrics.answers` fills in, or `grade_error` is set. `pareto` = on the frontier of MRR (higher) vs. `ctx_tokens` (lower). Varying `chunk.size` without
+(stage `grade_cells`); their `metrics.answers` fills in, or `grade_error` is set. Then, if any graded cell's 95%
+interval overlaps the leader's (best `correct_rate`), the leader and those cells are judged twice more (stage
+`rejudge`) and keep each question's median verdict; their `metrics.answers.rejudged = true` (FR-2.8). `pareto` = on the frontier of MRR (higher) vs. `ctx_tokens` (lower). Varying `chunk.size` without
 `chunk.overlap` keeps the base overlap/size ratio. `invalid` cells carry the validation message.
 
 ## Corpus Health
@@ -261,11 +293,13 @@ Prefix `/api/projects/{id}/health`. A report analyses one version's build: real 
 (Playground/API history + pasted) → coverage verdicts and a gap backlog; cross-document passage
 pairs → duplicates and contradictions; and which chunks/documents those questions ever retrieved.
 Status `running | ready | failed`. Job kind `health`, progress stages `index?` → `retrieve` →
-`judge` → `scan` → `contradictions`.
+`judge` → `recheck` → `scan` → `contradictions`. `recheck` re-judges each gap against the top 15 of a
+deep retrieval (one call per 5 gaps): answered → a retrieval miss, not a content gap. Staleness uses
+documents' OKF `status`/`stale_after` and `last_modified` (see Documents).
 
 | Method & path | Body | Returns |
 |---|---|---|
-| `POST /reports` | `{version_id?, questions?: string[] (≤500)}` | 201 `{report: HealthReport, job_id}` · 409 no documents |
+| `POST /reports` | `{version_id?, questions?: string[] (≤500), stale_days?: number (1–36500, default 365)}` | 201 `{report: HealthReport, job_id}` · 409 no documents |
 | `GET /reports` | | `HealthReport[]` newest first, with `summary` (no `result`) |
 | `GET /reports/{rid}` | | `HealthReport` with `result` |
 | `GET /reports/{rid}/report.md` | | Markdown download (`Content-Disposition: attachment`) · 409 not ready |
@@ -273,20 +307,25 @@ Status `running | ready | failed`. Job kind `health`, progress stages `index?` �
 ```ts
 HealthReport = {id, project_id, version_id, version, build_id, status, error, created_at,
                 result?: HealthResult | null,
-                summary?: {n, covered, partial, missing, covered_rate, ungraded, sources,
-                           topics, contradictions, duplicates, unused_documents} | null}
+                summary?: {n, covered, partial, missing, covered_rate, ungraded, retrieval_miss?, sources,
+                           topics, contradictions, duplicates, unused_documents, stale_documents} | null}
 Excerpt = {chunk_id, document_id, document, heading_path, page_start, text /* ≤600 chars */}
 HealthResult = {
-  coverage: {summary: {n, covered, partial, missing, covered_rate, ungraded, sources: {pasted, history}},
-             topics: {topic, count, missing, partial,
+  coverage: {summary: {n, covered, partial, missing, covered_rate, ungraded, retrieval_miss, sources: {pasted, history}},
+             topics: {topic, count, missing, partial,      // content gaps only, biggest first
                       questions: {question, verdict: 'covered'|'partial'|'missing', source: 'pasted'|'history',
-                                  passages: Excerpt[] /* closest one */}[]}[]}   // biggest first
+                                  passages: Excerpt[] /* closest one */}[]}[],
+             retrieval_misses: {question, verdict: 'partial'|'missing', source}[]}  // deep top 15 answers it
   duplicates: {a: Excerpt, b: Excerpt, similarity}[]           // cosine ≥ 0.97, different documents
   contradictions: {a, b, similarity, explanation}[]              // LLM-confirmed among the 30 closest pairs
   pairs_checked: number
   usage: {questions, chunks, chunks_used, unused_documents,
           documents: {document_id, document, chunks, used}[]}  // least used first
+  staleness: {max_age_days, documents_checked, with_dates /* docs with last_modified or stale_after */,
+              documents: {document_id, document, reasons: ('deprecated'|'past_stale_after'|'old')[],
+                          status, stale_after, last_modified, age_days: number|null}[]}  // oldest first
 }
+// Reports made before 2026-10-06 lack `retrieval_misses`, `summary.retrieval_miss` and `staleness`.
 ```
 
 ## Chat
@@ -324,6 +363,8 @@ interface RetrievedChunk {
   in_context: boolean          // made it into the prompt (false = dropped for the token budget)
   context_n: number | null     // its [n] number in the prompt
   cited?: boolean              // present on `done`
+  window?: number[]            // retrieve.context_window > 0: ordinals merged into `text` (this chunk ± neighbours,
+                               // same document); `token_count` covers the merged text, `id`/`ordinal` stay the hit's
 }
 interface Citation {
   n: number                    // matches [n] in the answer text
@@ -334,9 +375,14 @@ interface Citation {
 interface TraceStep {
   seq: number
   step: 'embed_query' | 'dense_search' | 'keyword_search' | 'exact_search' | 'fuse' | 'pin' | 'mmr'
-      | 'rerank' | 'prompt' | 'generate'
+      | 'rerank' | 'prompt' | 'generate' | 'query_expansion' | 'context_window'
   ms: number; tokens_in: number; tokens_out: number; cost_usd: number
   payload: Record<string, unknown>  // e.g. {hits: 12, store: 'faiss', exact: true} / {included: 5, dropped: 2}
+                                    // query_expansion (retrieve.query_expansion ≠ none; carries the LLM tokens):
+                                    //   {mode, provider, model, queries: string[], passage: string|null,
+                                    //    fallback: bool, error?, cached?}; with multi_query, dense_search /
+                                    //   keyword_search repeat per rewrite with {query: 1..n}
+                                    // context_window: {window, chunks_added}
                                     // generate: {provider, model, first_token_ms, finish_reason,
                                     //            reasoning_tokens (number|null), reasoning_effort}
 }

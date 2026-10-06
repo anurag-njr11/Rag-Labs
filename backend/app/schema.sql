@@ -34,6 +34,15 @@ CREATE TABLE IF NOT EXISTS document_metadata (
 );
 CREATE INDEX IF NOT EXISTS ix_document_metadata_project ON document_metadata(project_id);
 
+-- User-facing document facts (PRD FR-2.30): OKF fields from Markdown front matter or the
+-- Documents tab, and the source's last-modified date. Separate from document_metadata, which
+-- the builder overwrites on every parse. Not part of any index config: edits never rebuild.
+CREATE TABLE IF NOT EXISTS document_okf (
+    document_id   TEXT PRIMARY KEY REFERENCES documents(id) ON DELETE CASCADE,
+    metadata      TEXT NOT NULL DEFAULT '{}',          -- JSON: status, stale_after, verified, sources
+    last_modified TEXT                                 -- ISO datetime (upload File.lastModified / HTTP Last-Modified)
+);
+
 -- Immutable. An edit inserts a new row.
 CREATE TABLE IF NOT EXISTS pipeline_versions (
     id                TEXT PRIMARY KEY,
@@ -169,7 +178,9 @@ CREATE TABLE IF NOT EXISTS eval_sets (
     size_requested INTEGER NOT NULL,
     stats          TEXT,                              -- JSON
     error          TEXT,
-    created_at     TEXT NOT NULL
+    created_at     TEXT NOT NULL,
+    revision       INTEGER NOT NULL DEFAULT 0,        -- +1 on every hand edit / import (FR-2.5)
+    corpus_sha     TEXT                               -- sha256 of sorted document content hashes at generation
 );
 CREATE INDEX IF NOT EXISTS ix_eval_sets_project ON eval_sets(project_id, created_at);
 
@@ -184,7 +195,8 @@ CREATE TABLE IF NOT EXISTS eval_items (
     gold_chunk_id      TEXT NOT NULL,
     valid              INTEGER NOT NULL DEFAULT 1,
     reject_reason      TEXT,
-    closed_book_answer TEXT
+    closed_book_answer TEXT,
+    facets             TEXT                           -- JSON list of required facts (FR-2.6)
 );
 CREATE INDEX IF NOT EXISTS ix_eval_items_set ON eval_items(eval_set_id, ordinal);
 
@@ -198,7 +210,8 @@ CREATE TABLE IF NOT EXISTS eval_runs (
     metrics     TEXT,                                 -- JSON
     results     TEXT,                                 -- JSON: per-item rank/diagnosis
     error       TEXT,
-    created_at  TEXT NOT NULL
+    created_at  TEXT NOT NULL,
+    set_revision INTEGER                              -- eval_sets.revision this run scored
 );
 CREATE INDEX IF NOT EXISTS ix_eval_runs_set ON eval_runs(eval_set_id, created_at);
 

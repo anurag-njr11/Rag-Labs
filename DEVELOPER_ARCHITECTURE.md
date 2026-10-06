@@ -352,12 +352,13 @@ Size/overlap unit: `unit: "chars"|"tokens"`. "Tokens" is **not** a real model to
 | `recursive` | Tries separators in order `["\n\n","\n",". "," ",""]`; recursively splits oversized pieces on the next separator; final fallback is a hard `fixed_spans` cut with `overlap=0`; then greedily packs pieces up to `size` via `merge_pieces` | Overlap reconstructed from whole trailing separator-delimited pieces (coarser than the configured byte count) |
 | `sentence` | Splits on `_SENTENCE_BREAK` (terminal punctuation + optional closing quote/bracket + whitespace, or blank-line breaks); oversized sentences sub-split word-level, then hard-cut; packed via the same `merge_pieces` | Same piece-granularity overlap as recursive |
 | `structure_aware` (recommended for docs/manuals) | Overrides `segments()`: starts a new section at every heading with `level <= heading_depth` (default 3); deeper headings tracked but don't split; each section then runs `recursive_spans` internally for oversized sections. Optionally prefixes `"Section: A > B\n\n"` (`include_heading_in_text`) | Same as recursive, per-section |
+| `semantic` | Splits the flowing segment into sentences (`sentences()`, same `_SENTENCE_BREAK`), embeds them with a **local fastembed model** (`model` field, default bge-small; `embed_sentences()` reuses `embed._load_fastembed`), and breaks between neighbours whose cosine distance is **above** the `breakpoint_percentile`-th distance in that document (strict `>`, so flat text never splits). Groups longer than `size` ("Maximum chunk size") run `recursive_spans`; `min_chunk_size` (default 100) merges small groups. Deterministic: same model + text → same vectors → same breakpoints. Sentence vectors aren't cached separately; the chunk-artifact cache covers rebuilds | Only inside oversized groups (recursive) |
 
 `absorb_heading_only()` runs after every strategy and folds any chunk that is *only* a heading line into the following chunk (or the previous one if it's the last chunk in the segment) — no strategy can ever emit a heading-only chunk. `merge_small()` folds sub-`min_chunk_size` pieces into a neighbor.
 
 **Persisted chunk fields** (`chunks` table): `text`, `text_sha` (sha256 of chunk text — the vector-cache key), `token_count` (`approx_tokens`, computed at record time, not inside the chunker itself), `is_table`, `page_start`, `page_end`, `heading_path`, `ordinal` (enumeration order within the document).
 
-**Rebuild requirement**: `size`, `overlap`, `unit`, chunking `type`, and all `StructureConfig`/`RecursiveConfig` fields are `rebuild`-effect (inherited from the `chunk` slot's default effect) — any change forces a new `index_config_hash` and thus a new `index_builds` row (see Part 22).
+**Rebuild requirement**: `size`, `overlap`, `unit`, chunking `type`, and all `StructureConfig`/`RecursiveConfig`/`SemanticConfig` fields (incl. `breakpoint_percentile` and the sentence `model`) are `rebuild`-effect (inherited from the `chunk` slot's default effect) — any change forces a new `index_config_hash` and thus a new `index_builds` row (see Part 22).
 
 ---
 
@@ -418,7 +419,8 @@ store_path(project_id, build_id) = DATA_DIR/stores/<project_id>/<build_id>/
 
 ```mermaid
 flowchart LR
-    Q["question"] --> QE["embed_query() — only if dense∈paths or mmr"]
+    Q["question"] --> QX["expand_query() — multi_query rewrites / hyde passage (optional LLM call)"]
+    QX --> QE["embed_query() — only if dense∈paths or mmr"]
     Q --> KW["keyword_search() — SQLite FTS5 bm25()"]
     Q --> EX["exact_search() — ingest/lookup.query_keys() + lookup_index table"]
     QE --> D["dense() — store.search() + min_score filter"]
@@ -429,6 +431,7 @@ flowchart LR
     PIN --> MMRSTEP["mmr() over top_k*4 pool — optional"]
     MMRSTEP --> TOPK["top_k slice"]
     TOPK --> LOAD["load_chunks() — join chunks+documents"]
+    LOAD --> WIN["add_neighbours() — context_window > 0 (optional)"]
 ```
 
 Retriever type picks which paths run: `dense=(dense,)`, `keyword=(keyword,)`, `hybrid=(dense,keyword)`, `fused=(dense,keyword,exact)` (default/recommended). Dense, keyword and exact searches run **concurrently** via `asyncio.gather`.
@@ -470,7 +473,17 @@ Only `min_score` (dense-path only, inclusive `>=` comparison, `0.0` disables). N
 ### top_k
 Plain slice `fused[:top_k]` after pin/MMR — final count **before** reranking.
 
-All eleven `RetrieveConfig` fields (`top_k`, `fusion`, `rrf_k`, `dense_weight`, `keyword_weight`, `exact_weight`, `candidates`, `min_score`, `pin_definitions`, `mmr`, `mmr_lambda`) are `instant`-effect — none ever appear in `rebuild_part()`.
+### Query expansion (`query_expansion`, default `none`)
+`expand_query()` makes one non-streamed call through the version's Generate node (`ProviderGenerator.complete()`, temperature 0, same provider/model/reasoning effort) and emits a `query_expansion` trace step with its tokens/ms/cost.
+- **`multi_query`**: the model writes `expansion_queries` (default 3) rewrites. Dense and keyword search run once per query (lists `dense`, `dense~1`, …, `keyword~1`, …; trace steps repeat with `{query: i}`); exact stays on the original question. All lists are fused together (sorted by key first, so float sums don't depend on completion order; each list takes its base path's weight). `scores`/`ranks`/`found_by` report each base path's best rank over the question and its rewrites, so the result shape is unchanged.
+- **`hyde`**: the model writes a short hypothetical answer; it's embedded with `embed_documents()` (it is a passage) and replaces the question vector for the dense path and MMR. Keyword/exact use the question. No call when the retriever has no dense path.
+- **Fail-soft**: any LLM error or empty output → the plain question, a `query_expansion` step with `{fallback: true, error}`, results identical to `none`.
+- Expansions are cached in-process per `(mode, n, provider, model, question)` (`_expansions`, cleared at 2048 entries), so eval's deep pass and every sweep cell search with the same rewrites, and repeat questions cost nothing. Eval/sweep scoring with expansion on **does** make LLM calls (one per question per process).
+
+### Context window (`context_window`, 0–3, default 0)
+The sentence-window / auto-merging equivalent, without a parent-child index: after the top-k is chosen, `add_neighbours()` replaces each hit's `text` with its own chunk plus `context_window` chunks either side from the same document (`chunks.ordinal`, same build), joined with blank lines; `token_count` is summed and `window` lists the ordinals. Ranking, ids and `ordinal` are unchanged; rerank, the prompt packer, citations and eval's evidence check all see the merged text (eval counts a hit when the evidence sits in a neighbour that reaches the prompt). Known ceiling: chunk overlap repeats at each seam, and adjacent hits repeat each other's neighbours.
+
+All `RetrieveConfig` fields (`top_k`, `fusion`, `rrf_k`, `dense_weight`, `keyword_weight`, `exact_weight`, `candidates`, `min_score`, `pin_definitions`, `mmr`, `mmr_lambda`, `query_expansion`, `expansion_queries`, `context_window`) are `instant`-effect — none ever appear in `rebuild_part()`.
 
 ---
 
@@ -1178,7 +1191,7 @@ Per `PRD.md`/`IDEAS.md`, Phase 1 (this codebase) explicitly excludes evaluation,
 - **Evaluation — BUILT (Part 37)**: auto-generated eval sets + deterministic retrieval scoring + per-miss diagnosis + version comparison now exist (`eval_sets`/`eval_items`/`eval_runs`, `engine/evaluate.py`, `/api/projects/{id}/eval/*`, Evaluate tab). It deliberately does **not** go through `engine/chat.py:answer()`: it calls `retrieval.retrieve()` + `retrieval.rerank()` directly (no generation, no `runs` rows), so scoring costs no LLM calls. What's still missing: answer-quality scoring (LLM judge / citation support) on top, and a regression guard that auto-runs the set on every new version.
 - **Sweeps / leaderboard — BUILT (Part 38)**: grid sweeps, Pareto leaderboard (MRR vs. context tokens/query), promote. What's missing: Auto-Optimize (successive halving into an LLM judge), MTEB-seeded embedder candidates, real $ cost (blocked on `cost_usd`), config-prior fingerprint logging.
 - **Deterministic metrics / LLM judging**: `extract_citations()`'s heuristic span-matching (Part 20) is the closest thing to an existing "grounding" signal, but it's not exposed as a metric — Phase 2 could compute citation-coverage/precision from the same data already in `runs.result` without new instrumentation.
-- **Corpus Health — BUILT (Part 39)**: coverage gaps from real questions, duplicates, contradictions, unused content, Markdown export. Missing: staleness (needs last-modified / OKF `stale_after` metadata), OKF field adoption (FR-2.30), and splitting a gap into "content missing" vs. "retrieval miss".
+- **Corpus Health — BUILT (Part 39)**: coverage gaps from real questions (split into content missing vs. retrieval miss), duplicates, contradictions, unused content, staleness, OKF document metadata, Markdown export.
 - **Corpus analysis**: `ingest/document_analyzer.py`'s `DocumentMetadata`/`aggregate_corpus_metadata()` (Part 11) already computes per-document and per-corpus signals (code density, structure density, language, domain, OCR-need) — this is real, working infrastructure a "Corpus Health" Phase 2 feature could extend directly rather than build from scratch.
 - **Regression guard — BUILT**: `POST /versions` with `build=true` scores the new version on the newest ready set (`api/eval.py:regression_check`); the Evaluate run history shows ▲/▼ vs. the previous run. It compares against the previous run, not specifically the active/promoted version.
 - **Coverage gaps** come from real questions, not from the eval set's `not_retrieved` misses: eval questions are written from existing chunks, so their content always exists — a `not_retrieved` miss is a retrieval failure, never a corpus gap.
@@ -1209,7 +1222,7 @@ Per `PRD.md`/`IDEAS.md`, Phase 1 (this codebase) explicitly excludes evaluation,
 - **Pareto uses context tokens, not dollars**: `cost_usd` is a stub (above), so a sweep's cost axis is mean context tokens per question — deterministic and proportional to generation input cost, but it ignores output tokens and per-model prices.
 
 - **Answer grades are single LLM judgements** (Part 37): discrete verdicts with a Wilson interval, but no median-of-3 re-judging yet (PRD FR-2.8), and the grader is the version's own Generate model grading its own answers — a stronger, separate judge model would be less biased.
-- **Corpus Health verdicts are LLM judgements** (Part 39): discrete and batched, but not reproducible run to run, and a "missing" verdict can't tell absent content from a retrieval miss. The duplicate scan and usage counts are deterministic.
+- **Corpus Health verdicts are LLM judgements** (Part 39): discrete and batched, but not reproducible run to run. A gap is labelled a retrieval miss only if the deep top 15 answer it, so a fact ranked below 15 still reads as missing content. The duplicate scan and usage counts are deterministic.
 
 **LOW (evaluation)**
 - `engine/evaluate.py:_llm_slots` is a module-level `asyncio.Semaphore(3)` shared by every eval job in the process — two concurrent generations share 3 LLM slots.
@@ -1368,10 +1381,21 @@ Pure function; returns a full new config or `None`. `ranked_below_k` → `top_k 
 Retrieval scoring above is unchanged and runs first; `score_item` hands each item's `final` list back (as `_final`, popped by `score_config`). Then `grade_answers()`:
 1. **Answer** (stage `answer`): `generate_answer()` packs the prompt with the version's `prompt` node and streams the version's `generate` node to completion — the chat path minus SSE, `runs` rows and citations. Concurrency via `gather_tolerant` and the shared 3-slot `_llm_slots`; a failed generation leaves that item ungraded.
 2. **Grade** (stage `grade`): `GRADE_SYSTEM`, 5 items per call (question, gold answer, system answer, the packed sources ≤800 chars each) → `correct` and `grounded` ∈ `yes|partial|no` (discrete, FR-2.7). Results get `answer`, `correct`, `grounded`.
-3. **Mode 4**: `correct == "no"` while the evidence was `in_context` and no retrieval diagnosis applies → `diagnosis = "failed_to_extract"`.
+3. **Modes 4–7**: a `no`/`partial` answer while the evidence was `in_context` and no retrieval diagnosis applies → `diagnose_answer()` (see "Facets, modes 5–7" below).
 4. `metrics["answers"] = evalmetrics.answer_summary(results)` → `{n, ungraded, correct, partial, wrong, correct_rate, correct_ci, grounded_rate}`; `correct_ci` is a 95% Wilson interval (`evalmetrics.wilson`) — at 13 questions, 12 correct reads 92% (67–99%).
 
 Cost: one generation per question + one grading call per 5. The Evaluate tab's **Also grade answers** switch sends `answers: true`; the scorecard adds Answers-correct (with CI and ▲/▼) and Grounded tiles, and per-question rows show the grade badge and the pipeline's answer.
+
+### Facets, modes 5–7, judge choice, versioning (PRD FR-2.5, 2.6, 2.8, 2.11, 2.14)
+- **Facets**: `GEN_SYSTEM` also asks for 1–4 short required facts per question (same call); `clean_facets()` trims, drops blanks/case-duplicates, caps at 4. Stored as JSON in `eval_items.facets`; editable (`facets` on add/PATCH, CSV column `facets`, `|`-separated). Old items have none and grade as before.
+- **One judge call, more verdicts**: `GRADE_SYSTEM` returns, per item, `correct`/`grounded`/`relevant` (`yes|partial|no`), `specificity` (`ok|too_vague|too_verbose`) and, when the item has facets, `facts` (one `yes|no` per facet) → `missing_facts`. A `facts` list of the wrong length is ignored. `answer_summary` adds `relevant_rate`; `metrics.answers.judge` names the grader.
+- **Diagnosis (`diagnose_answer`)**: retrieval modes are set first by `score_item`. For a `no`/`partial` answer whose evidence was `in_context` and no retrieval diagnosis: `format_error` (mode 5, deterministic `format_problem()`: no `[n]` marker — unless the answer is a refusal like "I don't know" — or a number outside `1..len(included)`; only when `asks_for_citations(cfg)`, i.e. a style prompt or a custom prompt that mentions `[1]`/cite) → `missing_facts` (mode 7 `incomplete_answer`) → `specificity` not ok (mode 6 `wrong_specificity`) → `failed_to_extract` (mode 4). Deterministic signals before judged ones; mode 4 is the residual. Exactly one diagnosis per failed question (FR-2.11). `suggest_fix` returns `None` for the answer modes; the UI shows the prescribed fix text.
+- **Judge model** (`judge_settings`, closes FOLLOW_UPS #2): `run_eval`/`score_config`/`run_sweep` take `judge = {provider, model}`; `None` = the version's Generate provider/model (backward compatible). Judge calls send `temperature=0` (via `opts`; `complete()` defaults to 0.3 for generation). The Evaluate tab's **Judge model** picker (`JudgePicker.tsx`, providers from `/providers`, models from `/providers/{name}/models`) applies to answer-graded runs and Auto-Optimize sweeps.
+- **Median-of-3 (FR-2.8)**: `score_config(..., judged=list)` hands back the grader inputs. After Auto-Optimize grading, `sweep.near_leader()` picks the leader by `correct_rate` plus every graded cell whose Wilson interval overlaps it (empty when the leader is clear). `evaluate.rejudge()` grades those answers twice more (stage `rejudge`) and keeps each question's `median_verdict` for correct/grounded/relevant (an even count takes the lower verdict), re-runs `diagnose_answer`, and the cell's summary gets `rejudged: true`. Cost: ≤ 5 cells × 2 × ⌈n/5⌉ extra calls, only when the call is close.
+- **Metrics**: `summarize()` adds `ndcg_at_k` (one relevant passage per question, so nDCG = 1/log2(rank+1) for rank ≤ k, 0 otherwise); `score_config` adds `p95_ms`. Both deterministic and shown in the sweep leaderboard.
+- **Versioning (light)**: `eval_sets.revision` +1 on every add / PATCH / delete / imported row; `eval_sets.corpus_sha` = `corpus_sha(project)` (sha256 of sorted `documents.content_sha`) at generation; `eval_runs.set_revision` = the revision scored. API adds `corpus_changed` (null for older sets). UI: "edited since this run" badge in Run history, "Documents changed since this set was generated" banner on the set card, revision in the card's subtitle. No history table: runs keep their per-item results.
+- **Columns on existing tables**: `db._add_columns()` runs after `schema.sql` and adds any missing column in `ADDED_COLUMNS` (`PRAGMA table_info` check + `ALTER TABLE ADD COLUMN`), so existing `app.db` files upgrade in place.
+- **Plain-English summary (FR-2.14)**: computed client-side in `RunsPanel.tsx → failureSummary()` from the per-question diagnoses (works for old runs too): "4 of 13 questions failed; 50% of failures: ranked below top-k — raise top_k."
 
 ### Design decisions
 - **Doesn't reuse `engine/chat.py:answer()`**: that path always generates (LLM cost + latency per question) and writes a `runs` row; scoring needs only retrieval, so it calls `retrieval.retrieve/rerank` directly.
@@ -1432,7 +1456,7 @@ flowchart LR
 `pareto(points)`: a point is on the frontier iff no other point has quality ≥ and cost ≤ with at least one strict — exact duplicates both stay.
 
 ### Auto-Optimize (`auto_optimize: true` → `run_sweep(job, id, auto_optimize=True)`)
-Successive halving (FR-2.18): after every cell is retrieval-scored (and only if the sweep wasn't cancelled), `to_grade(cells)` picks the top `GRADE_FRACTION = 0.25` of ready cells by `(-mrr, ctx_tokens)`, at least 1 and at most `MAX_GRADED = 5`; `_grade_top` re-runs `score_config(..., answers=True)` on each (retrieval is cheap and deterministic, so re-running beats keeping per-cell chunk lists) and stores `cell.metrics.answers`, or `cell.grade_error` on failure. The flag is passed to the job, not stored — a sweep's grading is visible from which cells carry `answers`. The leaderboard adds an **Answers ✓** column and the insight line reports the best graded cell, or "tied within noise" when the top two 95% intervals overlap (FR-2.9). Sort order and Pareto stay on deterministic metrics (FR-2.10).
+Successive halving (FR-2.18): after every cell is retrieval-scored (and only if the sweep wasn't cancelled), `to_grade(cells)` picks the top `GRADE_FRACTION = 0.25` of ready cells by `(-mrr, ctx_tokens)`, at least 1 and at most `MAX_GRADED = 5`; `_grade_top` re-runs `score_config(..., answers=True, judge=judge)` on each (retrieval is cheap and deterministic, so re-running beats keeping per-cell chunk lists) and stores `cell.metrics.answers`, or `cell.grade_error` on failure. Cells within noise of the leader are then re-judged median-of-3 (Part 37 → Median-of-3). The flag is passed to the job, not stored — a sweep's grading is visible from which cells carry `answers`. The leaderboard adds an **Answers ✓** column and the insight line reports the best graded cell, or "tied within noise" when the top two 95% intervals overlap (FR-2.9). Sort order and Pareto stay on deterministic metrics (FR-2.10).
 
 ### Embedder candidates (FR-2.19) and cost (FR-2.33)
 `nodes/embed.py:FASTEMBED_MODELS[model]["mteb"]` = the model card's MTEB English retrieval average (nDCG@10, 15 BEIR sets), checked 2026-10-06; `None` where no comparable figure is published (nomic v1.5 publishes only the overall MTEB average; bge-m3 multilingual benchmarks). It appears in the Configure form's model labels (`mteb_label`) and drives the sweep's `embed.model` axis: values sorted by score, plus `notes`, `scores` and `seed` (top 3) for the "MTEB top 3" preset.
@@ -1463,9 +1487,9 @@ Evaluate tab (eval set ready) → Sweep configurations
 
 ---
 
-## 39. Corpus Health — Coverage Gaps, Contradictions, Duplicates, Unused Content
+## 39. Corpus Health — Coverage Gaps, Contradictions, Duplicates, Unused Content, Staleness
 
-**Files**: `backend/app/engine/health.py`, `backend/app/api/corpus.py`, `backend/app/schema.sql` (`corpus_reports`), `frontend/src/features/health/HealthTab.tsx`, `backend/tests/test_health.py`. Implements PRD FR-2.26, 2.27, 2.29, 2.31 (staleness FR-2.28 and OKF fields FR-2.30 are not built).
+**Files**: `backend/app/engine/health.py`, `backend/app/api/corpus.py`, `backend/app/api/documents.py` (OKF metadata), `backend/app/ingest/documents.py` (front matter, last-modified), `backend/app/schema.sql` (`corpus_reports`, `document_okf`), `frontend/src/features/health/HealthTab.tsx`, `frontend/src/features/documents/MetadataForm.tsx`, `backend/tests/test_health.py`. Implements PRD FR-2.26–2.31.
 
 **Why a separate tab**: PRD §14 — corpus failures get their own surface so the product doesn't drift back to pure config tuning. And the input is different: eval-set questions are generated *from* existing chunks, so they can never reveal missing content. Health uses **real** questions.
 
@@ -1473,33 +1497,46 @@ Evaluate tab (eval set ready) → Sweep configurations
 flowchart LR
     Q["real_questions()<br/>pasted + chat history<br/>normalised dedupe, ≤200"] --> R["retrieve + rerank + pack<br/>(version's own pipeline)"]
     R --> J["LLM judge, 5 q/call:<br/>covered | partial | missing<br/>+ missing-topic phrase"]
-    J --> C["cluster() gap questions<br/>(embed_documents, cos ≥ 0.75)"]
+    J --> RC["recheck gaps: deep retrieval top 15<br/>→ judge again, 5 q/call"]
+    RC --> M["answered → retrieval_misses"]
+    RC --> C["cluster() content gaps<br/>(embed_documents, cos ≥ 0.75)"]
     R --> U["usage: chunk ids that<br/>reached the prompt"]
     V["build chunks' cached vectors<br/>(vector_cache)"] --> P["similar_pairs()<br/>cross-document, cos ≥ 0.85"]
     P --> D["≥ 0.97 → duplicates"]
     P --> X["30 closest others →<br/>LLM contradiction check"]
     C --> RES[("corpus_reports.result")]
+    M --> RES
+    S["document_okf<br/>status, stale_after, last_modified"] --> ST["staleness()"] --> RES
     U --> RES
     D --> RES
     X --> RES
 ```
 
-### Pipeline — `run_report(job, report_id, project_id, version, extra)` (job kind `health`)
+### Pipeline — `run_report(job, report_id, project_id, version, extra, stale_days=365)` (job kind `health`)
 1. `evaluate.ready_build()` for the version (default active) — may build first (stage `index`).
 2. **Questions** (`real_questions`): pasted first, then `runs.question` for `kind='chat'` newest first; de-duplicated by `evalmetrics.normalize`; capped at `MAX_QUESTIONS = 200`. Each carries `source: pasted|history`.
 3. **Coverage** (`_coverage`, stages `retrieve` → `judge`): per question `retrieval.retrieve` + `rerank`, then the version's prompt packer → `included`. Every `included` chunk id goes into the usage set; the first `PASSAGES_PER_QUESTION = 6` (≤1200 chars each) go to the judge — roughly what the generator would see, so an answer at rank 4–6 isn't flagged (an earlier 3-passage cut did flag those: 47% → 60% covered on the Pydantic Docs project). `JUDGE_SYSTEM` returns a discrete verdict + a noun-phrase "missing" topic, 5 questions per call via `evaluate.complete` (version's Generate provider/model, temperature 0.3, shared 3-slot semaphore) and `evaluate.gather_tolerant` (a failed batch → those questions `ungraded`; the job fails only if every batch fails).
-4. **Gap topics**: non-covered questions are embedded with the version's embedder (`embed_documents`) and grouped by `cluster()` — a deterministic greedy pass (join the most similar centroid at cos ≥ `CLUSTER_SIM = 0.75`, else start a new one), largest first. A topic's name is its first member's "missing" phrase, else its first question.
-5. **Overlaps** (`_overlaps`, stages `scan` → `contradictions`): the build's chunk vectors come from `vector_cache` (`retrieval.chunk_vectors`, no re-embedding; tables skipped). `similar_pairs()` scans blockwise (512 rows × n) for cross-document pairs at cos ≥ `NEAR_SIM = 0.85`, most similar first, capped at 90. ≥ `DUPLICATE_SIM = 0.97` → `duplicates` (no LLM). The next 30 → `PAIR_SYSTEM` contradiction check, 5 pairs/call; confirmed ones are kept with the model's one-line explanation.
-6. **Usage** (`_usage`): per document, chunks total vs. chunks that reached any analysed question's prompt; least used first.
-7. One `UPDATE corpus_reports SET status='ready', result=…, build_id=…`. On any exception the row is set `failed` with the message.
+4. **Retrieval miss vs. content missing** (`_recheck`, stage `recheck`): every non-covered question is retrieved again with `evaluate.deep_config(cfg)` (top_k 50, no MMR, no rerank) and its top `DEEP_PASSAGES = 15` (≤`DEEP_CHARS = 600` chars each, so a 5-question batch stays ≈11k tokens) are judged with the same `JUDGE_SYSTEM`, 5 per call. `covered` → `cause: retrieval_miss` (listed in `coverage.retrieval_misses`, counted in `summary.retrieval_miss`, kept out of the backlog); anything else, or a failed batch → `content_missing`. Extra cost: one judge call per 5 gaps.
+5. **Gap topics**: content-missing questions are embedded with the version's embedder (`embed_documents`) and grouped by `cluster()` — a deterministic greedy pass (join the most similar centroid at cos ≥ `CLUSTER_SIM = 0.75`, else start a new one), largest first. A topic's name is its first member's "missing" phrase, else its first question.
+6. **Overlaps** (`_overlaps`, stages `scan` → `contradictions`): the build's chunk vectors come from `vector_cache` (`retrieval.chunk_vectors`, no re-embedding; tables skipped). `similar_pairs()` scans blockwise (512 rows × n) for cross-document pairs at cos ≥ `NEAR_SIM = 0.85`, most similar first, capped at 90. ≥ `DUPLICATE_SIM = 0.97` → `duplicates` (no LLM). The next 30 → `PAIR_SYSTEM` contradiction check, 5 pairs/call; confirmed ones are kept with the model's one-line explanation.
+7. **Usage** (`_usage`): per document, chunks total vs. chunks that reached any analysed question's prompt; least used first.
+8. **Staleness** (`stale_documents` → pure `staleness(docs, today, max_age_days)`, FR-2.28): a project document is flagged `deprecated` (OKF `status`, case-insensitive), `past_stale_after` (ISO date < today), and/or `old` (`last_modified` more than `stale_days` ago, default 365, set per report). Oldest first. `with_dates` counts documents that carry any date — undated ones can't be judged.
+9. One `UPDATE corpus_reports SET status='ready', result=…, build_id=…`. On any exception the row is set `failed` with the message.
 
 Thresholds are cosine values and so embedder-dependent (bge-family models score related text high); the 30-pair cap keeps the contradiction step bounded regardless.
 
 ### Export — `to_markdown(report, project_name)`
-Coverage sentence, numbered content backlog (topic, counts, up to 5 questions each), contradictions, duplicates, and a usage table (or "Needs real questions to measure").
+Coverage sentence, numbered content backlog (topic, counts, up to 5 questions each), retrieval misses (with the sweep / `top_k` pointer), contradictions, duplicates, stale documents with reasons, and a usage table (or "Needs real questions to measure"). Sections missing from older reports (`retrieval_misses`, `staleness`) are skipped.
+
+### Document metadata (FR-2.30) — `document_okf`
+One row per document: `metadata` JSON with the OKF fields `status`, `stale_after` (ISO date), `verified` (bool or ISO date), `sources` (string list), plus a `last_modified` column. It is a separate table, not `document_metadata`, because the builder overwrites that row on every parse and `sweep.corpus_fingerprint` / the recommender rebuild `DocumentMetadata(**json)` from it (extra keys would raise). Nothing here is index config, so edits never rebuild.
+- **Front matter**: `ingest/documents.create_document` reads a Markdown upload's leading `---` block with a tiny flat parser (`front_matter`: `key: value`, `[a, b]`, `- item`; no YAML dependency) and keeps the valid OKF fields (`OKF` Pydantic model, field by field — a bad date drops only that field). `usage_count` in front matter is ignored. The front matter stays in the parsed text (loaders unchanged, so parse caches stay valid).
+- **Last modified**: the upload form sends one `last_modified` (browser `File.lastModified`, epoch ms) per file; URL and sitemap imports use the HTTP `Last-Modified` header (`fetch_url` returns it). A byte-identical duplicate upload keeps the original's values.
+- **Edit**: `PATCH /documents/{id}/metadata` replaces the OKF fields (validated by `OKF`); Documents tab → tag icon → `MetadataForm` dialog.
+- **`usage_count`** is computed on read: one SQL `json_each` over `runs.result.retrieved` counts how many retrieved chunks of each document appeared in recorded chat runs (Playground/API).
 
 ### Frontend (`features/health/HealthTab.tsx`, route `/projects/:id/health`, tab between Evaluate and API)
-Run card (textarea of pasted questions, one per line; **Check corpus health**; `EvalJobProgress` with the new `retrieve/judge/scan/contradictions` stage labels), then for the newest ready report (older ones via a `Select`): five stat tiles (answered %, gap topics, contradictions, duplicates, unused documents), **Content backlog** (ranked topics with verdict counts; a `Disclosure` per topic lists questions with verdict badge, source and the closest passage), **Contradictions** and **Duplicate content** cards (side-by-side excerpts), **Unused content** (per-document bars, with a small-sample warning under 30 questions), and **Download report (.md)**. Hooks `useHealthReports` (polls while running), `useHealthReport`, `useStartHealthReport`, `healthReportUrl`; types `HealthReport`, `HealthResult`, `GapTopic`, `PassagePair`, `HealthExcerpt`, `CoverageSummary`, `DocumentUsage`.
+Run card (textarea of pasted questions, one per line; **Check corpus health**; `EvalJobProgress` with the new `retrieve/judge/scan/contradictions` stage labels), then for the newest ready report (older ones via a `Select`): a staleness threshold input (days), six stat tiles (answered %, gap topics, contradictions, duplicates, unused documents, stale documents), **Content backlog** (ranked topics with verdict counts; a `Disclosure` per topic lists questions with verdict badge, source and the closest passage; then a **Retrieval misses** list with an info badge per question and the sweep / `top_k` pointer), **Stale documents** (reason badges, dates), **Contradictions** and **Duplicate content** cards (side-by-side excerpts), **Unused content** (per-document bars, with a small-sample warning under 30 questions), and **Download report (.md)**. Hooks `useHealthReports` (polls while running), `useHealthReport`, `useStartHealthReport`, `healthReportUrl`, `useUpdateDocumentMetadata`; types `HealthReport`, `HealthResult`, `GapTopic`, `PassagePair`, `HealthExcerpt`, `CoverageSummary`, `DocumentUsage`, `StaleDocument`, `DocumentOkf`. The Documents tab shows a **Modified** column and the OKF status as a badge next to the file name.
 
 ### Flow I — Find what to write next
 ```

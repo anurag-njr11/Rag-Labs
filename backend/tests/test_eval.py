@@ -125,7 +125,8 @@ async def test_generate_set_filters_generic_and_bad_evidence(project, monkeypatc
                                   "evidence": "this sentence was never in the source text"})
                 else:
                     items.append({"passage": i, "question": f"How often are failed uploads retried? ({i})",
-                                  "answer": "three times with exponential backoff", "evidence": sentence})
+                                  "answer": "three times with exponential backoff", "evidence": sentence,
+                                  "facets": ["three times", " ", "Three times", "backoff", "a", "b", "c"]})
             return '```json\n' + evaluate.json.dumps({"items": items}) + '\n```'
         qs = [ln.split(". ", 1)[1] for ln in user.splitlines()]
         return evaluate.json.dumps({"answers": [
@@ -137,6 +138,10 @@ async def test_generate_set_filters_generic_and_bad_evidence(project, monkeypatc
     assert result["kept"] >= 1 and result["too_generic"] >= 1 and result["bad_evidence"] >= 1
     s = await db.fetch_one("SELECT * FROM eval_sets WHERE id='s'")
     assert s["status"] == "ready"
+    # facets: blanks and case-duplicates dropped, at most 4; corpus fingerprint recorded (FR-2.5/2.6)
+    kept = await db.fetch_one("SELECT facets FROM eval_items WHERE valid=1 LIMIT 1")
+    assert db.loads(kept["facets"]) == ["three times", "backoff", "a", "b"]
+    assert s["corpus_sha"] == await evaluate.corpus_sha("p") and s["revision"] == 0
     rejected = await db.fetch_all("SELECT reject_reason FROM eval_items WHERE valid=0")
     assert {r["reject_reason"].split(":")[0] for r in rejected} >= {"too generic", "evidence not found in source"}
 

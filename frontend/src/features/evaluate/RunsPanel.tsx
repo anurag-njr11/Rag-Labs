@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { ChevronRight, CircleCheck, CircleX, PartyPopper, Play } from 'lucide-react'
 import { errorMessage, useCreateVersion, useEvalFixes, useEvalRun, useEvalRuns, useRunEval, useVersions } from '@/api/hooks'
 import { formatMs, stripTags } from '@/api/format'
-import type { EvalDiagnosis, EvalFix, EvalItem, EvalItemResult, EvalMetrics, EvalRun, EvalRunDetail, Grade } from '@/api/types'
+import type { EvalDiagnosis, EvalFix, EvalItem, EvalItemResult, EvalMetrics, EvalRun, EvalRunDetail, Grade, Judge } from '@/api/types'
 import { Badge, Button, Card, Dialog, EffectBadge, ProgressBar, Select, Spinner, Switch, Tabs, cn, useToast, type ProgressTone, Collapse, presence, usePresence } from '@/components/ui'
 import { EvalJobProgress } from './EvalJobProgress'
 
@@ -18,12 +18,26 @@ const TONE_TEXT: Record<ProgressTone, string> = {
   neutral: 'text-text-tertiary',
 }
 
-const DIAGNOSIS: Record<EvalDiagnosis, { label: string; fix: string }> = {
-  failed_to_extract: { label: 'Wrong answer despite context', fix: 'The passage reached the model but the answer was wrong — try another prompt style or model, or fewer, cleaner passages.' },
-  dropped_by_budget: { label: 'Cut by context budget', fix: 'Retrieved, but it did not fit the prompt budget — raise Max context tokens or lower top-k.' },
-  dropped_by_rerank: { label: 'Dropped by reranker', fix: 'Retrieved, but the reranker cut it — raise Keep top N.' },
-  ranked_below_k: { label: 'Ranked below top-k', fix: 'Found deeper in the ranking — raise top-k or add a reranker.' },
-  not_retrieved: { label: 'Not retrieved', fix: 'Not in the top 50 at all — try another retriever, embedder or chunking.' },
+/** One per failure mode (PRD §7.3); `short` is the fix named in the plain-English summary. */
+const DIAGNOSIS: Record<EvalDiagnosis, { label: string; fix: string; short: string }> = {
+  incorrect_format: { label: 'Broke the citation format', fix: 'The passage was there, but the answer had no [n] citations or cited a source it was not given — state the citation rule in the prompt (or use a Cited answer style).', short: 'tighten the citation rule in the prompt' },
+  incomplete_answer: { label: 'Incomplete answer', fix: 'The passage was there, but the answer left out required facts — try the Detailed prompt style or query decomposition.', short: 'ask for complete answers or decompose the question' },
+  wrong_specificity: { label: 'Wrong level of detail', fix: 'The judge found the answer too vague or too verbose for the question — tune the prompt style (Concise / Detailed).', short: 'tune the prompt style' },
+  failed_to_extract: { label: 'Wrong answer despite context', fix: 'The passage reached the model but the answer was wrong — try another prompt style or model, or fewer, cleaner passages.', short: 'try another prompt style or model' },
+  dropped_by_budget: { label: 'Cut by context budget', fix: 'Retrieved, but it did not fit the prompt budget — raise Max context tokens or lower top-k.', short: 'raise the context budget' },
+  dropped_by_rerank: { label: 'Dropped by reranker', fix: 'Retrieved, but the reranker cut it — raise Keep top N.', short: 'raise Keep top N' },
+  ranked_below_k: { label: 'Ranked below top-k', fix: 'Found deeper in the ranking — raise top-k or add a reranker.', short: 'raise top_k' },
+  not_retrieved: { label: 'Not retrieved', fix: 'Not in the top 50 at all — try another retriever, embedder or chunking.', short: 'try another retriever, embedder or chunking' },
+}
+
+/** FR-2.14: "4 of 13 questions failed; 50% of failures: ranked below top-k — raise top_k." */
+function failureSummary(results: EvalItemResult[]): string | null {
+  const failed = results.filter((r) => r.diagnosis)
+  if (!failed.length) return null
+  const [top, n] = (Object.keys(DIAGNOSIS) as EvalDiagnosis[])
+    .map((d) => [d, failed.filter((r) => r.diagnosis === d).length] as const)
+    .reduce((a, b) => (b[1] > a[1] ? b : a))
+  return `${failed.length} of ${results.length} questions failed; ${pct(n / failed.length)} of failures: ${DIAGNOSIS[top].label.toLowerCase()} — ${DIAGNOSIS[top].short}.`
 }
 
 const GRADE: Record<Grade, { label: string; tone: 'success' | 'warning' | 'danger' }> = {
@@ -114,14 +128,16 @@ function Scorecard({ run, before }: { run: EvalRunDetail; before?: EvalMetrics }
             {hits} of {m.n} questions reach the prompt
             <Delta now={m.hit_at_k} before={before?.hit_at_k} />
           </p>
-          <p className="mt-2 text-body-sm text-text-tertiary">v{run.version} · top-{m.k} passages sent to the model</p>
+          <p className="mt-2 text-body-sm text-text-tertiary">
+            v{run.version} · top-{m.k} passages sent to the model{m.answers?.judge ? ` · graded by ${m.answers.judge}` : ''}
+          </p>
         </div>
       </div>
       <dl className="grid grid-cols-2 gap-3 xl:grid-cols-4">
         <Tile label="Hit@1" value={pct(m.hit_at_1)} meter={m.hit_at_1} hint="right chunk ranked first" delta={<Delta now={m.hit_at_1} before={before?.hit_at_1} />} />
         <Tile label="Hit@3" value={pct(m.hit_at_3)} meter={m.hit_at_3} hint="in the top three" delta={<Delta now={m.hit_at_3} before={before?.hit_at_3} />} />
-        <Tile label="MRR" value={m.mrr.toFixed(2)} meter={m.mrr} hint="1.0 = always first" delta={<Delta now={m.mrr} before={before?.mrr} pctFmt={false} />} />
-        <Tile label="Retrieval p50" value={formatMs(m.p50_ms)} hint="median per question" />
+        <Tile label="MRR" value={m.mrr.toFixed(2)} meter={m.mrr} hint={m.ndcg_at_k != null ? `nDCG@${m.k} ${m.ndcg_at_k.toFixed(2)} · 1.0 = always first` : '1.0 = always first'} delta={<Delta now={m.mrr} before={before?.mrr} pctFmt={false} />} />
+        <Tile label="Retrieval p50" value={formatMs(m.p50_ms)} hint={m.p95_ms != null ? `p95 ${formatMs(m.p95_ms)}` : 'median per question'} />
         {m.answers && m.answers.n > 0 && (
           <>
             <Tile
@@ -131,7 +147,12 @@ function Scorecard({ run, before }: { run: EvalRunDetail; before?: EvalMetrics }
               hint={`95% CI ${pct(m.answers.correct_ci[0])}–${pct(m.answers.correct_ci[1])} · ${m.answers.partial} partly`}
               delta={<Delta now={m.answers.correct_rate} before={before?.answers?.correct_rate} />}
             />
-            <Tile label="Grounded" value={pct(m.answers.grounded_rate)} meter={m.answers.grounded_rate} hint="every claim backed by a source" />
+            <Tile
+              label="Grounded"
+              value={pct(m.answers.grounded_rate)}
+              meter={m.answers.grounded_rate}
+              hint={`every claim backed by a source${m.answers.relevant_rate != null ? ` · ${pct(m.answers.relevant_rate)} on-topic` : ''}`}
+            />
           </>
         )}
       </dl>
@@ -208,14 +229,15 @@ function MissBreakdown({ run, projectId }: { run: EvalRunDetail; projectId: stri
       </Card>
     )
   }
-  const causes = (Object.keys(DIAGNOSIS) as EvalDiagnosis[]).map((d) => ({ d, n: m.diagnoses[d] ?? 0 }))
+  const causes = (Object.keys(DIAGNOSIS) as EvalDiagnosis[])
+    .map((d) => ({ d, n: m.diagnoses[d] ?? 0 }))
+    // answer-level modes only exist on graded runs; hide them otherwise
+    .filter(({ d, n }) => n > 0 || !['incorrect_format', 'incomplete_answer', 'wrong_specificity'].includes(d) || !!m.answers)
   return (
     <Card padding="lg" className="flex flex-col gap-4">
       <div>
-        <h3 className="text-heading-lg text-text-primary">Why questions missed</h3>
-        <p className="mt-0.5 text-body text-text-secondary">
-          {misses} of {m.n} never reach the model. Fix the biggest cause first.
-        </p>
+        <h3 className="text-heading-lg text-text-primary">Why questions failed</h3>
+        <p className="mt-0.5 text-body text-text-secondary">{failureSummary(run.results)}</p>
       </div>
       <ul className="flex flex-col gap-4">
         {causes.map(({ d, n }) => (
@@ -236,7 +258,7 @@ function MissBreakdown({ run, projectId }: { run: EvalRunDetail; projectId: stri
   )
 }
 
-function RunHistory({ runs, selected, onSelect }: { runs: EvalRun[]; selected: string | null; onSelect: (id: string) => void }) {
+function RunHistory({ runs, selected, onSelect, setRevision = 0 }: { runs: EvalRun[]; selected: string | null; onSelect: (id: string) => void; setRevision?: number }) {
   // each run's "before" = the nearest earlier run that has metrics
   const rows = runs.map((r, i) => ({ r, before: runs.slice(0, i).findLast((p) => p.metrics)?.metrics ?? undefined }))
   return (
@@ -280,6 +302,9 @@ function RunHistory({ runs, selected, onSelect }: { runs: EvalRun[]; selected: s
                 {m && (
                   <span className="flex items-center justify-between gap-2 text-body-sm text-text-tertiary">
                     <span className="truncate" title={configLine(m)}>{configLine(m)}</span>
+                    {(r.set_revision ?? 0) !== setRevision && (
+                      <Badge tone="warning" title="Questions were added, edited or dropped after this run, so it scored a different set">edited since this run</Badge>
+                    )}
                     <span className="shrink-0 font-mono text-mono-sm">MRR {m.mrr.toFixed(2)} · {formatMs(m.p50_ms)}</span>
                   </span>
                 )}
@@ -328,12 +353,33 @@ function ResultDetail({ res, item }: { res: EvalItemResult; item?: EvalItem }) {
             <dt className="text-text-tertiary">Expected answer</dt>
             <dd className="text-text-primary">{item.gold_answer}</dd>
           </div>
+          {item.facets?.length > 0 && (
+            <div>
+              <dt className="text-text-tertiary">Required facts</dt>
+              <dd className="text-text-secondary">
+                {item.facets.map((f) => (
+                  <span key={f} className={cn('mr-2', res.missing_facts?.includes(f) && 'text-danger-fg line-through')}>{f}</span>
+                ))}
+              </dd>
+            </div>
+          )}
           {res.answer != null && (
             <div>
               <dt className="text-text-tertiary">
                 Pipeline's answer{res.grounded ? ` · grounded: ${res.grounded === 'yes' ? 'yes' : res.grounded === 'partial' ? 'partly' : 'no'}` : ''}
               </dt>
               <dd className="whitespace-pre-line text-text-secondary">{res.answer || '(empty)'}</dd>
+              {(res.format_error || (res.specificity && res.specificity !== 'ok') || (res.relevant && res.relevant !== 'yes') || !!res.missing_facts?.length) && (
+                <dd className="mt-1 text-warning-fg">
+                  {[
+                    res.format_error && `Format: ${res.format_error}`,
+                    res.specificity === 'too_vague' && 'Too vague',
+                    res.specificity === 'too_verbose' && 'Too verbose',
+                    res.relevant && res.relevant !== 'yes' && `On-topic: ${res.relevant === 'partial' ? 'partly' : 'no'}`,
+                    res.missing_facts?.length && `Missing: ${res.missing_facts.join('; ')}`,
+                  ].filter(Boolean).join(' · ')}
+                </dd>
+              )}
             </div>
           )}
           <div>
@@ -477,7 +523,9 @@ function PerQuestion({ run, items }: { run: EvalRunDetail; items: EvalItem[] }) 
  * Evaluate dashboard: a full-width scorecard (gauge + metric tiles) on top, then per-question results next to a
  * sticky rail (miss breakdown, run history, and `side` — the eval set card).
  */
-export function RunsPanel({ projectId, setId, items, side }: { projectId: string; setId: string; items: EvalItem[]; side?: ReactNode }) {
+export function RunsPanel({ projectId, setId, items, side, judge, setRevision }: {
+  projectId: string; setId: string; items: EvalItem[]; side?: ReactNode; judge?: Judge | null; setRevision?: number
+}) {
   const versions = useVersions(projectId)
   const runs = useEvalRuns(projectId, setId)
   const start = useRunEval(projectId, setId)
@@ -501,7 +549,7 @@ export function RunsPanel({ projectId, setId, items, side }: { projectId: string
 
   const go = () => {
     start.mutate(
-      { version_id: versionId || active?.id, answers },
+      { version_id: versionId || active?.id, answers, judge: judge ?? undefined },
       {
         onSuccess: (r) => {
           setJobId(r.job_id)
@@ -570,13 +618,13 @@ export function RunsPanel({ projectId, setId, items, side }: { projectId: string
           </div>
           <aside className="order-1 grid gap-6 md:grid-cols-2 xl:sticky xl:top-[calc(var(--topbar-h)+16px)] xl:order-2 xl:max-h-[calc(100dvh-var(--topbar-h)-32px)] xl:grid-cols-1 xl:overflow-y-auto xl:scrollbar-none" aria-label="Run insights">
             <MissBreakdown run={run} projectId={projectId} />
-            <RunHistory runs={list} selected={selected} onSelect={setPicked} />
+            <RunHistory runs={list} selected={selected} onSelect={setPicked} setRevision={setRevision} />
             <div className="md:col-span-2 xl:col-span-1">{side}</div>
           </aside>
         </div>
       ) : (
         <div className="grid items-start gap-6 lg:grid-cols-2">
-          {list.length > 0 && <RunHistory runs={list} selected={selected} onSelect={setPicked} />}
+          {list.length > 0 && <RunHistory runs={list} selected={selected} onSelect={setPicked} setRevision={setRevision} />}
           {side}
         </div>
       )}

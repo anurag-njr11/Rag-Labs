@@ -73,7 +73,7 @@ def token_f1(a: str, b: str) -> float:
 def summarize(ranks: list[int | None], k: int) -> dict[str, Any]:
     n = len(ranks)
     if n == 0:
-        return {"n": 0, "k": k, "hit_at_1": 0.0, "hit_at_3": 0.0, "hit_at_k": 0.0, "mrr": 0.0}
+        return {"n": 0, "k": k, "hit_at_1": 0.0, "hit_at_3": 0.0, "hit_at_k": 0.0, "mrr": 0.0, "ndcg_at_k": 0.0}
 
     def rate(cut: int) -> float:
         return round(sum(1 for r in ranks if r is not None and r <= cut) / n, 4)
@@ -85,6 +85,8 @@ def summarize(ranks: list[int | None], k: int) -> dict[str, Any]:
         "hit_at_3": rate(3),
         "hit_at_k": rate(k),
         "mrr": round(sum(1 / r for r in ranks if r is not None) / n, 4),
+        # one relevant passage per question, so the ideal DCG is 1 and nDCG@k = 1/log2(rank+1)
+        "ndcg_at_k": round(sum(1 / math.log2(r + 1) for r in ranks if r is not None and r <= k) / n, 4),
     }
 
 
@@ -113,6 +115,7 @@ def answer_summary(grades: list[dict[str, Any]]) -> dict[str, Any]:
         "correct": yes, "partial": count("correct", "partial"), "wrong": count("correct", "no"),
         "correct_rate": round(yes / n, 4) if n else 0.0, "correct_ci": list(wilson(yes, n)),
         "grounded_rate": round(count("grounded", "yes") / n, 4) if n else 0.0,
+        "relevant_rate": round(count("relevant", "yes") / n, 4) if n else 0.0,
     }
 
 

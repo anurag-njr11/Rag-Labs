@@ -48,34 +48,6 @@ The other three projects with eval sets (prose corpora) score identically under 
 
 ---
 
-## 2. Answer grader grades its own model's answers
-
-**Status:** open · **Priority:** low–medium
-
-Answer grading (`engine/evaluate.py:grade_answers`) and Corpus Health's coverage judge both use the
-version's own Generate provider/model. A model grading its own answers is biased toward "correct".
-Also not done: PRD FR-2.8 (re-judge 3× and take the median when a config is near a decision
-boundary).
-
-**Where to start:** let the grader be chosen separately (a "Judge model" setting on the Evaluate tab,
-defaulting to the strongest available model); add median-of-3 only for cells whose 95% intervals
-overlap the leader's.
-
----
-
-## 3. Corpus Health can't tell "content missing" from "retrieval missed it"
-
-**Status:** open · **Priority:** low
-
-A `missing` verdict means the passages that reach the prompt don't answer the question. Usually the
-docs lack the content, but it can be a retrieval miss. The UI says so in words only.
-
-**Where to start:** for each non-covered question, also judge the top ~15 of a deep retrieval
-(`evaluate.deep_config`); if those answer it, label the gap "retrieval miss" and point to a sweep.
-Costs one extra judge call per 5 gap questions.
-
----
-
 ## 4. Frontend warnings
 
 **Status:** open · **Priority:** low (dev-only / build-size)

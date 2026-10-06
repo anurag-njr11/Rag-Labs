@@ -4,7 +4,7 @@ import {
   errorMessage, useCancelSweep, useCreateVersion, useRuns, useStartSweep, useSweepAxes, useSweeps, useVersions,
 } from '@/api/hooks'
 import { formatMs, formatNumber } from '@/api/format'
-import type { PipelineConfig, Sweep, SweepAxis, SweepCell } from '@/api/types'
+import type { Judge, PipelineConfig, Sweep, SweepAxis, SweepCell } from '@/api/types'
 import { Badge, Banner, Button, Card, EffectBadge, Field, Input, Select, Spinner, Switch, cn, useToast } from '@/components/ui'
 import { EvalJobProgress } from './EvalJobProgress'
 
@@ -268,17 +268,19 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
       {line && <Banner tone="info">{line}</Banner>}
       {scored.length >= 2 && <ParetoChart cells={scored} base={base} />}
       <div className="overflow-x-auto rounded-lg border border-border-default">
-        <table className="w-full min-w-[760px] border-collapse text-left">
+        <table className="w-full min-w-[860px] border-collapse text-left">
           <caption className="sr-only">Sweep leaderboard, best first</caption>
           <thead>
             <tr className="h-10 border-b border-border-default bg-bg-subtle text-label text-text-tertiary">
               <th scope="col" className={cn(CELL, 'font-medium')}>Configuration</th>
               <th scope="col" className={cn(CELL, 'text-right font-medium')}>MRR</th>
+              <th scope="col" className={cn(CELL, 'text-right font-medium')} title="Normalised discounted cumulative gain at k">nDCG@k</th>
               <th scope="col" className={cn(CELL, 'text-right font-medium')}>Hit@1</th>
               <th scope="col" className={cn(CELL, 'text-right font-medium')}>Hit@k</th>
               <th scope="col" className={cn(CELL, 'text-right font-medium')} title="Evidence survives the prompt's context budget">In context</th>
               <th scope="col" className={cn(CELL, 'text-right font-medium')}>Tokens / q</th>
               <th scope="col" className={cn(CELL, 'text-right font-medium')}>p50</th>
+              <th scope="col" className={cn(CELL, 'text-right font-medium')}>p95</th>
               {graded && <th scope="col" className={cn(CELL, 'text-right font-medium')} title="LLM-graded, with 95% interval">Answers ✓</th>}
               {priced && <th scope="col" className={cn(CELL, 'text-right font-medium')}>$ / month</th>}
               <th scope="col" className={cn(CELL, 'font-medium')}><span className="sr-only">Actions</span></th>
@@ -298,14 +300,19 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
                     </span>
                   </td>
                   <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums text-text-primary')}>{m.mrr.toFixed(2)}</td>
+                  <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}>{m.ndcg_at_k != null ? m.ndcg_at_k.toFixed(2) : '—'}</td>
                   <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}>{Math.round(m.hit_at_1 * 100)}%</td>
                   <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}>{Math.round(m.hit_at_k * 100)}% <span className="text-text-tertiary">@{m.k}</span></td>
                   <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}>{Math.round(m.context_hit * 100)}%</td>
                   <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}>{formatNumber(m.ctx_tokens)}</td>
                   <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums text-text-secondary')}>{formatMs(m.p50_ms)}</td>
+                  <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums text-text-secondary')}>{m.p95_ms != null ? formatMs(m.p95_ms) : '—'}</td>
                   {graded && (
-                    <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')} title={c.grade_error ?? (m.answers ? `95% CI ${Math.round(m.answers.correct_ci[0] * 100)}–${Math.round(m.answers.correct_ci[1] * 100)}%` : 'not graded')}>
-                      {m.answers ? `${Math.round(m.answers.correct_rate * 100)}%` : <span className="text-text-tertiary">—</span>}
+                    <td
+                      className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}
+                      title={c.grade_error ?? (m.answers ? `95% CI ${Math.round(m.answers.correct_ci[0] * 100)}–${Math.round(m.answers.correct_ci[1] * 100)}%${m.answers.rejudged ? ' · median of 3 judgings (close to the leader)' : ''}${m.answers.judge ? ` · judge ${m.answers.judge}` : ''}` : 'not graded')}
+                    >
+                      {m.answers ? `${Math.round(m.answers.correct_rate * 100)}%${m.answers.rejudged ? ' ×3' : ''}` : <span className="text-text-tertiary">—</span>}
                     </td>
                   )}
                   {priced && (
@@ -322,7 +329,7 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
               )
             })}
             {pending > 0 && (
-              <tr><td colSpan={8 + Number(graded) + Number(priced)} className={cn(CELL, 'text-body-sm text-text-tertiary')}>{pending} configuration{pending === 1 ? '' : 's'} still to score…</td></tr>
+              <tr><td colSpan={10 + Number(graded) + Number(priced)} className={cn(CELL, 'text-body-sm text-text-tertiary')}>{pending} configuration{pending === 1 ? '' : 's'} still to score…</td></tr>
             )}
           </tbody>
         </table>
@@ -345,7 +352,7 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
  * Sweeps: pick a base version and a few axes, score every combination on the eval set (no LLM calls),
  * then read the leaderboard + Pareto chart and promote a winner into a new active version.
  */
-export function SweepsPanel({ projectId, setId }: { projectId: string; setId: string }) {
+export function SweepsPanel({ projectId, setId, judge }: { projectId: string; setId: string; judge?: Judge | null }) {
   const axesQ = useSweepAxes(projectId)
   const versions = useVersions(projectId)
   const sweeps = useSweeps(projectId)
@@ -383,7 +390,7 @@ export function SweepsPanel({ projectId, setId }: { projectId: string; setId: st
 
   const go = () =>
     start.mutate(
-      { set_id: setId, version_id: baseVersion?.id, axes: chosen.map(([path, values]) => ({ path, values })), auto_optimize: autoOpt },
+      { set_id: setId, version_id: baseVersion?.id, axes: chosen.map(([path, values]) => ({ path, values })), auto_optimize: autoOpt, judge: judge ?? undefined },
       {
         onSuccess: (r) => {
           setJobId(r.job_id)
@@ -416,8 +423,9 @@ export function SweepsPanel({ projectId, setId }: { projectId: string; setId: st
       <div className="max-w-3xl">
         <h2 className="flex items-center gap-2 text-title-lg text-text-primary"><Grid3x3 size={20} aria-hidden /> Sweep configurations</h2>
         <p className="mt-1 text-body-lg text-text-secondary">
-          Score every combination of the values you pick on this eval set — retrieval only, no LLM calls. Rebuild axes build one
-          index per value (parsing and embeddings are cached); instant axes reuse it.
+          Score every combination of the values you pick on this eval set — retrieval only, so no LLM calls, except query expansion
+          (multi-query / HyDE), which makes one call per question. Rebuild axes build one index per value (parsing and embeddings
+          are cached); instant axes reuse it.
         </p>
       </div>
 
@@ -431,7 +439,7 @@ export function SweepsPanel({ projectId, setId }: { projectId: string; setId: st
             <span className={cn('text-body', count > max ? 'text-danger-fg' : 'text-text-secondary')}>
               {count === 0 ? 'Pick values on at least one axis.' : `${count} configuration${count === 1 ? '' : 's'}${count > max ? ` — the limit is ${max}` : ''}`}
             </span>
-            <label className="ml-auto flex items-center gap-2 text-body-sm text-text-secondary" title="After scoring retrieval for every configuration, write and grade answers for the best 25% (at most 5). Uses LLM calls.">
+            <label className="ml-auto flex items-center gap-2 text-body-sm text-text-secondary" title="After scoring retrieval for every configuration, write and grade answers for the best 25% (at most 5); configurations within noise of the leader are graded 3 times and take the median. Uses LLM calls.">
               <Switch checked={autoOpt} onChange={setAutoOpt} aria-label="Auto-Optimize" />
               Auto-Optimize: grade answers of the best
             </label>

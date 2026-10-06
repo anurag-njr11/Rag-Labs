@@ -228,6 +228,18 @@ export interface Document {
   /** Chunks in the ACTIVE index; null = not indexed there yet. */
   chunks: number | null
   index_error: string | null
+  /** Source file's / page's last-modified date (upload File.lastModified, HTTP Last-Modified); ISO. */
+  last_modified: string | null
+  okf: DocumentOkf & { usage_count: number }
+}
+/** OKF document fields (FR-2.30). From Markdown front matter or the Documents tab; editing never rebuilds. */
+export interface DocumentOkf {
+  status?: string
+  /** ISO date */
+  stale_after?: string
+  /** true or an ISO date */
+  verified?: boolean | string
+  sources?: string[]
 }
 export interface UploadResult {
   created: { id: string; filename: string }[]
@@ -264,7 +276,7 @@ export const MAX_UPLOAD_BYTES = 100 * 1024 * 1024
 export type JobStage =
   | 'fetch' | 'parse' | 'embed' | 'store' | 'keywords' | 'ready'
   | 'index' | 'generate' | 'validate' | 'evaluate' | 'sweep'
-  | 'retrieve' | 'judge' | 'scan' | 'contradictions' | 'answer' | 'grade' | 'grade_cells'
+  | 'retrieve' | 'judge' | 'recheck' | 'scan' | 'contradictions' | 'answer' | 'grade' | 'grade_cells' | 'rejudge'
 export const JOB_STAGES: readonly JobStage[] = ['fetch', 'parse', 'embed', 'store', 'keywords', 'ready']
 
 export interface JobDoneResult {
@@ -315,6 +327,8 @@ export interface RetrievedChunk {
   in_context: boolean
   context_n: number | null
   cited?: boolean
+  /** retrieve.context_window > 0: ordinals of the chunks merged into `text` (this one ± neighbours). */
+  window?: number[]
 }
 export interface Citation {
   n: number
@@ -328,7 +342,7 @@ export interface Citation {
 }
 export type TraceStepName =
   | 'embed_query' | 'dense_search' | 'keyword_search' | 'exact_search' | 'fuse' | 'pin' | 'mmr'
-  | 'rerank' | 'prompt' | 'generate'
+  | 'rerank' | 'prompt' | 'generate' | 'query_expansion' | 'context_window'
 export interface TraceStep {
   seq: number
   step: TraceStepName
@@ -454,6 +468,8 @@ export interface EvalItem {
   valid: boolean
   reject_reason: string | null
   closed_book_answer: string | null
+  /** Required facts a complete answer states (FR-2.6); [] on older items. */
+  facets: string[]
 }
 export interface EvalSet {
   id: string
@@ -465,13 +481,25 @@ export interface EvalSet {
   stats: Partial<EvalSetStats>
   error: string | null
   created_at: string
+  /** +1 on every hand edit or import (FR-2.5). */
+  revision: number
+  /** The project's documents differ from those the set was generated from; null = not recorded (older sets). */
+  corpus_changed: boolean | null
 }
 export interface EvalSetDetail extends EvalSet {
   items: EvalItem[]
 }
 
-export type EvalDiagnosis = 'failed_to_extract' | 'dropped_by_budget' | 'dropped_by_rerank' | 'ranked_below_k' | 'not_retrieved'
+export type EvalDiagnosis =
+  | 'incorrect_format' | 'incomplete_answer' | 'wrong_specificity' | 'failed_to_extract'
+  | 'dropped_by_budget' | 'dropped_by_rerank' | 'ranked_below_k' | 'not_retrieved'
 export type Grade = 'yes' | 'partial' | 'no'
+export type Specificity = 'ok' | 'too_vague' | 'too_verbose'
+/** Answer grader; omitted = the version's own Generate model. */
+export interface Judge {
+  provider: string
+  model: string
+}
 
 /** LLM-graded answers (only on runs started with `answers: true`). */
 export interface AnswerSummary {
@@ -484,6 +512,11 @@ export interface AnswerSummary {
   /** 95% Wilson interval for correct_rate. */
   correct_ci: [number, number]
   grounded_rate: number
+  relevant_rate?: number
+  /** "provider/model" that graded. */
+  judge?: string
+  /** Sweep cell re-judged 3x with the per-question median (its interval overlapped the leader's). */
+  rejudged?: boolean
 }
 
 export interface EvalConfigSummary {
@@ -502,7 +535,10 @@ export interface EvalMetrics {
   hit_at_3: number
   hit_at_k: number
   mrr: number
+  /** Binary-relevance nDCG@k (absent on older runs). */
+  ndcg_at_k?: number
   p50_ms: number
+  p95_ms?: number
   /** Share of questions whose evidence survives the prompt's context budget (absent on older runs). */
   context_hit?: number
   /** Mean tokens of context sent to the model per question (absent on older runs). */
@@ -523,6 +559,12 @@ export interface EvalItemResult {
   answer?: string
   correct?: Grade
   grounded?: Grade | null
+  relevant?: Grade | null
+  specificity?: Specificity | null
+  /** Required facts the judge found missing (items with facets only). */
+  missing_facts?: string[]
+  /** Broken citation contract, e.g. "no [n] citations". */
+  format_error?: string
   ms: number
   top: { id: string; document: string; heading_path: string; hit: boolean }[]
 }
@@ -535,6 +577,8 @@ export interface EvalRun {
   status: EvalStatus
   error: string | null
   created_at: string
+  /** The eval set's revision this run scored (null on older runs). */
+  set_revision: number | null
   metrics: EvalMetrics | null
 }
 export interface EvalRunDetail extends EvalRun {
@@ -607,6 +651,8 @@ export interface CoverageSummary {
   missing: number
   covered_rate: number
   ungraded: number
+  /** Gaps a deep retrieval answers: the content exists, retrieval missed it. Absent in older reports. */
+  retrieval_miss?: number
   sources: { pasted: number; history: number }
 }
 export interface GapTopic {
@@ -629,8 +675,25 @@ export interface DocumentUsage {
   chunks: number
   used: number
 }
+export type StaleReason = 'deprecated' | 'past_stale_after' | 'old'
+export interface StaleDocument {
+  document_id: string
+  document: string
+  reasons: StaleReason[]
+  status: string | null
+  stale_after: string | null
+  last_modified: string | null
+  age_days: number | null
+}
 export interface HealthResult {
-  coverage: { summary: CoverageSummary; topics: GapTopic[] }
+  coverage: {
+    summary: CoverageSummary
+    /** Content gaps only; retrieval misses are listed separately. */
+    topics: GapTopic[]
+    retrieval_misses?: { question: string; verdict: GapVerdict; source: 'pasted' | 'history' }[]
+  }
+  /** Absent in reports made before staleness existed. */
+  staleness?: { max_age_days: number; documents_checked: number; with_dates: number; documents: StaleDocument[] }
   duplicates: PassagePair[]
   contradictions: PassagePair[]
   pairs_checked: number
@@ -648,7 +711,7 @@ export interface HealthReport {
   /** Detail only. */
   result?: HealthResult | null
   /** List only. */
-  summary?: (CoverageSummary & { topics: number; contradictions: number; duplicates: number; unused_documents: number }) | null
+  summary?: (CoverageSummary & { topics: number; contradictions: number; duplicates: number; unused_documents: number; stale_documents: number }) | null
 }
 
 /** A one-click fix for a miss diagnosis: the full config to save as a new version. */

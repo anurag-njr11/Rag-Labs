@@ -11,9 +11,11 @@ import re
 from dataclasses import dataclass, field
 from typing import Any, Callable, Literal
 
+import numpy as np
 from pydantic import model_validator
 
 from ..core.node import Node, NodeConfig, register, ui_field
+from .embed import FASTEMBED_MODELS, FastembedModel, _load_fastembed, l2_normalize
 
 Span = tuple[int, int]
 Measure = Callable[[str], int]
@@ -226,8 +228,7 @@ def recursive_spans(text: str, size: int, overlap: int, unit: str,
     return merge_pieces(text, pieces, size, overlap, m)
 
 
-def sentence_spans(text: str, size: int, overlap: int, unit: str) -> list[Span]:
-    m = measure_for(unit)
+def sentences(text: str) -> list[Span]:
     sents: list[Span] = []
     i = 0
     for br in _SENTENCE_BREAK.finditer(text):
@@ -236,13 +237,50 @@ def sentence_spans(text: str, size: int, overlap: int, unit: str) -> list[Span]:
             i = br.end()
     if i < len(text):
         sents.append((i, len(text)))
+    return sents
+
+
+def sentence_spans(text: str, size: int, overlap: int, unit: str) -> list[Span]:
+    m = measure_for(unit)
     pieces: list[Span] = []
-    for s, e in sents:
+    for s, e in sentences(text):
         if m(text[s:e]) <= size:
             pieces.append((s, e))
         else:
             pieces.extend(_pieces(text, s, e, [" ", ""], size, unit, m))
     return merge_pieces(text, pieces, size, overlap, m)
+
+
+def embed_sentences(model: str, texts: list[str]) -> np.ndarray:
+    """Unit vectors from a local fastembed model (loaded once, shared with the embed slot)."""
+    return l2_normalize(np.array(list(_load_fastembed(model).embed(texts)), dtype=np.float32))
+
+
+def semantic_spans(text: str, vectors_for: Callable[[list[str]], np.ndarray], percentile: int,
+                   size: int, overlap: int, unit: str) -> list[Span]:
+    """Break between neighbouring sentences whose cosine distance is above the
+    `percentile`-th distance in this text; groups over `size` split recursively."""
+    sents = sentences(text)
+    if len(sents) < 2:
+        return recursive_spans(text, size, overlap, unit)
+    vecs = vectors_for([text[s:e] for s, e in sents])
+    dist = 1.0 - np.sum(vecs[:-1] * vecs[1:], axis=1)
+    cut = float(np.percentile(dist, percentile))
+    groups: list[Span] = []
+    start = sents[0][0]
+    for i, d in enumerate(dist):
+        if d > cut:
+            groups.append((start, sents[i][1]))
+            start = sents[i + 1][0]
+    groups.append((start, sents[-1][1]))
+    m = measure_for(unit)
+    out: list[Span] = []
+    for s, e in groups:
+        if m(text[s:e]) <= size:
+            out.append((s, e))
+        else:
+            out.extend((s + a, s + b) for a, b in recursive_spans(text[s:e], size, overlap, unit))
+    return out
 
 
 def merge_small(text: str, spans: list[Span], min_size: int, measure: Measure) -> list[Span]:
@@ -332,6 +370,23 @@ class StructureConfig(_BaseChunkConfig):
     min_chunk_size: int = ui_field(0, ge=0, le=5000, title="Minimum chunk size")
 
 
+class SemanticConfig(_BaseChunkConfig):
+    size: int = ui_field(1000, ge=50, le=20000, title="Maximum chunk size",
+                         description="Topic groups longer than this are split further, on paragraphs then sentences.")
+    min_chunk_size: int = ui_field(100, ge=0, le=5000, title="Minimum chunk size",
+                                   description="Chunks smaller than this merge into their neighbour.")
+    breakpoint_percentile: int = ui_field(
+        90, ge=50, le=99, title="Breakpoint percentile",
+        description="Split where neighbouring sentences differ more than this share of all neighbouring pairs "
+                    "in the document. Higher = fewer, larger chunks.",
+    )
+    model: FastembedModel = ui_field(  # type: ignore[valid-type]
+        "BAAI/bge-small-en-v1.5", title="Sentence model",
+        description="Local model that compares neighbouring sentences. Runs on your computer.",
+        json_schema_extra={"enum_labels": {k: f"{k} · {v['size']}" for k, v in FASTEMBED_MODELS.items()}},
+    )
+
+
 class BaseChunker(Node):
     def spans(self, text: str) -> list[Span]:
         raise NotImplementedError
@@ -408,6 +463,17 @@ class SentenceChunker(BaseChunker):
     def spans(self, text: str) -> list[Span]:
         c = self.config
         return sentence_spans(text, c.size, c.overlap, c.unit)
+
+
+@register("chunk", "semantic", title="Semantic (topic shifts)",
+          description="Split where the meaning shifts between neighbouring sentences, using a local embedding model.")
+class SemanticChunker(BaseChunker):
+    Config = SemanticConfig
+
+    def spans(self, text: str) -> list[Span]:
+        c: SemanticConfig = self.config  # type: ignore[assignment]
+        return semantic_spans(text, lambda texts: embed_sentences(c.model, texts),
+                              c.breakpoint_percentile, c.size, c.overlap, c.unit)
 
 
 @register("chunk", "structure_aware", title="Structure-aware (headings)",

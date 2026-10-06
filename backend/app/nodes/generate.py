@@ -82,6 +82,21 @@ class ProviderGenerator(Node):
             raise llm.friendly_error(self.provider, e) from e
 
 
+    async def complete(self, prompt: str, max_tokens: int) -> tuple[str, int, int]:
+        """One short non-streamed call at temperature 0 (query expansion) -> (text, tokens_in, tokens_out)."""
+        c = self.config
+        try:
+            if not c.model:
+                self.resolved_model = await llm.resolve_model(self.provider, "chat")
+            extra = {} if c.reasoning_effort == "default" else {"reasoning_effort": c.reasoning_effort}
+            resp = await llm.client(self.provider).chat.completions.create(
+                model=self.model_name, messages=[{"role": "user", "content": prompt}],
+                temperature=0, max_tokens=max_tokens, stream=False, **extra)
+        except Exception as e:
+            raise llm.friendly_error(self.provider, e) from e
+        return (resp.choices[0].message.content or "", *llm.usage_tokens(resp.usage))
+
+
 def _register(provider: str, title: str, description: str, config: type[GenerateConfig]) -> None:
     @register("generate", provider, title=title, description=description,
               availability=lambda: llm.availability(provider))

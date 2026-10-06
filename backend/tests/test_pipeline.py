@@ -106,3 +106,42 @@ def test_strip_inline_html():
     assert strip_inline_html("| a<br>b | c |") == "| a b | c |"
     assert strip_inline_html("cut <mark>off") == "cut off"
     assert strip_inline_html("<class 'int'> and <div>") == "<class 'int'> and <div>"
+
+
+# --- semantic chunker ---------------------------------------------------------
+
+TOPICS = ("Cats purr when content. Cats chase mice at night. Cats sleep most of the day. "
+          "Rockets burn liquid fuel. Rockets reach orbit in minutes. Rockets need powerful engines.")
+
+
+def _topic_vectors(texts):
+    import numpy as np
+    return np.array([[1.0, 0.0] if "cat" in t.lower() else [0.0, 1.0] for t in texts], dtype=np.float32)
+
+
+def test_semantic_chunker_splits_at_topic_change(monkeypatch):
+    from app.nodes import chunk as C
+    monkeypatch.setattr(C, "embed_sentences", lambda model, texts: _topic_vectors(texts))
+    chunker = C.SemanticChunker({"size": 2000, "overlap": 0, "min_chunk_size": 0})
+    chunks = chunker.chunk([{"page": 1, "text": TOPICS}])
+    assert [c["text"].split()[0] for c in chunks] == ["Cats", "Rockets"]
+    assert "Rockets" not in chunks[0]["text"] and "Cats" not in chunks[1]["text"]
+    assert chunker.chunk([{"page": 1, "text": TOPICS}]) == chunks  # deterministic
+    # Max size still caps a topic group.
+    small = C.SemanticChunker({"size": 60, "overlap": 0, "min_chunk_size": 0}).chunk([{"page": 1, "text": TOPICS}])
+    assert len(small) > 2 and all(len(c["text"]) <= 60 for c in small)
+
+
+def test_semantic_chunker_config_feeds_index_hash():
+    cfg = validate_pipeline({**recommended_pipeline(), "chunk": {"type": "semantic"}})
+    h = index_config_hash(cfg)
+    for key, val in [("breakpoint_percentile", 80), ("min_chunk_size", 300), ("size", 600),
+                     ("model", "BAAI/bge-base-en-v1.5")]:
+        assert index_config_hash(validate_pipeline({**cfg, "chunk": {**cfg["chunk"], key: val}})) != h, key
+
+
+def test_query_expansion_and_context_window_are_instant():
+    cfg = recommended_pipeline()
+    assert cfg["retrieve"]["query_expansion"] == "none" and cfg["retrieve"]["context_window"] == 0
+    changed = {**cfg, "retrieve": {**cfg["retrieve"], "query_expansion": "hyde", "context_window": 2}}
+    assert index_config_hash(validate_pipeline(changed)) == index_config_hash(cfg)

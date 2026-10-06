@@ -17,6 +17,8 @@ class ReportIn(BaseModel):
     version_id: str | None = None
     # Real user questions, e.g. from support tickets; combined with Playground/API history.
     questions: list[str] = Field(default_factory=list, max_length=500)
+    # Staleness: flag documents whose last-modified date is older than this many days.
+    stale_days: int = Field(health.STALE_DAYS, ge=1, le=36500)
 
 
 def _out(r: dict[str, Any], full: bool = True) -> dict[str, Any]:
@@ -29,7 +31,8 @@ def _out(r: dict[str, Any], full: bool = True) -> dict[str, Any]:
         out["summary"] = result and {
             **result["coverage"]["summary"], "topics": len(result["coverage"]["topics"]),
             "contradictions": len(result["contradictions"]), "duplicates": len(result["duplicates"]),
-            "unused_documents": result["usage"]["unused_documents"]}
+            "unused_documents": result["usage"]["unused_documents"],
+            "stale_documents": len((result.get("staleness") or {}).get("documents", []))}
     return out
 
 
@@ -52,7 +55,8 @@ async def create_report(project_id: str, body: ReportIn) -> dict[str, Any]:
     async with db.tx() as c:
         await c.execute("INSERT INTO corpus_reports (id, project_id, version_id, questions, created_at)"
                         " VALUES (?,?,?,?,?)", (report_id, project_id, v["id"], db.dumps(pasted), db.now_iso()))
-    job = jobs.start("health", project_id, lambda job: health.run_report(job, report_id, project_id, v, pasted))
+    job = jobs.start("health", project_id, lambda job: health.run_report(job, report_id, project_id, v, pasted,
+                                                                           body.stale_days))
     return {"report": _out(await _report(project_id, report_id)), "job_id": job.id}
 
 

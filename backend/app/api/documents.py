@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
 from pydantic import BaseModel, Field
 
 from .. import db
@@ -10,7 +10,7 @@ from ..core.pipeline import index_config_hash
 from ..engine import sync
 from ..ingest import documents as docs_svc
 from ..ingest import jobs
-from ..ingest.documents import DocumentError
+from ..ingest.documents import OKF, DocumentError
 
 router = APIRouter(prefix="/api/projects/{project_id}/documents", tags=["documents"])
 
@@ -32,12 +32,27 @@ async def _active_cfg(project_id: str) -> dict[str, Any] | None:
     return db.loads(v["config"]) if v else None
 
 
-def _doc_out(d: dict[str, Any], build_rows: dict[str, dict[str, Any]]) -> dict[str, Any]:
+async def _usage_counts(project_id: str) -> dict[str, int]:
+    """OKF usage_count: chunk appearances per document in the retrieval results of recorded runs."""
+    rows = await db.fetch_all(
+        "SELECT json_extract(j.value, '$.document_id') AS doc, COUNT(*) AS n"
+        " FROM runs r, json_each(r.result, '$.retrieved') j"
+        " WHERE r.project_id=? AND r.kind='chat' AND r.result IS NOT NULL GROUP BY doc", (project_id,))
+    return {r["doc"]: r["n"] for r in rows}
+
+
+_DOC_SQL = ("SELECT d.*, o.metadata AS okf, o.last_modified FROM documents d"
+            " LEFT JOIN document_okf o ON o.document_id = d.id")
+
+
+def _doc_out(d: dict[str, Any], build_rows: dict[str, dict[str, Any]], usage: dict[str, int]) -> dict[str, Any]:
     b = build_rows.get(d["id"])
     return {
         "id": d["id"], "filename": d["filename"], "source_url": d["source_url"], "mime": d["mime"],
         "size_bytes": d["size_bytes"], "status": d["status"], "error": d["error"],
         "parse_quality": db.loads(d["parse_quality"]), "created_at": d["created_at"],
+        "last_modified": d["last_modified"],
+        "okf": {**db.loads(d["okf"], {}), "usage_count": usage.get(d["id"], 0)},
         # Per active index: None = not in the active index yet.
         "chunks": b["chunk_count"] if b else None,
         "index_error": b["error"] if b else None,
@@ -47,8 +62,12 @@ def _doc_out(d: dict[str, Any], build_rows: dict[str, dict[str, Any]]) -> dict[s
 @router.get("")
 async def list_documents(project_id: str) -> list[dict[str, Any]]:
     await _require_project(project_id)
-    rows = await db.fetch_all("SELECT * FROM documents WHERE project_id=? ORDER BY created_at DESC, id",
-                              (project_id,))
+    return await _documents(project_id)
+
+
+async def _documents(project_id: str, doc_id: str | None = None) -> list[dict[str, Any]]:
+    rows = await db.fetch_all(f"{_DOC_SQL} WHERE d.project_id=? AND (? IS NULL OR d.id=?)"
+                              " ORDER BY d.created_at DESC, d.id", (project_id, doc_id, doc_id))
     cfg = await _active_cfg(project_id)
     build_rows: dict[str, dict[str, Any]] = {}
     if cfg:
@@ -57,18 +76,23 @@ async def list_documents(project_id: str) -> list[dict[str, Any]]:
         if b:
             for r in await db.fetch_all("SELECT * FROM build_documents WHERE build_id=?", (b["id"],)):
                 build_rows[r["document_id"]] = r
-    return [_doc_out(d, build_rows) for d in rows]
+    usage = await _usage_counts(project_id)
+    return [_doc_out(d, build_rows, usage) for d in rows]
 
 
 @router.post("", status_code=201)
 async def upload_documents(project_id: str, files: list[UploadFile] = File(...),
+                           last_modified: list[int] | None = Form(None),
                            build: bool = Query(True)) -> dict[str, Any]:
+    """`last_modified`: optional, one per file in the same order (browser File.lastModified, epoch ms)."""
     await _require_project(project_id)
     created, duplicates, errors = [], [], []
-    for f in files:
+    for i, f in enumerate(files):
         try:
             data = await f.read()
-            doc, new = await docs_svc.create_document(project_id, f.filename or "document", data)
+            modified = docs_svc.iso_from_ms(last_modified[i]) if last_modified and i < len(last_modified) else None
+            doc, new = await docs_svc.create_document(project_id, f.filename or "document", data,
+                                                      last_modified=modified)
             (created if new else duplicates).append({"id": doc["id"], "filename": doc["filename"]})
         except DocumentError as e:
             errors.append({"filename": f.filename, "error": str(e)})
@@ -107,6 +131,18 @@ async def add_url(project_id: str, body: UrlIn) -> dict[str, Any]:
 async def delete_document(project_id: str, doc_id: str) -> None:
     if not await docs_svc.delete_document(project_id, doc_id):
         raise HTTPException(404, "document not found")
+
+
+@router.patch("/{doc_id}/metadata")
+async def update_metadata(project_id: str, doc_id: str, body: OKF) -> dict[str, Any]:
+    """Replace a document's OKF fields. Not index config: never triggers a rebuild."""
+    if not await db.fetch_one("SELECT id FROM documents WHERE id=? AND project_id=?", (doc_id, project_id)):
+        raise HTTPException(404, "document not found")
+    async with db.tx() as c:
+        await c.execute("INSERT INTO document_okf (document_id, metadata) VALUES (?, ?)"
+                        " ON CONFLICT(document_id) DO UPDATE SET metadata=excluded.metadata",
+                        (doc_id, db.dumps(body.model_dump(mode="json", exclude_none=True))))
+    return (await _documents(project_id, doc_id))[0]
 
 
 @router.post("/{doc_id}/reindex")

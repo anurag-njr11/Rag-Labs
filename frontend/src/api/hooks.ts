@@ -20,6 +20,7 @@ import type {
   CreateVersionBody,
   CreateVersionResult,
   Document,
+  DocumentOkf,
   EstimateResult,
   EvalRun,
   EvalRunDetail,
@@ -28,6 +29,7 @@ import type {
   Sweep,
   SweepAxes,
   EvalFix,
+  Judge,
   HealthReport,
   Health,
   Job,
@@ -320,7 +322,10 @@ export function useUploadDocuments(projectId: string) {
   return useMutation({
     mutationFn: ({ files, build = true }: { files: File[] | FileList; build?: boolean }) => {
       const fd = new FormData()
-      for (const f of Array.from(files)) fd.append('files', f, f.name)
+      for (const f of Array.from(files)) {
+        fd.append('files', f, f.name)
+        fd.append('last_modified', String(f.lastModified || 0)) // one per file, same order; 0 = unknown
+      }
       return api.post<UploadResult>(`/projects/${projectId}/documents`, fd, { build })
     },
     onSuccess: () => invalidateProject(qc, projectId),
@@ -333,6 +338,16 @@ export function useAddUrl(projectId: string) {
   return useMutation({
     mutationFn: (body: AddUrlBody) => api.post<{ job_id: string }>(`/projects/${projectId}/documents/url`, body),
     onSuccess: () => invalidateProject(qc, projectId),
+  })
+}
+
+/** Replace a document's OKF fields. Not index config: never rebuilds. */
+export function useUpdateDocumentMetadata(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ docId, okf }: { docId: string; okf: DocumentOkf }) =>
+      api.patch<Document>(`/projects/${projectId}/documents/${docId}/metadata`, okf),
+    onSuccess: (doc) => qc.setQueryData<Document[]>(qk.documents(projectId), (prev) => prev?.map((d) => (d.id === doc.id ? doc : d))),
   })
 }
 
@@ -572,7 +587,7 @@ export const useEvalRun = (projectId: string | undefined, runId: string | null |
 export function useRunEval(projectId: string, setId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (body: { version_id?: string; answers?: boolean }) =>
+    mutationFn: (body: { version_id?: string; answers?: boolean; judge?: Judge }) =>
       api.post<{ run: EvalRun; job_id: string }>(`${evalBase(projectId)}/sets/${setId}/runs`, body),
     onSuccess: () => void qc.invalidateQueries({ queryKey: qk.evalRuns(projectId, setId) }),
   })
@@ -601,7 +616,7 @@ export const useSweeps = (projectId: string | undefined, o?: QOpts<Sweep[]>) =>
 export function useStartSweep(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (body: { set_id: string; version_id?: string; axes: { path: string; values: unknown[] }[]; auto_optimize?: boolean }) =>
+    mutationFn: (body: { set_id: string; version_id?: string; axes: { path: string; values: unknown[] }[]; auto_optimize?: boolean; judge?: Judge }) =>
       api.post<{ sweep: Sweep; job_id: string }>(`${evalBase(projectId)}/sweeps`, body),
     onSuccess: () => void qc.invalidateQueries({ queryKey: qk.sweeps(projectId) }),
   })
@@ -638,7 +653,7 @@ export const useHealthReport = (projectId: string | undefined, reportId: string 
 export function useStartHealthReport(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (body: { version_id?: string; questions?: string[] }) =>
+    mutationFn: (body: { version_id?: string; questions?: string[]; stale_days?: number }) =>
       api.post<{ report: HealthReport; job_id: string }>(`${healthBase(projectId)}/reports`, body),
     onSuccess: () => void qc.invalidateQueries({ queryKey: qk.healthReports(projectId) }),
   })
@@ -663,7 +678,7 @@ const invalidateSet = (qc: ReturnType<typeof useQueryClient>, projectId: string,
 export function useAddEvalItem(projectId: string, setId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (body: { question: string; gold_answer: string; evidence: string; document_id: string }) =>
+    mutationFn: (body: { question: string; gold_answer: string; evidence: string; document_id: string; facets?: string[] }) =>
       api.post(`${evalBase(projectId)}/sets/${setId}/items`, body),
     onSuccess: () => invalidateSet(qc, projectId, setId),
   })
@@ -672,7 +687,7 @@ export function useAddEvalItem(projectId: string, setId: string) {
 export function useUpdateEvalItem(projectId: string, setId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ itemId, ...body }: { itemId: string; question?: string; gold_answer?: string; evidence?: string; valid?: boolean }) =>
+    mutationFn: ({ itemId, ...body }: { itemId: string; question?: string; gold_answer?: string; evidence?: string; facets?: string[]; valid?: boolean }) =>
       api.patch(`${evalBase(projectId)}/sets/${setId}/items/${itemId}`, body),
     onSuccess: () => invalidateSet(qc, projectId, setId),
   })

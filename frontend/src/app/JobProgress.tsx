@@ -19,11 +19,13 @@ export const STAGE_LABELS: Record<JobStage, string> = {
   sweep: 'Score configurations',
   retrieve: 'Search each question',
   judge: 'Check answers against the docs',
+  recheck: 'Re-check gaps with a deeper search',
   scan: 'Find overlapping passages',
   contradictions: 'Check for contradictions',
   answer: 'Write answers',
   grade: 'Grade answers',
   grade_cells: 'Grade answers of the best configurations',
+  rejudge: 'Re-grade close configurations',
 }
 
 export interface JobProgressProps {

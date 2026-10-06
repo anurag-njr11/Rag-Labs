@@ -7,11 +7,14 @@ import asyncio
 import re
 import shutil
 import xml.etree.ElementTree as ET
+from datetime import UTC, date, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import Any
 from urllib.parse import unquote, urlparse
 
 import httpx
+from pydantic import BaseModel, ConfigDict, Field, ValidationError, field_validator
 
 from .. import db
 from ..config import get_settings
@@ -27,6 +30,78 @@ class DocumentError(ValueError):
     pass
 
 
+class OKF(BaseModel):
+    """Optional OKF document fields (PRD FR-2.30). `usage_count` is computed from runs, never stored."""
+    model_config = ConfigDict(extra="ignore")
+    status: str | None = Field(None, max_length=40)  # e.g. draft / published / deprecated
+    stale_after: date | None = None
+    verified: bool | date | None = None
+    sources: list[str] | None = Field(None, max_length=50)
+
+    @field_validator("sources", mode="before")
+    @classmethod
+    def _one_source(cls, v: Any) -> Any:
+        return [v] if isinstance(v, str) else v
+
+
+_FRONT_MATTER = re.compile(r"\A\ufeff?---[ \t]*\r?\n(.*?)\r?\n(?:---|\.\.\.)[ \t]*(?:\r?\n|\Z)", re.S)
+
+
+def _scalar(s: str) -> str:
+    return s.strip().strip("'\"")
+
+
+def front_matter(text: str) -> dict[str, Any]:
+    """Flat `key: value` YAML front matter, plus `[a, b]` and `- item` lists. Enough for the OKF
+    fields; anything fancier is ignored rather than half-parsed."""
+    # ponytail: not a YAML parser (no nesting, multi-line strings or comments); use one if front matter grows
+    m = _FRONT_MATTER.match(text)
+    out: dict[str, Any] = {}
+    key = None
+    for line in m.group(1).splitlines() if m else []:
+        item = re.match(r"\s*-\s+(.+)", line)
+        if item and key and isinstance(out.get(key), list):
+            out[key].append(_scalar(item.group(1)))
+            continue
+        kv = re.match(r"([A-Za-z_][\w-]*)\s*:\s*(.*)", line)
+        if not kv:
+            key = None
+            continue
+        key, val = kv.group(1).lower(), kv.group(2).strip()
+        if val.startswith("[") and val.endswith("]"):
+            out[key] = [_scalar(x) for x in val[1:-1].split(",") if x.strip()]
+        else:
+            out[key] = _scalar(val) if val else []
+    return out
+
+
+def okf_from_front_matter(data: bytes) -> dict[str, Any]:
+    """The valid OKF fields of a Markdown file's front matter; a bad field is dropped, not fatal."""
+    out: dict[str, Any] = {}
+    for k, v in front_matter(data[:16384].decode("utf-8", errors="replace")).items():
+        if k in OKF.model_fields:
+            try:
+                out.update(OKF.model_validate({k: v}).model_dump(mode="json", exclude_none=True))
+            except ValidationError:
+                pass
+    return out
+
+
+def iso_from_ms(ms: int | None) -> str | None:
+    """Browser File.lastModified (epoch ms) -> ISO datetime; None if absent or nonsense."""
+    try:
+        return datetime.fromtimestamp(ms / 1000, UTC).isoformat(timespec="seconds") if ms and ms > 0 else None
+    except (OverflowError, OSError, ValueError):
+        return None
+
+
+def iso_from_http(value: str | None) -> str | None:
+    try:
+        return parsedate_to_datetime(value).astimezone(UTC).isoformat(timespec="seconds") if value else None
+    except (TypeError, ValueError):
+        return None
+
+
 def safe_filename(name: str) -> str:
     name = Path(name.replace("\\", "/")).name
     stem, dot, ext = name.rpartition(".")
@@ -37,9 +112,10 @@ def safe_filename(name: str) -> str:
     return f"{stem}.{ext}" if ext else stem
 
 
-async def create_document(project_id: str, filename: str, data: bytes,
-                          source_url: str | None = None) -> tuple[dict[str, Any], bool]:
-    """Returns (document, created). A byte-identical duplicate returns the existing document."""
+async def create_document(project_id: str, filename: str, data: bytes, source_url: str | None = None,
+                          last_modified: str | None = None) -> tuple[dict[str, Any], bool]:
+    """Returns (document, created). A byte-identical duplicate returns the existing document.
+    Markdown front matter's OKF fields and `last_modified` (ISO) go to document_okf."""
     settings = get_settings()
     filename = safe_filename(filename)
     kind = detect_kind(filename)
@@ -66,6 +142,10 @@ async def create_document(project_id: str, filename: str, data: bytes,
             " size_bytes, status, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'uploaded', ?)",
             (doc_id, project_id, filename, source_url, MIME[kind], str(raw_path), sha, len(data), db.now_iso()),
         )
+        okf = okf_from_front_matter(data) if kind == "markdown" else {}
+        if okf or last_modified:
+            await c.execute("INSERT INTO document_okf (document_id, metadata, last_modified) VALUES (?, ?, ?)",
+                            (doc_id, db.dumps(okf), last_modified))
     return await db.fetch_one("SELECT * FROM documents WHERE id=?", (doc_id,)), True  # type: ignore[return-value]
 
 
@@ -81,7 +161,8 @@ def _filename_for(url: str, content_type: str, title_hint: str | None = None) ->
     return safe_filename(f"{stem}{ext}")
 
 
-async def fetch_url(client: httpx.AsyncClient, url: str) -> tuple[bytes, str]:
+async def fetch_url(client: httpx.AsyncClient, url: str) -> tuple[bytes, str, str | None]:
+    """(body, content type, Last-Modified as ISO or None)."""
     try:
         r = await client.get(url)
         r.raise_for_status()
@@ -89,7 +170,7 @@ async def fetch_url(client: httpx.AsyncClient, url: str) -> tuple[bytes, str]:
         raise DocumentError(f"{url}: HTTP {e.response.status_code}") from e
     except httpx.HTTPError as e:
         raise DocumentError(f"{url}: {type(e).__name__}") from e
-    return r.content, r.headers.get("content-type", "")
+    return r.content, r.headers.get("content-type", ""), iso_from_http(r.headers.get("last-modified"))
 
 
 def _client() -> httpx.AsyncClient:
@@ -100,8 +181,8 @@ async def create_from_url(project_id: str, url: str) -> tuple[dict[str, Any], bo
     if urlparse(url).scheme not in ("http", "https"):
         raise DocumentError("Only http(s) URLs are supported.")
     async with _client() as client:
-        data, ctype = await fetch_url(client, url)
-    return await create_document(project_id, _filename_for(url, ctype), data, source_url=url)
+        data, ctype, modified = await fetch_url(client, url)
+    return await create_document(project_id, _filename_for(url, ctype), data, source_url=url, last_modified=modified)
 
 
 def _sitemap_locs(xml: bytes) -> tuple[list[str], list[str]]:
@@ -125,7 +206,7 @@ async def crawl_sitemap(project_id: str, sitemap_url: str, max_pages: int, job: 
                 continue
             seen.add(sm)
             job.progress("fetch", 0, 0, f"Reading sitemap {sm}")
-            data, _ = await fetch_url(client, sm)
+            data, _, _ = await fetch_url(client, sm)
             try:
                 locs, nested = _sitemap_locs(data)
             except ET.ParseError as e:
@@ -142,8 +223,9 @@ async def crawl_sitemap(project_id: str, sitemap_url: str, max_pages: int, job: 
             nonlocal created, skipped, failed, done
             async with sem:
                 try:
-                    data, ctype = await fetch_url(client, url)
-                    _, new = await create_document(project_id, _filename_for(url, ctype), data, source_url=url)
+                    data, ctype, modified = await fetch_url(client, url)
+                    _, new = await create_document(project_id, _filename_for(url, ctype), data, source_url=url,
+                                                   last_modified=modified)
                     created += int(new)
                     skipped += int(not new)
                 except DocumentError as e:

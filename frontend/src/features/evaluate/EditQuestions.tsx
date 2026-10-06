@@ -11,7 +11,11 @@ interface Draft {
   gold_answer: string
   evidence: string
   document_id: string
+  /** Required facts, `|`-separated while editing (same as the CSV column). */
+  facets: string
 }
+
+const splitFacets = (s: string) => s.split('|').map((f) => f.trim()).filter(Boolean)
 
 /** Question / answer / document / verbatim evidence form, shared by add and edit. */
 function ItemForm({
@@ -45,6 +49,9 @@ function ItemForm({
       <Field label="Evidence" help="A sentence copied word for word from that document. A retrieved chunk containing it counts as a hit." error={error}>
         {(f) => <Textarea id={f.id} rows={3} value={d.evidence} onChange={set('evidence')} required aria-describedby={f.describedBy} invalid={f.invalid} />}
       </Field>
+      <Field label="Required facts (optional)" help="Short facts a complete answer must state, separated by |. Answer grading flags answers that leave one out.">
+        {(f) => <Input id={f.id} value={d.facets} onChange={set('facets')} placeholder="3 retries | exponential backoff" aria-describedby={f.describedBy} />}
+      </Field>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="secondary" onClick={onCancel}>Cancel</Button>
         <Button type="submit" variant="primary" loading={saving}>Save</Button>
@@ -65,7 +72,7 @@ function Row({ projectId, setId, item }: { projectId: string; setId: string; ite
     return (
       <li className="py-2">
         <ItemForm
-          initial={{ question: item.question, gold_answer: item.gold_answer, evidence: item.evidence, document_id: item.document_id }}
+          initial={{ question: item.question, gold_answer: item.gold_answer, evidence: item.evidence, document_id: item.document_id, facets: (item.facets ?? []).join(' | ') }}
           documents={[]}
           lockDocument
           saving={update.isPending}
@@ -73,7 +80,7 @@ function Row({ projectId, setId, item }: { projectId: string; setId: string; ite
           onCancel={() => setEditing(false)}
           onSave={(d) =>
             update.mutate(
-              { itemId: item.id, question: d.question, gold_answer: d.gold_answer, evidence: d.evidence },
+              { itemId: item.id, question: d.question, gold_answer: d.gold_answer, evidence: d.evidence, facets: splitFacets(d.facets) },
               { onSuccess: () => setEditing(false), onError: (e) => setError(errorMessage(e)) },
             )
           }
@@ -87,6 +94,7 @@ function Row({ projectId, setId, item }: { projectId: string; setId: string; ite
         <p className="text-body text-text-primary">{item.question}</p>
         <p className="truncate text-body-sm text-text-tertiary">
           {item.document ?? '—'} · {item.gold_answer}
+          {item.facets?.length ? ` · ${item.facets.length} required fact${item.facets.length === 1 ? '' : 's'}` : ''}
         </p>
         {!item.valid && item.reject_reason && <p className="text-body-sm text-warning-fg">{item.reject_reason}</p>}
       </div>
@@ -162,17 +170,17 @@ export function EditQuestions({ set }: { set: EvalSetDetail }) {
             </Button>
             <input ref={file} type="file" accept=".csv,text/csv" className="hidden" aria-label="CSV file to import"
               onChange={(e) => void onFile(e.target.files?.[0])} />
-            <span className="self-center text-body-sm text-text-tertiary">CSV columns: question, gold_answer, evidence, document (file name)</span>
+            <span className="self-center text-body-sm text-text-tertiary">CSV columns: question, gold_answer, evidence, document (file name), facets (optional, | between facts)</span>
           </div>
           {adding && (
             <ItemForm
-              initial={{ question: '', gold_answer: '', evidence: '', document_id: documents[0]?.value ?? '' }}
+              initial={{ question: '', gold_answer: '', evidence: '', document_id: documents[0]?.value ?? '', facets: '' }}
               documents={documents}
               saving={add.isPending}
               error={addError}
               onCancel={() => setAdding(false)}
               onSave={(d) =>
-                add.mutate({ ...d, document_id: d.document_id || documents[0]?.value || '' }, {
+                add.mutate({ ...d, facets: splitFacets(d.facets), document_id: d.document_id || documents[0]?.value || '' }, {
                   onSuccess: () => setAdding(false),
                   onError: (e) => setAddError(errorMessage(e)),
                 })

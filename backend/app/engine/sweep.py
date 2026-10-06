@@ -16,7 +16,9 @@ import math
 from typing import Any
 
 from .. import db
+from ..core import evalmetrics as M
 from ..core.cache import stable_hash
+from ..core.node import slot_types
 from ..core.pipeline import PipelineError, default_for, index_config_hash, validate_pipeline
 from ..ingest.document_analyzer import DocumentMetadata, aggregate_corpus_metadata
 from ..ingest.jobs import Job
@@ -33,7 +35,7 @@ MAX_GRADED = 5
 AXES: list[dict[str, Any]] = [
     {"path": "chunk.size", "label": "Chunk size", "effect": "rebuild", "values": [256, 512, 1000, 1500]},
     {"path": "chunk.type", "label": "Chunking strategy", "effect": "rebuild",
-     "values": ["fixed", "recursive", "sentence", "structure_aware"]},
+     "values": list(slot_types("chunk"))},
     # Best MTEB retrieval score first (FR-2.19); `seed` = the UI's "MTEB top 3" preset.
     {"path": "embed.model", "label": "Embedding model (local)", "effect": "rebuild",
      "values": sorted(FASTEMBED_MODELS, key=lambda m: -(FASTEMBED_MODELS[m]["mteb"] or 0)),
@@ -42,7 +44,10 @@ AXES: list[dict[str, Any]] = [
      "seed": sorted(FASTEMBED_MODELS, key=lambda m: -(FASTEMBED_MODELS[m]["mteb"] or 0))[:3],
      "requires": {"embed.type": "fastembed"}},
     {"path": "retrieve.type", "label": "Retriever", "effect": "instant",
-     "values": ["dense", "keyword", "hybrid", "fused"]},
+     "values": list(slot_types("retrieve"))},
+    {"path": "retrieve.query_expansion", "label": "Query expansion", "effect": "instant",
+     "values": ["none", "multi_query", "hyde"]},
+    {"path": "retrieve.context_window", "label": "Context window", "effect": "instant", "values": [0, 1, 2]},
     {"path": "retrieve.top_k", "label": "Top k", "effect": "instant", "values": [3, 5, 8, 12]},
     {"path": "rerank.type", "label": "Reranker", "effect": "instant", "values": ["none", "cross_encoder"]},
 ]
@@ -137,7 +142,21 @@ def to_grade(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return done[:min(MAX_GRADED, max(1, math.ceil(len(done) * GRADE_FRACTION)))] if done else []
 
 
-async def run_sweep(job: Job, sweep_id: str, auto_optimize: bool = False) -> dict[str, Any]:
+def near_leader(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Graded cells too close to call (FR-2.8): the leader by correct rate plus every cell whose
+    95% interval overlaps the leader's. Empty when the leader is clear (or nothing to compare)."""
+    graded = [c for c in cells if (c.get("metrics") or {}).get("answers", {}).get("n")]
+    if len(graded) < 2:
+        return []
+    lead = max(graded, key=lambda c: c["metrics"]["answers"]["correct_rate"])
+    lo, hi = lead["metrics"]["answers"]["correct_ci"]
+    close = [c for c in graded if c is not lead
+             and c["metrics"]["answers"]["correct_ci"][1] >= lo and c["metrics"]["answers"]["correct_ci"][0] <= hi]
+    return [lead, *close] if close else []
+
+
+async def run_sweep(job: Job, sweep_id: str, auto_optimize: bool = False,
+                    judge: dict[str, str] | None = None) -> dict[str, Any]:
     sweep = await db.fetch_one("SELECT * FROM sweeps WHERE id=?", (sweep_id,))
     assert sweep is not None
     cells = db.loads(sweep["cells"], [])
@@ -164,7 +183,7 @@ async def run_sweep(job: Job, sweep_id: str, auto_optimize: bool = False) -> dic
         job.progress("sweep", len(todo), len(todo))
         row = await db.fetch_one("SELECT status FROM sweeps WHERE id=?", (sweep_id,))
         if auto_optimize and row is not None and row["status"] == "running":
-            await _grade_top(job, sweep, cells, items)
+            await _grade_top(job, sweep, cells, items, judge)
         for c in cells:
             if c["status"] == "pending":
                 c["status"] = "skipped"
@@ -179,19 +198,34 @@ async def run_sweep(job: Job, sweep_id: str, auto_optimize: bool = False) -> dic
 
 
 async def _grade_top(job: Job, sweep: dict[str, Any], cells: list[dict[str, Any]],
-                     items: list[dict[str, Any]]) -> None:
+                     items: list[dict[str, Any]], judge: dict[str, str] | None = None) -> None:
     top = to_grade(cells)
+    kept: dict[int, tuple[list[dict[str, Any]], list[dict[str, Any]]]] = {}  # id(cell) -> (judge inputs, results)
     for n, cell in enumerate(top, start=1):
         job.progress("grade_cells", n - 1, len(top), message=_label(cell))
         try:
-            _, metrics, _ = await evaluate.score_config(job, sweep["project_id"], cell["config"], items,
-                                                        stage=None, answers=True)
+            todo: list[dict[str, Any]] = []
+            _, metrics, results = await evaluate.score_config(job, sweep["project_id"], cell["config"], items,
+                                                              stage=None, answers=True, judge=judge, judged=todo)
             cell["metrics"]["answers"] = metrics["answers"]
+            kept[id(cell)] = (todo, results)
         except Exception as e:  # keep the retrieval scores; just note why grading failed
             cell["grade_error"] = str(e)
             job.log(f"Grading {_label(cell)}: {e}", level="warning")
         await _save(sweep["id"], cells)
     job.progress("grade_cells", len(top), len(top))
+    # Median-of-3 only where the call is close: cost stays bounded to the overlapping cells.
+    close = [c for c in near_leader(top) if id(c) in kept]
+    for cell in close:
+        job.log(f"Re-judging {_label(cell)} twice more: its answer score is within noise of the leader's")
+        todo, results = kept[id(cell)]
+        try:
+            await evaluate.rejudge(job, cell["config"], judge, todo, results)
+            cell["metrics"]["answers"] = {**M.answer_summary(results), "judge": cell["metrics"]["answers"]["judge"],
+                                          "rejudged": True}
+        except Exception as e:  # the single-judge verdicts stand
+            job.log(f"Re-judging {_label(cell)}: {e}", level="warning")
+        await _save(sweep["id"], cells)
 
 
 async def corpus_fingerprint(project_id: str) -> dict[str, Any]:

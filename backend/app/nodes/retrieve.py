@@ -50,6 +50,21 @@ class RetrieveConfig(NodeConfig):
                          description="Maximal Marginal Relevance: prefer results that aren't near-duplicates.")
     mmr_lambda: float = ui_field(0.7, ge=0, le=1, advanced=True, title="MMR relevance weight",
                                  description="1 = pure relevance, 0 = pure diversity.")
+    query_expansion: Literal["none", "multi_query", "hyde"] = ui_field(
+        "none", title="Query expansion",
+        description="multi_query: the Generate model rewrites the question a few ways, each is searched, "
+                    "results fused (RRF). hyde: it writes a hypothetical answer, which the dense path searches "
+                    "with instead of the question. One extra LLM call per question; falls back to the plain "
+                    "question if the call fails.",
+    )
+    expansion_queries: int = ui_field(3, ge=1, le=5, advanced=True, title="Rewrites (multi_query)",
+                                      description="How many rewrites of the question to search with.")
+    context_window: int = ui_field(
+        0, ge=0, le=3, title="Context window (neighbours)",
+        description="Add this many neighbouring chunks on each side (same document, in order) to every "
+                    "result before reranking and the prompt. Sentence-window / auto-merging style: search "
+                    "small, answer with more context. 0 = off.",
+    )
 
 
 class BaseRetriever(Node):

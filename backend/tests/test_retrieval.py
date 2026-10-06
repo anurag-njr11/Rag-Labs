@@ -240,3 +240,100 @@ async def test_pinned_definition_ranks_first_after_fusion(project):
     off = validate_pipeline({**cfg, "retrieve": {**cfg["retrieve"], "pin_definitions": False}})
     res_off = await retrieval.retrieve(RunContext(), build=build, cfg=off, question=q)
     assert not any(r["pinned"] for r in res_off)
+
+
+# --- query expansion & context window -----------------------------------------
+
+def _events(ctx, step):
+    return [e for e in ctx.events if e.step == step]
+
+
+@pytest.mark.parametrize("mode", ["multi_query", "hyde"])
+async def test_query_expansion_falls_back_on_llm_error(project, monkeypatch, mode):
+    from app.nodes.generate import ProviderGenerator
+
+    async def boom(self, prompt, max_tokens):
+        raise RuntimeError("provider down")
+
+    monkeypatch.setattr(ProviderGenerator, "complete", boom)
+    retrieval._expansions.clear()
+    cfg = _cfg("numpy")
+    build = await builder.sync_build(project, cfg)
+    q = "How do I make a field optional?"
+    plain = await retrieval.retrieve(RunContext(), build=build, cfg=cfg, question=q)
+    ecfg = validate_pipeline({**cfg, "retrieve": {**cfg["retrieve"], "query_expansion": mode}})
+    ctx = RunContext()
+    res = await retrieval.retrieve(ctx, build=build, cfg=ecfg, question=q)
+    assert [(r["id"], r["score"]) for r in res] == [(r["id"], r["score"]) for r in plain]
+    (ev,) = _events(ctx, "query_expansion")
+    assert ev.payload["fallback"] and "provider down" in ev.payload["error"]
+
+
+async def test_multi_query_searches_rewrites_and_caches(project, monkeypatch):
+    from app.nodes.generate import ProviderGenerator
+    calls = []
+
+    async def fake(self, prompt, max_tokens):
+        calls.append(prompt)
+        return "1. Give a field a default value\n- How to subclass BaseModel\n\n", 40, 12
+
+    monkeypatch.setattr(ProviderGenerator, "complete", fake)
+    retrieval._expansions.clear()
+    cfg = _cfg("numpy")
+    cfg = validate_pipeline({**cfg, "retrieve": {**cfg["retrieve"], "query_expansion": "multi_query"}})
+    build = await builder.sync_build(project, cfg)
+    ctx = RunContext()
+    r1 = await retrieval.retrieve(ctx, build=build, cfg=cfg, question="optional fields?")
+    (ev,) = _events(ctx, "query_expansion")
+    assert ev.payload["queries"] == ["Give a field a default value", "How to subclass BaseModel"]
+    assert ev.tokens_in == 40 and ev.tokens_out == 12
+    assert len(_events(ctx, "dense_search")) == 3 and len(_events(ctx, "keyword_search")) == 3
+    assert len(_events(ctx, "exact_search")) == 1  # exact stays on the original question
+    assert {"fields.md", "models.md"} <= {r["document"] for r in r1}
+    assert all(set(r["found_by"]) <= {"dense", "keyword", "exact"} for r in r1)
+    ctx2 = RunContext()
+    r2 = await retrieval.retrieve(ctx2, build=build, cfg=cfg, question="optional fields?")
+    assert [(r["id"], r["score"]) for r in r2] == [(r["id"], r["score"]) for r in r1]
+    assert len(calls) == 1 and _events(ctx2, "query_expansion")[0].payload["cached"]
+
+
+async def test_hyde_embeds_passage_for_dense_only(project, monkeypatch):
+    from app.nodes.generate import ProviderGenerator
+
+    async def fake(self, prompt, max_tokens):
+        return "Subclass BaseModel and validate with Model.model_validate(data).", 30, 15
+
+    monkeypatch.setattr(ProviderGenerator, "complete", fake)
+    retrieval._expansions.clear()
+    cfg = _cfg("numpy")
+    cfg = validate_pipeline({**cfg, "retrieve": {**cfg["retrieve"], "type": "dense", "query_expansion": "hyde"}})
+    build = await builder.sync_build(project, cfg)
+    ctx = RunContext()
+    res = await retrieval.retrieve(ctx, build=build, cfg=cfg, question="zzz unrelated words")
+    assert res[0]["document"] == "models.md"
+    assert _events(ctx, "query_expansion")[0].payload["passage"].startswith("Subclass")
+    # A keyword-only retriever has no dense path, so HyDE makes no LLM call.
+    kcfg = validate_pipeline({**cfg, "retrieve": {**cfg["retrieve"], "type": "keyword"}})
+    kctx = RunContext()
+    await retrieval.retrieve(kctx, build=build, cfg=kcfg, question="zzz unrelated words")
+    assert not _events(kctx, "query_expansion")
+
+
+async def test_context_window_merges_neighbours(project):
+    from app.ingest.documents import create_document
+    await create_document("p", "letters.md", (
+        "# Alpha\n\nalpha text here.\n\n# Bravo\n\nbravo text here.\n\n"
+        "# Charlie\n\ncharlie text here.\n\n# Delta\n\ndelta text here.\n").encode())
+    cfg = _cfg("numpy")
+    build = await builder.sync_build(project, cfg)
+    q = "bravo"
+    plain = await retrieval.retrieve(RunContext(), build=build, cfg=cfg, question=q)
+    wcfg = validate_pipeline({**cfg, "retrieve": {**cfg["retrieve"], "context_window": 1}})
+    ctx = RunContext()
+    res = await retrieval.retrieve(ctx, build=build, cfg=wcfg, question=q)
+    assert [r["id"] for r in res] == [r["id"] for r in plain]  # same hits, same order
+    hit = next(r for r in res if r["document"] == "letters.md" and r["heading_path"] == "Bravo")
+    assert hit["window"] == [hit["ordinal"] - 1, hit["ordinal"], hit["ordinal"] + 1]
+    assert "alpha" in hit["text"] and "bravo" in hit["text"] and "charlie" in hit["text"]
+    assert "delta" not in hit["text"]
+    assert _events(ctx, "context_window")[0].payload["chunks_added"] > 0

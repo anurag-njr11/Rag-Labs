@@ -1,10 +1,12 @@
 import { useState } from 'react'
 import { FlaskConical, RefreshCw, Sparkles } from 'lucide-react'
 import { errorMessage, useEvalSet, useEvalSets, useGenerateEvalSet } from '@/api/hooks'
+import type { Judge } from '@/api/types'
 import { useWorkspace } from '@/app/workspace'
 import { Banner, Button, Card, EmptyState, Select, Spinner, useToast } from '@/components/ui'
 import { EvalJobProgress } from './EvalJobProgress'
 import { EvalSetCard } from './EvalSetCard'
+import { JudgePicker } from './JudgePicker'
 import { RunsPanel } from './RunsPanel'
 import { SweepsPanel } from './SweepsPanel'
 
@@ -17,6 +19,7 @@ export default function EvaluateTab() {
   const { toast } = useToast()
   const [size, setSize] = useState('30')
   const [jobId, setJobId] = useState<string | null>(null)
+  const [judge, setJudge] = useState<Judge | null>(null)
 
   const latest = sets.data?.[0]
   const current = sets.data?.find((s) => s.status === 'ready') ?? null
@@ -61,11 +64,14 @@ export default function EvaluateTab() {
 
   return (
     <div className="mx-auto flex w-full max-w-[1440px] flex-col gap-6 px-4 py-8 sm:px-8">
-      <header className="max-w-3xl">
-        <h1 className="text-display text-text-primary">Evaluate</h1>
-        <p className="mt-1 text-body-lg text-text-secondary">
-          Measure how often retrieval finds the right passage, using questions written from your own documents.
-        </p>
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div className="max-w-3xl">
+          <h1 className="text-display text-text-primary">Evaluate</h1>
+          <p className="mt-1 text-body-lg text-text-secondary">
+            Measure how often retrieval finds the right passage, using questions written from your own documents.
+          </p>
+        </div>
+        {current && <JudgePicker value={judge} onChange={setJudge} />}
       </header>
       {sets.isPending ? (
         <Spinner label="Loading eval sets" />
@@ -94,6 +100,8 @@ export default function EvaluateTab() {
             projectId={project.id}
             setId={detail.data.id}
             items={detail.data.items}
+            judge={judge}
+            setRevision={detail.data.revision}
             side={
               <EvalSetCard
                 compact
@@ -112,7 +120,7 @@ export default function EvaluateTab() {
               />
             }
           />
-          <SweepsPanel projectId={project.id} setId={detail.data.id} />
+          <SweepsPanel projectId={project.id} setId={detail.data.id} judge={judge} />
         </>
       ) : (
         <Spinner label="Loading eval set" />
