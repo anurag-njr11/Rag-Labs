@@ -1,11 +1,11 @@
 import { useRef, useState } from 'react'
 import { Link } from 'react-router-dom'
 import { Ellipsis, Trash2 } from 'lucide-react'
-import { formatNumber, formatRelative, storeLabel } from '@/api/format'
+import { formatNumber, formatRelative } from '@/api/format'
 import type { Project, Provider } from '@/api/types'
 import type { StatusValue } from '@/components/ui'
 import { projectPath } from '@/app/workspace'
-import { Button, Popover, StatusBadge, cardClasses, cn } from '@/components/ui'
+import { Button, ButtonLink, Popover, StatusBadge, cardClasses, cn } from '@/components/ui'
 
 /** Card/Project status: Ready / Building / Failed / No documents (+ Stale / Not built). */
 function projectStatus(p: Project): StatusValue {
@@ -37,7 +37,9 @@ export function ProjectCard({ project: p, providers, onDelete }: { project: Proj
   const meta: [string, string, boolean?][] = [
     ['Docs', formatNumber(p.documents), true],
     ['Chunks', chunks ? formatNumber(chunks) : '—', true],
-    ['Store', storeLabel(p.summary?.vector_store ?? p.index?.store)],
+    p.summary?.quality
+      ? ['Quality', `Hit@${p.summary.quality.k} ${Math.round(p.summary.quality.hit_at_k * 100)}% · n=${p.summary.quality.n}`, true]
+      : ['Quality', 'Not measured'],
     ['Model', modelLabel(p, providers), true],
   ]
 
@@ -55,9 +57,7 @@ export function ProjectCard({ project: p, providers, onDelete }: { project: Proj
         </h2>
         <StatusBadge status={status} className="relative" />
       </div>
-      <p className={cn('line-clamp-2 min-h-10 text-body', p.description ? 'text-text-secondary' : 'text-text-tertiary')}>
-        {p.description || 'No description'}
-      </p>
+      {p.description && <p className="line-clamp-2 text-body text-text-secondary">{p.description}</p>}
       <dl className="grid grid-cols-2 gap-x-4 gap-y-3 border-t border-border-default pt-4">
         {meta.map(([k, v, mono]) => (
           <div key={k} className="min-w-0">
@@ -70,6 +70,9 @@ export function ProjectCard({ project: p, providers, onDelete }: { project: Proj
         <span className="text-body-sm text-text-tertiary">
           {p.active_version ? `v${p.active_version.version} · ` : ''}Updated {formatRelative(updatedAt(p))}
         </span>
+        {status === 'not_built' && (
+          <ButtonLink size="sm" variant="primary" to={projectPath(p.id, 'documents')} className="relative z-10 ml-auto">Build index</ButtonLink>
+        )}
         <Button
           ref={moreRef}
           variant="ghost"

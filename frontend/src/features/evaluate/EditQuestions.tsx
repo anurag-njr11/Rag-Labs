@@ -45,7 +45,7 @@ function ItemForm({
       <Field label="Expected answer">{(f) => <Input id={f.id} value={d.gold_answer} onChange={set('gold_answer')} required />}</Field>
       {!lockDocument && (
         <Field label="Document">
-          {(f) => <Select id={f.id} options={documents} value={d.document_id} onChange={set('document_id')} required />}
+          {(f) => <Select id={f.id} options={documents} value={d.document_id} onChange={set('document_id')} aria-required />}
         </Field>
       )}
       <Field label="Evidence" help="A sentence copied word for word from that document. A retrieved chunk containing it counts as a hit." error={error}>

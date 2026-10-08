@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import { RotateCcw, Save, Undo2, X } from 'lucide-react'
+import { useSearchParams } from 'react-router-dom'
+import { Ellipsis, LayoutList, Network, RotateCcw, Save, Undo2, X } from 'lucide-react'
 import { ApiError, errorMessage } from '@/api/client'
 import {
   useCreateVersion, useEstimate, useNodes, useRecommendedPipeline, useValidatePipeline, useVersions,
@@ -7,7 +8,7 @@ import {
 import type { Change, EstimateResult, PipelineConfig, PipelineFieldError, Slot } from '@/api/types'
 import { JobProgress } from '@/app/JobProgress'
 import { useWorkspace } from '@/app/workspace'
-import { Banner, Button, EffectBadge, Input, Spinner, useToast } from '@/components/ui'
+import { Banner, Button, EffectBadge, Input, Popover, Spinner, cn, useToast } from '@/components/ui'
 import { BuildChat } from './BuildChat'
 import { Canvas } from './Canvas'
 import { ConfigEditor } from './ConfigEditor'
@@ -40,7 +41,11 @@ export default function ConfigureTab() {
   }
 
   const [note, setNote] = useState('')
-  const [view, setView] = useState<'form' | 'canvas'>('form')
+  const [params, setParams] = useSearchParams()
+  const view: 'form' | 'canvas' = params.get('view') === 'canvas' ? 'canvas' : 'form'
+  const setView = (v: 'form' | 'canvas') => setParams(v === 'canvas' ? { view: 'canvas' } : {}, { replace: true })
+  const [moreOpen, setMoreOpen] = useState(false)
+  const moreRef = useRef<HTMLButtonElement>(null)
   /** Result of the latest validate → estimate round, tagged with the draft it was computed for. */
   const [check, setCheck] = useState<{
     draft: PipelineConfig
@@ -151,33 +156,33 @@ export default function ConfigureTab() {
   return (
     <div className="flex flex-1 flex-col">
       <div className="@container mx-auto w-full max-w-[1440px] flex-1 px-4 pb-12 pt-8 sm:px-8">
-        {/* Left padding = stage nav (w-64) + gap-10, so the heading lines up with the stage cards. */}
-        <div className="mb-6 flex flex-wrap items-baseline justify-between gap-2 @min-[900px]:pl-[296px]">
-          <div>
+        <div className="mb-5 flex flex-wrap items-end justify-between gap-3">
+          <div className="min-w-0">
             <h1 className="text-display text-text-primary">Pipeline configuration</h1>
             <p className="mt-1 text-body-lg text-text-secondary">
-              {active ? `Editing a draft based on v${active.version} (active).` : 'Editing a draft based on the recommended pipeline.'}{' '}
-              <EffectBadge effect="instant" className="align-middle" /> changes apply at query time;{' '}
-              <EffectBadge effect="rebuild" className="align-middle" /> changes re-index your documents.
+              {active ? `Draft based on v${active.version} (active).` : 'Draft based on the recommended pipeline.'}{' '}
+              Fields marked <EffectBadge effect="rebuild" className="align-middle" /> re-index your documents.
             </p>
           </div>
-        </div>
-        <div className={view === 'form' ? '@min-[900px]:pl-[296px]' : undefined}>
-          <BuildChat projectId={project.id} draft={draft} onApply={setDraft} />
-          <div className="mb-4 inline-flex rounded-md border border-border-default p-0.5" role="group" aria-label="View">
-            {(['form', 'canvas'] as const).map((v) => (
+          <div className="inline-flex h-8 rounded-md border border-border-strong bg-bg-subtle p-0.5" role="group" aria-label="View">
+            {([['form', 'Form', LayoutList], ['canvas', 'Canvas', Network]] as const).map(([v, label, Icon]) => (
               <button key={v} type="button" aria-pressed={view === v} onClick={() => setView(v)}
-                className={`focus-ring rounded px-3 py-1 text-body-sm ${view === v ? 'bg-accent-subtle text-accent-text' : 'text-text-secondary hover:bg-bg-subtle'}`}>
-                {v === 'form' ? 'Form' : 'Canvas'}
+                className={cn('focus-ring inline-flex items-center gap-1.5 rounded px-3 text-label',
+                  view === v ? 'border border-border-default bg-bg-surface text-text-primary shadow-sm' : 'border border-transparent text-text-secondary hover:text-text-primary')}>
+                <Icon size={14} aria-hidden /> {label}
               </button>
             ))}
           </div>
         </div>
         {view === 'form' ? (
-          <ConfigEditor value={draft} onChange={setDraft} projectId={project.id} errors={errors} baseline={baseline} />
+          <ConfigEditor value={draft} onChange={setDraft} projectId={project.id} errors={errors} baseline={baseline}
+            top={<BuildChat projectId={project.id} draft={draft} onApply={setDraft} />} />
         ) : (
-          <Canvas projectId={project.id} value={draft} onChange={setDraft} baseline={baseline} catalog={nodes.data ?? []}
-            errors={errors} changedBySlot={changedBySlot(localChanges(baseline, draft, nodes.data))} />
+          <>
+            <BuildChat projectId={project.id} draft={draft} onApply={setDraft} />
+            <Canvas projectId={project.id} value={draft} onChange={setDraft} baseline={baseline} catalog={nodes.data ?? []}
+              errors={errors} changedBySlot={changedBySlot(localChanges(baseline, draft, nodes.data))} />
+          </>
         )}
       </div>
 
@@ -251,14 +256,18 @@ export default function ConfigureTab() {
                 Discard
               </Button>
             )}
-            <Button
-              variant="secondary"
-              icon={<RotateCcw size={14} aria-hidden />}
-              disabled={!recommended.data || recommendedSame}
-              onClick={() => recommended.data && setDraft(recommended.data)}
-            >
-              Reset to recommended
-            </Button>
+            <Button ref={moreRef} variant="ghost" iconOnly icon={<Ellipsis size={16} aria-hidden />} aria-label="More draft actions"
+              aria-haspopup="dialog" aria-expanded={moreOpen} onClick={() => setMoreOpen((o) => !o)} />
+            <Popover open={moreOpen} onClose={() => setMoreOpen(false)} anchor={moreRef} width={240} className="p-1" aria-label="Draft actions">
+              <button type="button" disabled={!recommended.data || recommendedSame}
+                onClick={() => {
+                  setMoreOpen(false)
+                  if (recommended.data && window.confirm('Replace the draft with the recommended pipeline? Unsaved edits are lost.')) setDraft(recommended.data)
+                }}
+                className="focus-ring flex h-8 w-full items-center gap-2 rounded-md px-2 text-left text-label hover:bg-bg-subtle disabled:opacity-45">
+                <RotateCcw size={14} aria-hidden /> Reset to recommended…
+              </button>
+            </Popover>
             <Button
               variant="primary"
               icon={<Save size={14} aria-hidden />}

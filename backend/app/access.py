@@ -4,8 +4,8 @@ OSS_ROADMAP.md).
 Security model: the web UI runs on the same machine, so requests from loopback stay open. A request
 from anywhere else must carry `Authorization: Bearer rl_…`. A `chat` key may only call its project's
 chat endpoint; an `admin` key may call everything. Only the SHA-256 of a key is stored; the key itself
-is shown once. Behind a reverse proxy every request looks local, so set `TRUST_LOOPBACK=false` there:
-then every request needs a key (the web UI is meant for local use).
+is shown once. A request carrying proxy headers (X-Forwarded-For, Forwarded, X-Real-IP) was relayed, so it is
+never treated as local; if your proxy strips them, set `TRUST_LOOPBACK=false` and every request needs a key.
 """
 
 from __future__ import annotations
@@ -24,6 +24,7 @@ from . import db
 from .config import get_settings
 
 LOOPBACK = {"127.0.0.1", "::1", "localhost", "testclient"}
+PROXY_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip")
 _CHAT = re.compile(r"^/api/projects/([^/]+)/chat/?$")
 OPEN = {"/api/health"}
 
@@ -79,7 +80,8 @@ def allowed(key: dict[str, Any], method: str, path: str) -> bool:
 class KeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Any) -> Any:
         path = request.url.path
-        local = (request.client.host if request.client else "") in LOOPBACK and get_settings().trust_loopback
+        local = ((request.client.host if request.client else "") in LOOPBACK and get_settings().trust_loopback
+                 and not any(h in request.headers for h in PROXY_HEADERS))
         request.state.api_key = None
         if path.startswith("/api/") and path not in OPEN and request.method != "OPTIONS":
             header = request.headers.get("authorization")

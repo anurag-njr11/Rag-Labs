@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ElementType, type ReactNode } from 'react'
 import { ArrowRight, TriangleAlert } from 'lucide-react'
 import { Link } from 'react-router-dom'
 import { errorMessage } from '@/api/client'
@@ -12,6 +12,8 @@ import {
   useToast,
 } from '@/components/ui'
 import { useScrollReveal } from '@/components/ui/scrollReveal'
+import { useLabs } from '@/app/labs'
+import { denseUsed } from './Canvas.utils'
 import { SchemaForm } from './SchemaForm'
 import { errorsFor, isExact, localChanges } from './schema'
 
@@ -25,7 +27,16 @@ export interface ConfigEditorProps {
   /** Saved config to compare against: marks edited stages/fields. Optional. */
   baseline?: PipelineConfig
   className?: string
+  /** Rendered above the stage cards (e.g. the build-chat bar), so the stage nav starts level with it. */
+  top?: ReactNode
 }
+
+/** Stage family hue (same tokens as the canvas). */
+const FAMILY_OF: Record<string, string> = {
+  parse: 'index', chunk: 'index', embed: 'index', vector_store: 'index', retrieve: 'retrieve', rerank: 'retrieve',
+  cache: 'gate', compute: 'gate', prompt: 'generate', generate: 'generate', verify: 'generate',
+}
+const familyColor = (slot: string) => `var(--color-fam-${FAMILY_OF[slot] ?? 'io'})`
 
 const stageId = (slot: Slot) => `stage-${slot}`
 
@@ -41,10 +52,19 @@ function chosenLabel(cfg: NodeConfig | undefined, nt: NodeType | undefined) {
  * Full pipeline editor: sticky stage nav (desktop) + one card per stage with a type picker and a
  * schema-driven parameter form. Controlled: `value` in, `onChange` out. Never hardcodes node fields.
  */
-export function ConfigEditor({ value, onChange, errors, baseline, className, projectId }: ConfigEditorProps) {
+export function ConfigEditor({ value, onChange, errors, baseline, className, projectId, top }: ConfigEditorProps) {
   const nodes = useNodes()
   const [active, setActive] = useState<Slot>('parse')
   const catalog = nodes.data
+  const dense = denseUsed(value)
+  const labs = useLabs()
+  const computeOn = (value.compute?.type ?? 'none') !== 'none'
+  const slots = useMemo(() => SLOTS.filter((s) => s !== 'compute' || labs || computeOn), [labs, computeOn])
+  const warns: Partial<Record<Slot, string>> = {
+    ...(value.verify?.type === 'none' ? { verify: "Off — answers aren't checked against their sources." } : {}),
+    ...((value.prompt as { injection_guard?: string } | undefined)?.injection_guard === 'none'
+      ? { prompt: 'No injection defence — instructions hidden in documents can steer answers.' } : {}),
+  }
   // Latest value, so two edits in the same tick don't overwrite each other (onChange takes a full config).
   const latest = useRef(value)
   useLayoutEffect(() => {
@@ -73,7 +93,7 @@ export function ConfigEditor({ value, onChange, errors, baseline, className, pro
   // Track the stage in view for the nav highlight.
   useEffect(() => {
     if (!catalog) return
-    const els = SLOTS.map((s) => document.getElementById(stageId(s))).filter((e): e is HTMLElement => !!e)
+    const els = slots.map((s) => document.getElementById(stageId(s))).filter((e): e is HTMLElement => !!e)
     const visible = new Set<string>()
     const obs = new IntersectionObserver(
       (entries) => {
@@ -81,14 +101,14 @@ export function ConfigEditor({ value, onChange, errors, baseline, className, pro
           if (e.isIntersecting) visible.add(e.target.id)
           else visible.delete(e.target.id)
         }
-        const first = SLOTS.find((s) => visible.has(stageId(s)))
+        const first = slots.find((s) => visible.has(stageId(s)))
         if (first) setActive(first)
       },
       { rootMargin: '-120px 0px -55% 0px' },
     )
     els.forEach((e) => obs.observe(e))
     return () => obs.disconnect()
-  }, [catalog])
+  }, [catalog, slots])
 
   if (nodes.isLoading) {
     return (
@@ -122,7 +142,7 @@ export function ConfigEditor({ value, onChange, errors, baseline, className, pro
             >
               <span className="absolute inset-y-1.5 left-0 w-0.5 rounded-full bg-accent-default" />
             </span>
-            {SLOTS.map((slot, i) => {
+            {slots.map((slot, i) => {
               const sc = catalog.find((s) => s.slot === slot)
               const cfg = value[slot]
               const nt = sc?.types.find((t) => t.type === cfg?.type)
@@ -143,17 +163,22 @@ export function ConfigEditor({ value, onChange, errors, baseline, className, pro
                     <span
                       className={cn(
                         'flex size-6 shrink-0 items-center justify-center rounded-full font-mono text-mono-sm',
-                        isActive ? 'bg-accent-default text-text-inverse' : 'bg-bg-muted text-text-tertiary',
+                        isActive ? 'bg-accent-default text-text-inverse' : 'bg-bg-muted',
                       )}
+                      style={isActive ? undefined : { color: familyColor(slot) }}
                     >
                       {i + 1}
                     </span>
                     <span className="flex min-w-0 flex-1 flex-col">
                       <span className="text-heading text-text-primary">{sc?.title ?? slot}</span>
-                      <span className="truncate text-body text-text-tertiary">{chosenLabel(cfg, nt)}</span>
+                      <span className="truncate text-body text-text-tertiary">{!dense && (slot === 'embed' || slot === 'vector_store') ? 'Unused (keyword-only)' : chosenLabel(cfg, nt)}</span>
                     </span>
                     {hasErr ? (
                       <TriangleAlert size={14} className="shrink-0 text-danger-fg" aria-label="Has errors" />
+                    ) : warns[slot] ? (
+                      <span className="size-1.5 shrink-0 rounded-full bg-warning-fg" title={warns[slot]}>
+                        <span className="sr-only">{warns[slot]}</span>
+                      </span>
                     ) : ch?.length ? (
                       <span
                         className={cn('size-1.5 shrink-0 rounded-full', ch.some((c) => c.effect === 'rebuild') ? 'bg-rebuild-fg' : 'bg-instant-fg')}
@@ -172,7 +197,7 @@ export function ConfigEditor({ value, onChange, errors, baseline, className, pro
         <div ref={stages} className="flex min-w-0 flex-1 flex-col gap-5">
           {/* Compact stage jump row when the editor is narrow */}
           <div className="-mx-4 flex gap-1.5 overflow-x-auto px-4 pb-1 scrollbar-none @min-[900px]:hidden" role="navigation" aria-label="Pipeline stages">
-            {SLOTS.map((slot, i) => {
+            {slots.map((slot, i) => {
               const sc = catalog.find((s) => s.slot === slot)
               const ch = changedBySlot.get(slot)
               return (
@@ -192,6 +217,8 @@ export function ConfigEditor({ value, onChange, errors, baseline, className, pro
             })}
           </div>
 
+          {top}
+
           {otherErrors.length > 0 && (
             <Banner tone="danger" title="Configuration problems">
               <ul className="list-disc pl-4">
@@ -202,7 +229,7 @@ export function ConfigEditor({ value, onChange, errors, baseline, className, pro
             </Banner>
           )}
 
-          {SLOTS.map((slot, i) => {
+          {slots.map((slot, i) => {
             const sc = catalog.find((s) => s.slot === slot)
             return (
               <StageCard
@@ -216,6 +243,8 @@ export function ConfigEditor({ value, onChange, errors, baseline, className, pro
                 errors={errors}
                 onChange={(cfg) => setSlot(slot, cfg)}
                 projectId={projectId}
+                unused={!dense && (slot === 'embed' || slot === 'vector_store')}
+                warn={warns[slot]}
               />
             )
           })}
@@ -235,6 +264,12 @@ export interface StageCardProps {
   errors?: PipelineFieldError[]
   onChange: (cfg: NodeConfig) => void
   projectId?: string
+  /** The retriever never queries this stage's output (keyword-only), though it is still built. */
+  unused?: boolean
+  /** A one-line caution under the option list (e.g. a safety check is off). */
+  warn?: string
+  /** Side-panel density (canvas): no card chrome or intro, title-only option cards, one-column fields. */
+  compact?: boolean
 }
 
 /** How full the semantic cache is, with a way to empty it (e.g. after fixing a wrong answer). */
@@ -259,7 +294,7 @@ function CacheStats({ projectId }: { projectId: string }) {
   )
 }
 
-export function StageCard({ n, slot, catalog, value, baseline, changes, errors, onChange, projectId }: StageCardProps) {
+export function StageCard({ n, slot, catalog, value, baseline, changes, errors, onChange, projectId, unused, warn, compact }: StageCardProps) {
   const cfg = value ?? { type: '' }
   const nt = catalog?.types.find((t) => t.type === cfg.type)
   const { fieldErrors, general } = errorsFor(errors, slot)
@@ -281,36 +316,39 @@ export function StageCard({ n, slot, catalog, value, baseline, changes, errors, 
         exact !== null || (baseline && baseline.type === t.type && typeChanged) ? (
           <>
             {exact !== null && <ExactBadge exact={exact} />}
-            {t.exact_when && (
-              <Badge tone="neutral" title={`Exact when ${Object.entries(t.exact_when).map(([k, v]) => `${k} = ${v.join(' / ')}`).join(', ')}`}>
-                {`Exact when ${Object.entries(t.exact_when).map(([k, v]) => `${k}: ${v.join('/')}`).join(', ')}`}
-              </Badge>
-            )}
             {baseline && baseline.type === t.type && typeChanged && <Badge tone="neutral">Current</Badge>}
           </>
         ) : undefined,
     }
   })
 
+  const Wrapper: ElementType = compact ? 'section' : Card
   const titleId = `${stageId(slot)}-title`
   // Switching the stage type swaps in a new parameter form — let it rise in.
   const form = useRef<HTMLDivElement>(null)
   useSwapTransition(form, cfg.type)
   return (
-    <Card data-stage-card padding="lg" id={stageId(slot)} aria-labelledby={titleId} role="region" className="scroll-mt-[calc(var(--topbar-h)+16px)] sm:p-6">
-      <div className="mb-5 flex flex-wrap items-start justify-between gap-3">
+    <Wrapper id={stageId(slot)} aria-labelledby={titleId} role="region"
+      {...(compact ? {} : { 'data-stage-card': '', padding: 'lg', className: 'scroll-mt-[calc(var(--topbar-h)+16px)] sm:p-6' })}>
+      <div className={cn('flex flex-wrap items-start justify-between gap-3', compact ? 'sr-only' : 'mb-5')}>
         <div className="min-w-0">
           <h2 id={titleId} tabIndex={-1} className="text-title-lg text-text-primary outline-none">
             <span className="text-text-tertiary">{n}</span> · {catalog?.title ?? slot}
           </h2>
           {catalog?.description && <p className="mt-1 text-body-lg text-text-secondary">{catalog.description}</p>}
         </div>
-        {catalog && (
+        {catalog && typeChanged && (
           <span className="flex items-center gap-1.5 text-body text-text-tertiary">
             Changing the type <EffectBadge effect={catalog.effect} />
           </span>
         )}
       </div>
+
+      {unused && (
+        <Banner tone="info" className="mb-4">
+          Not used at query time: the retriever is keyword-only. This stage is still built (and re-built on changes) — it only matters if you switch to dense, hybrid or fused retrieval.
+        </Banner>
+      )}
 
       {general.length > 0 && (
         <Banner tone="danger" className="mb-4">
@@ -320,6 +358,7 @@ export function StageCard({ n, slot, catalog, value, baseline, changes, errors, 
 
       {items.length > 0 && (
         <OptionCardGroup
+          compact={compact}
           aria-label={`${catalog?.title ?? slot} type`}
           items={items}
           value={cfg.type}
@@ -330,11 +369,13 @@ export function StageCard({ n, slot, catalog, value, baseline, changes, errors, 
         />
       )}
 
+      {warn && <p className="mt-3 flex items-start gap-1.5 text-body text-warning-fg"><TriangleAlert size={14} className="mt-0.5 shrink-0" aria-hidden />{warn}</p>}
+
       {slot === 'cache' && projectId && cfg.type !== 'none' && <CacheStats projectId={projectId} />}
 
       {slot === 'generate' && (
         <Link to="/settings/providers" className="focus-ring mt-3 inline-flex items-center gap-1 rounded-sm text-body-sm text-accent-text hover:underline">
-          {types.some((t) => t.available) ? 'Connect another provider' : 'Connect a provider'} (Gemini, NVIDIA, OpenAI, Anthropic, Ollama, your own endpoint…){' '}
+          {types.some((t) => t.available) ? 'Connect another provider' : 'Connect a provider'}{compact ? '' : ' (Gemini, NVIDIA, OpenAI, Anthropic, Ollama, your own endpoint…)'}{' '}
           <ArrowRight size={12} aria-hidden />
         </Link>
       )}
@@ -346,7 +387,7 @@ export function StageCard({ n, slot, catalog, value, baseline, changes, errors, 
       )}
 
       {nt && (
-        <div ref={form} className="mt-6 border-t border-border-default pt-6">
+        <div ref={form} className={cn('border-t border-border-default', compact ? 'mt-4 pt-4' : 'mt-6 pt-6')}>
           <SchemaForm
             node={nt}
             slot={catalog}
@@ -355,9 +396,10 @@ export function StageCard({ n, slot, catalog, value, baseline, changes, errors, 
             errors={fieldErrors}
             changed={typeChanged ? undefined : changed}
             idPrefix={`cfg-${slot}`}
+            compact={compact}
           />
         </div>
       )}
-    </Card>
+    </Wrapper>
   )
 }

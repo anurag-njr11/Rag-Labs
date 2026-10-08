@@ -78,9 +78,15 @@ def summarize(ranks: list[int | None], k: int) -> dict[str, Any]:
     def rate(cut: int) -> float:
         return round(sum(1 for r in ranks if r is not None and r <= cut) / n, 4)
 
+    rr = [1 / r if r else 0.0 for r in ranks]
+    mean = sum(rr) / n
+    half = 1.96 * math.sqrt(sum((x - mean) ** 2 for x in rr) / max(1, n - 1) / n)
+    ci = {f"hit_at_{c}": list(wilson(round(rate(cut) * n), n)) for c, cut in (("1", 1), ("3", 3), ("k", k))}
+    ci["mrr"] = [round(max(0.0, mean - half), 4), round(min(1.0, mean + half), 4)]
     return {
         "n": n,
         "k": k,
+        "ci": ci,
         "hit_at_1": rate(1),
         "hit_at_3": rate(3),
         "hit_at_k": rate(k),

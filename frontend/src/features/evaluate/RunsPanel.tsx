@@ -1,5 +1,5 @@
 import { useState, type ReactNode } from 'react'
-import { ChevronRight, CircleCheck, CircleX, PartyPopper, Play } from 'lucide-react'
+import { ChevronRight, CircleCheck, CircleX, Play } from 'lucide-react'
 import { errorMessage, useCreateVersion, useEvalFixes, useEvalRun, useEvalRuns, useRunEval, useVersions } from '@/api/hooks'
 import { formatBytes, formatMs, formatNumber, formatPer1k, runCostPer1k, stripTags } from '@/api/format'
 import type { EvalDiagnosis, EvalFix, EvalItem, EvalItemResult, EvalMetrics, EvalRun, EvalRunDetail, Grade, Judge } from '@/api/types'
@@ -46,9 +46,14 @@ const GRADE: Record<Grade, { label: string; tone: 'success' | 'warning' | 'dange
   no: { label: 'Wrong', tone: 'danger' },
 }
 
-function Delta({ now, before, pctFmt = true }: { now: number; before?: number; pctFmt?: boolean }) {
+const ciText = (ci?: [number, number]) => (ci ? `95% CI ${pct(ci[0])}–${pct(ci[1])}` : undefined)
+
+function Delta({ now, before, pctFmt = true, ci, beforeCi }: { now: number; before?: number; pctFmt?: boolean; ci?: [number, number]; beforeCi?: [number, number] }) {
   if (before === undefined) return null
   const d = now - before
+  if (ci && beforeCi && ci[0] <= beforeCi[1] && beforeCi[0] <= ci[1] && Math.abs(d) >= 0.005) {
+    return <span className="ml-1.5 whitespace-nowrap text-caption text-text-tertiary" title="The 95% intervals overlap, so this difference isn't statistically significant.">≈ tie</span>
+  }
   if (Math.abs(d) < 0.005) return <span className="ml-1.5 text-caption text-text-tertiary">=</span>
   const up = d > 0
   return (
@@ -60,10 +65,16 @@ function Delta({ now, before, pctFmt = true }: { now: number; before?: number; p
 
 function configLine(m: EvalMetrics) {
   const c = m.config
-  return `${c.retrieve} · top-k ${c.top_k} · rerank ${c.rerank} · ${c.chunk} · ${c.store}`
+  const plain = (t: string) => t.replace(/_/g, ' ')
+  return plain(`${c.retrieve} · top-k ${c.top_k} · rerank ${c.rerank} · ${c.chunk}${c.dense === false || (c.dense === undefined && c.retrieve === 'keyword') ? '' : ` · ${c.store}`}`)
 }
 
-function verdict(x: number) {
+/** Below this many questions a quality adjective overstates what the set can tell apart. */
+const MIN_N_FOR_VERDICT = 100
+
+function verdict(x: number, n: number, stale?: boolean | null) {
+  if (stale) return 'Possibly out of date'
+  if (n < MIN_N_FOR_VERDICT) return `Small set (${n} questions)`
   if (x >= 0.9) return 'Excellent'
   if (x >= 0.8) return 'Strong'
   if (x >= 0.6) return 'Fair'
@@ -72,40 +83,11 @@ function verdict(x: number) {
 
 // ------------------------------------------------------------------------------------------------ scorecard
 
-/** Donut gauge for a 0–1 score, value in the middle. */
-function Gauge({ value, label }: { value: number; label: string }) {
-  const r = 52
-  const c = 2 * Math.PI * r
-  const tone = toneFor(value)
-  return (
-    <div className="relative size-36 shrink-0">
-      <svg viewBox="0 0 120 120" className="size-full -rotate-90" role="img" aria-label={`${label}: ${pct(value)}`}>
-        <circle cx="60" cy="60" r={r} fill="none" strokeWidth="10" className="stroke-bg-muted" />
-        <circle
-          cx="60"
-          cy="60"
-          r={r}
-          fill="none"
-          strokeWidth="10"
-          strokeLinecap="round"
-          strokeDasharray={c}
-          strokeDashoffset={c * (1 - Math.max(0, Math.min(1, value)))}
-          className={cn('stroke-current transition-[stroke-dashoffset] duration-500', TONE_TEXT[tone])}
-        />
-      </svg>
-      <div className="absolute inset-0 flex flex-col items-center justify-center">
-        <span className="font-mono text-[30px] font-semibold leading-none tabular-nums text-text-primary">{pct(value)}</span>
-        <span className="mt-1 text-body-sm text-text-tertiary">{label}</span>
-      </div>
-    </div>
-  )
-}
-
 function Tile({ label, value, hint, meter, delta }: { label: string; value: string; hint?: string; meter?: number; delta?: ReactNode }) {
   return (
-    <div className="flex flex-col gap-2 rounded-xl border border-border-default bg-bg-surface p-4">
+    <div className="flex flex-col gap-1.5 rounded-lg border border-border-default bg-bg-surface p-3">
       <dt className="text-label text-text-secondary">{label}</dt>
-      <dd className="flex items-baseline font-mono text-display tabular-nums text-text-primary">
+      <dd className="flex items-baseline font-mono text-title-lg tabular-nums text-text-primary">
         {value}
         {delta}
       </dd>
@@ -115,35 +97,30 @@ function Tile({ label, value, hint, meter, delta }: { label: string; value: stri
   )
 }
 
-function Scorecard({ run, before }: { run: EvalRunDetail; before?: EvalMetrics }) {
+function Scorecard({ run, before, stale }: { run: EvalRunDetail; before?: EvalMetrics; stale?: boolean | null }) {
   const m = run.metrics!
   const hits = run.results.filter((r) => r.hit).length
   const cost = runCostPer1k(m)
+  const hitK = m.k !== 1 && m.k !== 3
   return (
-    <div className="grid gap-6 lg:grid-cols-[minmax(260px,320px)_minmax(0,1fr)]">
-      <div className="flex items-center gap-5 rounded-xl bg-bg-subtle p-5">
-        <Gauge value={m.hit_at_k} label={`Hit@${m.k}`} />
-        <div className="min-w-0">
-          <p className={cn('text-title-lg', TONE_TEXT[toneFor(m.hit_at_k)])}>{verdict(m.hit_at_k)}</p>
-          <p className="mt-1 text-body-lg text-text-secondary">
-            {hits} of {m.n} questions reach the prompt
-            <Delta now={m.hit_at_k} before={before?.hit_at_k} />
-          </p>
-          <p className="mt-2 text-body-sm text-text-tertiary">
-            v{run.version} · top-{m.k} passages sent to the model{m.answers?.judge ? ` · graded by ${m.answers.judge}` : ''}
-          </p>
-        </div>
-      </div>
-      <dl className="grid grid-cols-2 gap-3 xl:grid-cols-4">
-        <Tile label="Hit@1" value={pct(m.hit_at_1)} meter={m.hit_at_1} hint="right chunk ranked first" delta={<Delta now={m.hit_at_1} before={before?.hit_at_1} />} />
-        <Tile label="Hit@3" value={pct(m.hit_at_3)} meter={m.hit_at_3} hint="in the top three" delta={<Delta now={m.hit_at_3} before={before?.hit_at_3} />} />
-        <Tile label="MRR" value={m.mrr.toFixed(2)} meter={m.mrr} hint={m.ndcg_at_k != null ? `nDCG@${m.k} ${m.ndcg_at_k.toFixed(2)} · 1.0 = always first` : '1.0 = always first'} delta={<Delta now={m.mrr} before={before?.mrr} pctFmt={false} />} />
-        <Tile label="Retrieval p50" value={formatMs(m.p50_ms)} hint={m.p95_ms != null ? `p95 ${formatMs(m.p95_ms)}` : 'median per question'} />
+    <div className="flex flex-col gap-4">
+      <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+        <span className={cn('text-title-lg', stale || m.n < MIN_N_FOR_VERDICT ? 'text-text-secondary' : TONE_TEXT[toneFor(m.hit_at_k)])}>{verdict(m.hit_at_k, m.n, stale)}</span>
+        <span className="text-body text-text-secondary">
+          {hits} of {m.n} questions reach the prompt · v{run.version} · top-{m.k} passages sent to the model{m.answers?.judge ? ` · graded by ${m.answers.judge}` : ''}
+        </span>
+      </p>
+      <dl className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
+        <Tile label="Hit@1" value={pct(m.hit_at_1)} meter={m.hit_at_1} hint={`right chunk ranked first${m.ci?.hit_at_1 ? ` · ${ciText(m.ci.hit_at_1)}` : ''}`} delta={<Delta now={m.hit_at_1} before={before?.hit_at_1} ci={m.ci?.hit_at_1} beforeCi={before?.ci?.hit_at_1} />} />
+        <Tile label="Hit@3" value={pct(m.hit_at_3)} meter={m.hit_at_3} hint={`in the top three${m.ci?.hit_at_3 ? ` · ${ciText(m.ci.hit_at_3)}` : ''}`} delta={<Delta now={m.hit_at_3} before={before?.hit_at_3} ci={m.ci?.hit_at_3} beforeCi={before?.ci?.hit_at_3} />} />
+        {hitK && <Tile label={`Hit@${m.k}`} value={pct(m.hit_at_k)} meter={m.hit_at_k} hint={`reaches the prompt${m.ci?.hit_at_k ? ` · ${ciText(m.ci.hit_at_k)}` : ''}`} delta={<Delta now={m.hit_at_k} before={before?.hit_at_k} ci={m.ci?.hit_at_k} beforeCi={before?.ci?.hit_at_k} />} />}
+        <Tile label="MRR" value={m.mrr.toFixed(2)} meter={m.mrr} hint={m.ndcg_at_k != null ? `nDCG@${m.k} ${m.ndcg_at_k.toFixed(2)} · 1.0 = always first` : '1.0 = always first'} delta={<Delta now={m.mrr} before={before?.mrr} ci={m.ci?.mrr} beforeCi={before?.ci?.mrr} pctFmt={false} />} />
+        <Tile label="Retrieval p50" value={formatMs(m.p50_ms)} hint={`${m.p95_ms != null ? `p95 ${formatMs(m.p95_ms)} · ` : ''}retrieval only${m.answers?.answer_p50_ms != null ? '' : ' — end-to-end is much slower; run with answers to measure it'}`} />
         {cost.value !== undefined && (
           <Tile
             label="Cost / 1k queries"
-            value={formatPer1k(cost.value)}
-            hint={`${cost.withAnswers ? 'expansion + answers' : 'retrieval only (query expansion)'} · ${cost.value === null ? 'a model has no published price' : 'paid-tier list price; free tiers cost $0'}`}
+            value={cost.withAnswers || cost.value ? formatPer1k(cost.value) : 'not measured'}
+            hint={`${cost.withAnswers ? 'expansion + answers' : 'generation not included — run with answers for the real figure'} · ${cost.value === null ? 'a model has no published price' : 'paid-tier list price; free tiers cost $0'}`}
           />
         )}
         {m.index && (
@@ -266,12 +243,9 @@ function MissBreakdown({ run, projectId }: { run: EvalRunDetail; projectId: stri
   const misses = run.results.filter((r) => r.diagnosis).length
   if (misses === 0) {
     return (
-      <Card padding="lg" className="flex items-start gap-3">
-        <PartyPopper size={20} aria-hidden className="mt-0.5 shrink-0 text-success-fg" />
-        <div>
-          <h3 className="text-heading-lg text-text-primary">No misses</h3>
-          <p className="mt-0.5 text-body text-text-secondary">Every question found its evidence in the top {m.k}.</p>
-        </div>
+      <Card padding="lg">
+        <h3 className="text-heading-lg text-text-primary">No misses</h3>
+        <p className="mt-0.5 text-body text-text-secondary">Every question found its evidence in the top {m.k}.</p>
       </Card>
     )
   }
@@ -336,7 +310,7 @@ function RunHistory({ runs, selected, onSelect, setRevision = 0 }: { runs: EvalR
                       <ProgressBar value={m.hit_at_k} tone={toneFor(m.hit_at_k)} className="flex-1" aria-label={`Hit@${m.k}`} />
                       <span className="whitespace-nowrap font-mono text-mono tabular-nums text-text-primary">
                         {pct(m.hit_at_k)}
-                        <Delta now={m.hit_at_k} before={before?.hit_at_k} />
+                        <Delta now={m.hit_at_k} before={before?.hit_at_k} ci={m.ci?.hit_at_k} beforeCi={before?.ci?.hit_at_k} />
                       </span>
                     </>
                   ) : r.status === 'running' ? (
@@ -569,8 +543,8 @@ function PerQuestion({ run, items }: { run: EvalRunDetail; items: EvalItem[] }) 
  * Evaluate dashboard: a full-width scorecard (gauge + metric tiles) on top, then per-question results next to a
  * sticky rail (miss breakdown, run history, and `side` — the eval set card).
  */
-export function RunsPanel({ projectId, setId, items, side, judge, setRevision }: {
-  projectId: string; setId: string; items: EvalItem[]; side?: ReactNode; judge?: Judge | null; setRevision?: number
+export function RunsPanel({ projectId, setId, items, side, judge, setRevision, stale }: {
+  projectId: string; setId: string; items: EvalItem[]; side?: ReactNode; judge?: Judge | null; setRevision?: number; stale?: boolean | null
 }) {
   const versions = useVersions(projectId)
   const runs = useEvalRuns(projectId, setId)
@@ -611,9 +585,8 @@ export function RunsPanel({ projectId, setId, items, side, judge, setRevision }:
       <Card padding="lg" className="flex flex-col gap-5 sm:p-6">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-0 max-w-3xl">
-            <h2 className="text-title-lg text-text-primary">Retrieval quality</h2>
-            <p className="mt-1 text-body-lg text-text-secondary">
-              Each question is run through the version's retriever (and reranker). A hit means a chunk containing the evidence came back, in any chunking.
+            <p className="text-body-lg text-text-secondary">
+              Each question runs through the version's retriever (and reranker); a hit means a chunk with the evidence came back.
             </p>
             {run && <p className="mt-2 text-body text-text-tertiary">{configLine(run.metrics!)}</p>}
           </div>
@@ -653,7 +626,7 @@ export function RunsPanel({ projectId, setId, items, side, judge, setRevision }:
         ) : detail.isError ? (
           <p className="text-danger-fg">{errorMessage(detail.error)}</p>
         ) : run ? (
-          <Scorecard run={run} before={before} />
+          <Scorecard run={run} before={before} stale={stale} />
         ) : null}
       </Card>
 

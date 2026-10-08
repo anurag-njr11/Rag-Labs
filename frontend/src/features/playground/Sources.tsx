@@ -96,14 +96,14 @@ export function SourceItem({ chunk, citations, final, selected, flashing, domId 
 
       {/* Row 3: found-by + scores */}
       <div className="flex flex-wrap items-center gap-1">
-        {paths.map((p) => (
+        {/* A path that has a score chip below doesn't also need its name here. */}
+        {paths.filter((p) => chunk.scores[p] == null).map((p) => (
           <FoundByBadge key={p} path={p} />
         ))}
-        {paths.length > 0 && <span aria-hidden className="mx-0.5 h-3 w-px bg-border-default" />}
         {chunk.scores.dense != null && <ScoreTip label="dense" rank={chunk.ranks.dense}><ScoreChip kind="dense" value={chunk.scores.dense} /></ScoreTip>}
         {chunk.scores.keyword != null && <ScoreTip label="keyword" rank={chunk.ranks.keyword}><ScoreChip kind="keyword" value={chunk.scores.keyword} /></ScoreTip>}
         {chunk.scores.exact != null && <ScoreTip label="exact" rank={chunk.ranks.exact}><ScoreChip kind="exact" value={chunk.scores.exact} /></ScoreTip>}
-        <ScoreChip kind="fused" value={chunk.score} className={cn(dropped && 'line-through')} />
+        {paths.length > 1 && <ScoreChip kind="fused" value={chunk.score} className={cn(dropped && 'line-through')} />}
         {chunk.scores.rerank != null && <ScoreChip kind="rerank" value={chunk.scores.rerank} />}
       </div>
 

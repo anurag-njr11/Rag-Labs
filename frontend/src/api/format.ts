@@ -25,7 +25,7 @@ export function formatMs(ms: number | null | undefined): string {
 
 export function formatCost(usd: number | null | undefined): string {
   if (usd == null) return '—'
-  return `$${usd.toFixed(5)}`
+  return usd === 0 ? '$0.00' : `$${usd.toFixed(usd < 0.01 ? 5 : 2)}`
 }
 
 /** USD per 1,000 queries; null/undefined = unknown price. */

@@ -2,11 +2,11 @@ import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
 import { BookmarkPlus, CircleCheck, Download, GitCommitHorizontal, Play } from 'lucide-react'
 import { API_BASE, errorMessage } from '@/api/client'
-import { formatDateTime, formatNumber, formatRelative, shortHash, storeLabel } from '@/api/format'
+import { formatDateTime, formatNumber, formatRelative, storeLabel } from '@/api/format'
 import {
-  useActivateVersion, useBuildVersion, useEstimate, useNodes, useSaveRecipe, useVersion, useVersionDiff, useVersions,
+  useActivateVersion, useBuildVersion, useEstimate, useEvalRuns, useEvalSets, useNodes, useSaveRecipe, useVersion, useVersionDiff, useVersions,
 } from '@/api/hooks'
-import type { Change, EstimateResult, Version } from '@/api/types'
+import type { Change, EstimateResult, EvalMetrics, Version } from '@/api/types'
 import { JobProgress } from '@/app/JobProgress'
 import { useWorkspace } from '@/app/workspace'
 import {
@@ -21,6 +21,12 @@ export default function VersionsTab() {
   const list = versions.data ?? []
   const selectedId = params.get('v') ?? project.active_version_id ?? list[0]?.id
   const selected = list.find((v) => v.id === selectedId) ?? list[0]
+  // Newest finished eval score per version, from the current eval set, so the history can be scanned for the best one.
+  const evalSets = useEvalSets(project.id)
+  const evalSetId = evalSets.data?.find((x) => x.status === 'ready')?.id
+  const evalRuns = useEvalRuns(project.id, evalSetId)
+  const scores = new Map<string, EvalMetrics>()
+  for (const r of evalRuns.data ?? []) if (r.metrics && r.status === 'ready') scores.set(r.version_id, r.metrics)
 
   const select = (id: string) =>
     setParams(
@@ -66,7 +72,7 @@ export default function VersionsTab() {
         <ul aria-label="Versions" className="max-h-[70vh] overflow-y-auto">
           {list.map((v) => (
             <li key={v.id} className="border-b border-border-default last:border-b-0">
-              <VersionRow v={v} selected={v.id === selected.id} onSelect={() => select(v.id)} />
+              <VersionRow v={v} score={scores.get(v.id)} selected={v.id === selected.id} onSelect={() => select(v.id)} />
             </li>
           ))}
         </ul>
@@ -76,7 +82,7 @@ export default function VersionsTab() {
   )
 }
 
-function VersionRow({ v, selected, onSelect }: { v: Version; selected: boolean; onSelect: () => void }) {
+function VersionRow({ v, score, selected, onSelect }: { v: Version; score?: EvalMetrics; selected: boolean; onSelect: () => void }) {
   return (
     <button
       type="button"
@@ -95,11 +101,12 @@ function VersionRow({ v, selected, onSelect }: { v: Version; selected: boolean; 
       </span>
       <span className="flex w-full items-center gap-2 text-body-sm text-text-tertiary">
         <span title={formatDateTime(v.created_at)}>{formatRelative(v.created_at)}</span>
-        <span aria-hidden>·</span>
-        <span className="font-mono text-mono-sm" title={`Index config hash ${v.index_config_hash}`}>
-          idx {shortHash(v.index_config_hash)}
-        </span>
         <span className="flex-1" />
+        {score && (
+          <span className="font-mono text-mono-sm text-text-secondary" title={`Hit@${score.k} on ${score.n} eval questions`}>
+            Hit@{score.k} {Math.round(score.hit_at_k * 100)}%
+          </span>
+        )}
         {v.index && <StatusBadge status={v.index.status} />}
       </span>
     </button>
@@ -194,12 +201,12 @@ function VersionDetail({ version, all }: { version: Version; all: Version[] }) {
           </div>
           <p className="mt-1 text-body text-text-primary">{v.note || <span className="text-text-tertiary">No note</span>}</p>
           <p className="mt-1 text-body-sm text-text-tertiary">
-            Created {formatDateTime(v.created_at)} · index hash <span className="font-mono text-mono-sm">{shortHash(v.index_config_hash)}</span>
+            Created {formatDateTime(v.created_at)}
             {idx && idx.status === 'ready' && (
               <>
                 {' · '}
-                {formatNumber(idx.chunk_count)} chunks · {storeLabel(idx.store)}
-                {idx.dim ? ` · ${idx.dim}d` : ''}
+                {formatNumber(idx.chunk_count)} chunks
+                {idx.dense === false ? ' · vectors unused (keyword-only retrieval)' : ` · ${storeLabel(idx.store)}${idx.dim ? ` · ${idx.dim}d` : ''}`}
               </>
             )}
           </p>

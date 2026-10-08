@@ -38,6 +38,8 @@
   --color-text-disabled: #A1A1AA; --color-text-inverse: #FFFFFF; --color-text-code: #E4E4E7;
   --color-accent-default: #4F46E5; --color-accent-hover: #4338CA; --color-accent-subtle: #EEF2FF;
   --color-accent-border: #C7D2FE;  --color-accent-text: #4338CA;
+  /* Stage families — one muted hue each, used identically on the canvas and in the step list. */
+  --color-fam-gate: #B45309; --color-fam-retrieve: #6D28D9; --color-fam-generate: #0369A1; --color-fam-index: #64748B; --color-fam-io: #71717A;
   --color-instant-fg: #0369A1; --color-instant-bg: #E0F2FE; --color-instant-border: #BAE6FD;
   --color-rebuild-fg: #C2410C; --color-rebuild-bg: #FFEDD5; --color-rebuild-border: #FED7AA;
   --color-success-fg: #15803D; --color-success-bg: #DCFCE7; --color-success-border: #BBF7D0;
@@ -67,6 +69,7 @@
   --color-text-disabled: #52525B; --color-text-inverse: #18181B; --color-text-code: #E4E4E7;
   --color-accent-default: #818CF8; --color-accent-hover: #A5B4FC; --color-accent-subtle: #1E1B4B;
   --color-accent-border: #3730A3;  --color-accent-text: #A5B4FC;
+  --color-fam-gate: #F59E0B; --color-fam-retrieve: #A78BFA; --color-fam-generate: #38BDF8; --color-fam-index: #94A3B8; --color-fam-io: #8B8B94;
   --color-instant-fg: #7DD3FC; --color-instant-bg: #0C2A3D; --color-instant-border: #164E63;
   --color-rebuild-fg: #FDBA74; --color-rebuild-bg: #3B1D0A; --color-rebuild-border: #7C2D12;
   --color-success-fg: #4ADE80; --color-success-bg: #0F2E1B; --color-success-border: #14532D;
@@ -85,7 +88,7 @@
 }
 
 @layer base {
-  html { font-family: var(--font-sans); font-size: 13px; }
+  html { font-family: var(--font-sans); font-size: 13px; scrollbar-gutter: stable; }
   body { @apply bg-bg-canvas text-text-primary text-body antialiased; }
   code, kbd, pre, .tabular { font-variant-numeric: tabular-nums; }
   button:not(:disabled), [role="button"]:not([aria-disabled="true"]) { cursor: pointer; }
@@ -108,4 +111,10 @@
    Don't set `scroll-behavior: smooth` — it fights GSAP's ScrollToPlugin. */
 @media (prefers-reduced-motion: reduce) {
   *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }
+}
+
+/* Canvas: marching dashes on the line feeding the node that is running right now. */
+@keyframes edge-flow { to { stroke-dashoffset: -28; } }
+@media (prefers-reduced-motion: no-preference) {
+  .edge-flow { animation: edge-flow 0.6s linear infinite; }
 }

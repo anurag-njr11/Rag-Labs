@@ -26,6 +26,8 @@ export default function RecipesPage() {
   const recipes = useRecipes()
   const save = useSaveRecipe()
   const { toast } = useToast()
+  const projects = useProjects()
+  const [target, setTarget] = useState('')
   const [shared, setShared] = useState<SharedRecipe | null>(() => readShared(window.location.hash))
 
   const importShared = () =>
@@ -43,9 +45,7 @@ export default function RecipesPage() {
       <header className="max-w-3xl">
         <h1 className="flex items-center gap-2 text-display text-text-primary"><BookOpen size={26} aria-hidden /> Recipes</h1>
         <p className="mt-1 text-body-lg text-text-secondary">
-          Pipeline configurations to start from, share and fork. A share link carries the recipe itself, so it works on anyone's
-          install. Forking makes it fit the project: a corpus-specific embedding adapter is left out, and an LLM that isn't connected
-          here is swapped for the project's own. Measure it on your eval set before you trust it.
+          Pipeline configurations to start from, share and fork. Measure a recipe on your eval set before you trust it.
         </p>
       </header>
 
@@ -59,28 +59,34 @@ export default function RecipesPage() {
         </Banner>
       )}
 
+      {!!projects.data?.length && (
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-label text-text-secondary">Apply recipes to</span>
+          <Select aria-label="Project to apply recipes to" value={target || projects.data[0].id} onChange={(e) => setTarget(e.target.value)}
+            options={projects.data.map((p) => ({ value: p.id, label: p.name }))} wrapperClassName="min-w-56" />
+        </div>
+      )}
+
       {recipes.isPending ? <Spinner label="Loading recipes" /> : recipes.isError ? (
         <Banner tone="danger">{errorMessage(recipes.error)}</Banner>
       ) : (
         <div className="grid gap-4 md:grid-cols-2">
-          {(recipes.data ?? []).map((r) => <RecipeCard key={r.id} r={r} />)}
+          {(recipes.data ?? []).map((r) => <RecipeCard key={r.id} r={r} projectId={target || projects.data?.[0]?.id} />)}
         </div>
       )}
     </div>
   )
 }
 
-function RecipeCard({ r }: { r: Recipe }) {
-  const projects = useProjects()
+function RecipeCard({ r, projectId }: { r: Recipe; projectId?: string }) {
   const fork = useForkConfig()
   const createVersion = useCreateVersionFor()
   const del = useDeleteRecipe()
   const { toast } = useToast()
-  const [target, setTarget] = useState('')
   const [done, setDone] = useState<{ project: string; version: number; notes: string[] } | null>(null)
 
   const use = () => {
-    const pid = target || projects.data?.[0]?.id
+    const pid = projectId
     if (!pid) return
     fork.mutate({ projectId: pid, config: r.config }, {
       onSuccess: (f) => createVersion.mutate({ projectId: pid, body: { config: f.config, note: `Recipe: ${r.name}`.slice(0, 300), activate: true, build: true } }, {
@@ -98,20 +104,11 @@ function RecipeCard({ r }: { r: Recipe }) {
         {r.builtin ? <Badge tone="accent">built-in</Badge> : <Badge tone="neutral">saved</Badge>}
         {r.tags.map((t) => <Badge key={t} tone="neutral">{t}</Badge>)}
       </div>
-      {r.description && <p className="text-body text-text-secondary">{r.description}</p>}
-      <p className="font-mono text-mono-sm text-text-tertiary">{summary(r.config)}</p>
+      <p className="text-body text-text-secondary">{r.description || summary(r.config)}</p>
       <div className="mt-auto flex flex-wrap items-center gap-2">
-        {projects.data && projects.data.length > 0 && (
-          <>
-            <Select aria-label={`Project to use ${r.name} in`} value={target || projects.data[0].id} onChange={(e) => setTarget(e.target.value)}
-              options={projects.data.map((p) => ({ value: p.id, label: p.name }))} wrapperClassName="min-w-40" />
-            <Button size="sm" variant="primary" onClick={use} loading={fork.isPending || createVersion.isPending}>Use in project</Button>
-          </>
-        )}
-        <Button size="sm" variant="ghost" icon={<Link2 size={12} aria-hidden />}
-          onClick={() => { void navigator.clipboard.writeText(shareUrl(r)); toast({ tone: 'success', title: 'Share link copied' }) }}>
-          Copy share link
-        </Button>
+        {projectId && <Button size="sm" variant="primary" onClick={use} loading={fork.isPending || createVersion.isPending}>Use in project</Button>}
+        <Button size="sm" variant="ghost" iconOnly aria-label={`Copy share link for ${r.name}`} title="Copy share link" icon={<Link2 size={14} aria-hidden />}
+          onClick={() => { void navigator.clipboard.writeText(shareUrl(r)); toast({ tone: 'success', title: 'Share link copied' }) }} />
         {!r.builtin && (
           <Button size="sm" variant="ghost" icon={<Trash2 size={12} aria-hidden />} onClick={() => del.mutate(r.id)}>Delete</Button>
         )}

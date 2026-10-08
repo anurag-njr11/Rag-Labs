@@ -78,3 +78,9 @@ async def test_untrusted_loopback_requires_keys(ready, monkeypatch):
     finally:
         monkeypatch.delenv("TRUST_LOOPBACK")
         get_settings.cache_clear()
+
+
+async def test_proxied_loopback_is_not_local(ready):
+    async with _client("127.0.0.1") as local:
+        assert (await local.get("/api/projects")).status_code == 200
+        assert (await local.get("/api/projects", headers={"X-Forwarded-For": "198.51.100.7"})).status_code == 401

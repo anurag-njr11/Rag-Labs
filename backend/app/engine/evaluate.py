@@ -24,6 +24,7 @@ from ..ingest.jobs import Job
 from ..llm import provider as llm
 from ..nodes.chunk import approx_tokens
 from ..nodes.prompt import packed_text
+from ..nodes.retrieve import dense_used
 from ..nodes import verify as verify_node
 from . import chat, codecheck, retrieval, stores, sync
 
@@ -320,6 +321,7 @@ def config_summary(cfg: dict[str, Any]) -> dict[str, Any]:
         "chunk": f"{ch['type']} {ch.get('size', '')}{' ' + ch['unit'] if ch.get('unit') else ''}".strip(),
         "embed": emb.get("model") or emb["type"],
         "store": cfg["vector_store"]["type"],
+        "dense": dense_used(cfg),
         "retrieve": cfg["retrieve"]["type"],
         "top_k": cfg["retrieve"].get("top_k"),
         "rerank": rr["type"] if rr["type"] == "none" else f"{rr['type']} top {rr.get('top_n')}",

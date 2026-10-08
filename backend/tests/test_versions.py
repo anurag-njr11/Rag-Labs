@@ -18,3 +18,12 @@ async def test_activation_log(database):
     d2 = await api.get_version(p["id"], v2["id"])
     assert [a["previous_version"] for a in d2["activations"]] == [1]
     assert (await api.get_project(p["id"]))["active_version_id"] == v1["id"]
+
+
+def test_auto_note_describes_the_change():
+    from app.api.projects import _auto_note
+    from app.core.pipeline import recommended_pipeline
+
+    a = recommended_pipeline()
+    b = {**a, "retrieve": {**a["retrieve"], "type": "keyword"}}
+    assert _auto_note(a, b) == "retrieve type fused → keyword"

@@ -149,6 +149,26 @@ async def _compute(ctx: RunContext, project_id: str, gen: Any, question: str) ->
     return receipt, True
 
 
+async def _live(q: asyncio.Queue, aw: Any, out: list) -> AsyncIterator[dict[str, Any]]:
+    """Await `aw` (result lands in `out`), yielding a `step` event for each trace step the moment it finishes —
+    the canvas lights nodes from these while the question is still running."""
+    task = asyncio.ensure_future(aw)
+    try:
+        while not task.done():
+            getter = asyncio.ensure_future(q.get())
+            await asyncio.wait({task, getter}, return_when=asyncio.FIRST_COMPLETED)
+            if getter.done():
+                yield getter.result()
+            else:
+                getter.cancel()
+    except BaseException:
+        task.cancel()
+        raise
+    while not q.empty():
+        yield q.get_nowait()
+    out.append(task.result())
+
+
 async def answer(project_id: str, version: dict[str, Any], question: str,
                  source: str = "api", api_key_id: str | None = None) -> AsyncIterator[dict[str, Any]]:
     cfg = sync.version_config(version)
@@ -167,10 +187,16 @@ async def answer(project_id: str, version: dict[str, Any], question: str,
     run_id = await runs.start_run(project_id=project_id, version_id=version["id"], build_id=build["id"],
                                   question=question, source=source, api_key_id=api_key_id)
     trace: list[dict[str, Any]] = []
-    ctx = RunContext(listener=lambda e: trace.append(
-        {"seq": e.seq, "step": e.step, "ms": e.ms, "tokens_in": e.tokens_in,
-         "tokens_out": e.tokens_out, "cost_usd": e.cost_usd, "payload": e.payload,
-         "start_ms": e.start_ms}))
+    steps: asyncio.Queue = asyncio.Queue()
+
+    def on_step(e: Any) -> None:
+        trace.append({"seq": e.seq, "step": e.step, "ms": e.ms, "tokens_in": e.tokens_in,
+                      "tokens_out": e.tokens_out, "cost_usd": e.cost_usd, "payload": e.payload,
+                      "start_ms": e.start_ms})
+        steps.put_nowait({"type": "step", "step": e.step, "ms": e.ms, "hit": bool(e.payload.get("hit"))})
+
+    ctx = RunContext(listener=on_step)
+    box: list[Any] = []
     yield {"type": "run", "run_id": run_id, "version": version["version"], "build_id": build["id"],
            "store": build["store_type"]}
 
@@ -178,7 +204,10 @@ async def answer(project_id: str, version: dict[str, Any], question: str,
     answer_text = ""
     result: dict[str, Any] = {}
     try:
-        hit, cache_state = await answer_cache.lookup(ctx, project_id, cfg, question)
+        box.clear()
+        async for ev in _live(steps, answer_cache.lookup(ctx, project_id, cfg, question), box):
+            yield ev
+        hit, cache_state = box[0]
         if hit:
             cache_info = {k: hit[k] for k in ("question", "similarity", "created_at", "run_id")}
             results = hit.get("retrieved", [])
@@ -201,7 +230,10 @@ async def answer(project_id: str, version: dict[str, Any], question: str,
         verifier = build_node("verify", cfg.get("verify") or {"type": "none"})
         computation, routed = None, False
         if (cfg.get("compute") or {}).get("type", "none") != "none":
-            computation, routed = await _compute(ctx, project_id, gen, question)
+            box.clear()
+            async for ev in _live(steps, _compute(ctx, project_id, gen, question), box):
+                yield ev
+            computation, routed = box[0]
             if computation and computation["attested"]:
                 answer_text = computation["answer"]
                 result = {"retrieved": [], "citations": [], "computation": computation}
@@ -237,8 +269,12 @@ async def answer(project_id: str, version: dict[str, Any], question: str,
                 answer_text = ""
                 yield {"type": "retry", "attempt": attempt, "reason": "A claim in the answer isn't supported "
                        "by its sources, so it's answering again with more context."}
-            results = await retrieval.retrieve(ctx, build=build, cfg=attempt_cfg, question=question)
-            results = await retrieval.rerank(ctx, attempt_cfg, question, results)
+            box.clear()
+            async for ev in _live(steps, retrieval.retrieve(ctx, build=build, cfg=attempt_cfg, question=question), box):
+                yield ev
+            async for ev in _live(steps, retrieval.rerank(ctx, attempt_cfg, question, box[0]), box):
+                yield ev
+            results = box[1]
 
             prompt = build_node("prompt", attempt_cfg["prompt"])
             with ctx.timed("prompt") as t:
@@ -271,14 +307,20 @@ async def answer(project_id: str, version: dict[str, Any], question: str,
 
             if isinstance(verifier, verify_node.ExecutionCheck):
                 yield {"type": "verifying", "what": "code"}
-                execution = await _execute(ctx, verifier, gen, question, answer_text, built["included"])
+                box.clear()
+                async for ev in _live(steps, _execute(ctx, verifier, gen, question, answer_text, built["included"]), box):
+                    yield ev
+                execution = box[0]
                 answer_text = execution.pop("answer")
                 yield {"type": "execution", "execution": execution}
                 break
             if not isinstance(verifier, verify_node.GroundingCheck):
                 break
             yield {"type": "verifying"}
-            verification = await _verify(ctx, verifier, gen, question, answer_text, built["included"])
+            box.clear()
+            async for ev in _live(steps, _verify(ctx, verifier, gen, question, answer_text, built["included"]), box):
+                yield ev
+            verification = box[0]
             verification["attempt"] = attempt
             yield {"type": "verify", "verification": verification}
             if verification["grounded"] is not False:

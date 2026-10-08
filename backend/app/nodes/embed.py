@@ -45,7 +45,7 @@ FASTEMBED_MODELS = {
 
 def mteb_label(model: str) -> str:
     score = FASTEMBED_MODELS[model]["mteb"]
-    return f"MTEB retrieval {score:.1f}" if score is not None else "MTEB retrieval not reported"
+    return f"MTEB retrieval {score:.2f}" if score is not None else "MTEB retrieval not reported"
 
 # Instruction prefixes the model authors recommend. Used when the prefix field is left empty.
 DEFAULT_PREFIXES: dict[str, tuple[str, str]] = {

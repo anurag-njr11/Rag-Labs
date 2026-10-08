@@ -54,6 +54,7 @@ export const router = createBrowserRouter([
     children: [
       { index: true, element: <ProjectsPage /> },
       { path: 'new', element: <CreateWizard /> },
+      { path: 'projects/new', element: <Navigate to="/new" replace /> },
       { path: 'settings/providers', element: <ProvidersPage /> },
       { path: 'recipes', element: <RecipesPage /> },
       {

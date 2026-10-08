@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { Waypoints } from 'lucide-react'
 import { errorMessage, useAdapters, useCreateVersion, useDeleteAdapter, useTrainAdapter, useVersions } from '@/api/hooks'
 import type { Adapter, RankScores } from '@/api/types'
 import { Badge, Banner, Button, Card, cn, useToast } from '@/components/ui'
 import { EvalJobProgress } from './EvalJobProgress'
+import { PanelIntro } from './PanelIntro'
 
 const pct = (x: number) => `${Math.round(x * 100)}%`
 /** Older adapters (before cross-validation) fall back to "improved the holdout". */
@@ -70,14 +70,11 @@ export function AdapterPanel({ projectId, setId }: { projectId: string; setId: s
 
   return (
     <Card padding="lg" className="flex flex-col gap-5 sm:p-6">
-      <div className="max-w-3xl">
-        <h2 className="flex items-center gap-2 text-title-lg text-text-primary"><Waypoints size={20} aria-hidden /> Embedding adapter</h2>
-        <p className="mt-1 text-body-lg text-text-secondary">
-          Adapting an embedding model to your domain normally needs labelled (question, passage) pairs. This eval set is exactly that.
+      <PanelIntro summary="Train a small query-side adapter on this eval set and see whether it ranks unseen questions better.">
+        <p>Adapting an embedding model to your domain normally needs labelled (question, passage) pairs. This eval set is exactly that.
           Training fits a small linear map on the question side (documents and index stay as they are, so nothing is rebuilt), on 75% of
-          the questions, and scores it on the 25% it never saw. Then it refits on all of them; that's the adapter you can use.
-        </p>
-      </div>
+          the questions, and scores it on the 25% it never saw. Then it refits on all of them; that's the adapter you can use.</p>
+      </PanelIntro>
 
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-body-sm text-text-tertiary">
@@ -88,10 +85,12 @@ export function AdapterPanel({ projectId, setId }: { projectId: string; setId: s
       {jobId && <EvalJobProgress jobId={jobId} projectId={projectId} onEnd={() => { setJobId(null); void adapters.refetch() }} />}
 
       {list.map((a) => (
-        <div key={a.id} className="flex flex-col gap-3 border-t border-border-default pt-4">
+        <div key={a.id} className={cn('flex flex-col gap-3 border-t border-border-default pt-4', active && a.version != null && a.version !== active.version && 'opacity-60')}>
           <div className="flex flex-wrap items-center gap-2">
             <span className="text-body text-text-primary">{new Date(a.created_at).toLocaleString()}</span>
-            <span className="text-body-sm text-text-tertiary">trained for v{a.version ?? '?'}</span>
+            <span className="text-body-sm text-text-tertiary">
+              trained for v{a.version ?? '?'}{active && a.version != null && a.version !== active.version ? ` — not the active version (v${active.version})` : ''}
+            </span>
             {a.status === 'running' && <Badge tone="info">training…</Badge>}
             {a.status === 'failed' && <Badge tone="danger">failed</Badge>}
             {a.metrics && (recommended(a)
@@ -118,7 +117,7 @@ export function AdapterPanel({ projectId, setId }: { projectId: string; setId: s
                 <Scores title="All questions" s={a.metrics.full} hint="in-sample, optimistic" />
               </div>
               <p className="text-body-sm text-text-tertiary">
-                Dense-only ranking of all {a.metrics.chunks} chunks ({a.metrics.dim}-d). Your pipeline also fuses keyword / exact search
+                Dense-only ranking of the {a.metrics.chunks} chunks it was trained on ({a.metrics.dim}-d). Your pipeline also fuses keyword / exact search
                 and may rerank, so using it saves a version and re-scores it with the full pipeline.
                 {' '}Regularisation λ = {a.metrics.params.lambda} was chosen by cross-validation on the training questions
                 {a.metrics.params.lambda >= 10 ? ' — nothing beat the plain embedder there, so the adapter stays close to it.' : '.'}

@@ -119,7 +119,7 @@ export default function ApiTab() {
   const example = run.data ? prettyResponse(responseFromRun(run.data)) : STATIC_EXAMPLE
 
   return (
-    <div className="mx-auto w-full max-w-[960px] space-y-4 px-4 py-6 sm:px-8">
+    <div className="mx-auto w-full max-w-[1440px] space-y-4 px-4 py-8 sm:px-8">
       <Card padding="lg">
         <h2 className="text-title text-text-primary">Query endpoint</h2>
         <div className="mt-3 flex min-w-0 items-center gap-2 rounded-md border border-border-default bg-bg-subtle py-1 pl-2 pr-1">
@@ -185,7 +185,7 @@ export default function ApiTab() {
             Set <code className="font-mono text-mono">"stream": true</code> for Server-Sent Events: <code className="font-mono text-mono">status</code>? → <code className="font-mono text-mono">run</code> → <code className="font-mono text-mono">retrieval</code> → <code className="font-mono text-mono">token</code>* → <code className="font-mono text-mono">done</code> | <code className="font-mono text-mono">error</code>. It's a POST, so read it with a streaming HTTP client, not <code className="font-mono text-mono">EventSource</code>.
           </li>
           <li>Errors: <code className="font-mono text-mono">409</code> no documents / index build failed, <code className="font-mono text-mono">502</code> LLM provider error — both as <code className="font-mono text-mono">{'{"detail": {"code", "message"}}'}</code>.</li>
-          <li>The server's <code className="font-mono text-mono">.env</code> holds the LLM key; clients need no key in Phase 1.</li>
+          <li>The server holds the LLM key. Callers off this machine need a RAGLabs API key (see API keys below).</li>
         </ul>
         <a
           href={BACKEND_DOCS_URL}

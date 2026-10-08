@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { DatabaseZap, History, ListTree, RotateCcw, ShieldAlert, ShieldCheck, ShieldQuestion, Square, TriangleAlert } from 'lucide-react'
+import { DatabaseZap, History, RotateCcw, ShieldAlert, ShieldCheck, ShieldQuestion, Square, TriangleAlert } from 'lucide-react'
 import { formatMs, formatNumber, formatPages, stripTags } from '@/api/format'
 import type { Verdict, Verification } from '@/api/types'
 import { Badge, Banner, Button, ButtonLink, CitationChip, CopyButton, Disclosure, SourceChip, Spinner, cn } from '@/components/ui'
@@ -18,7 +18,6 @@ export interface MessageProps {
   activeN: number | null
   maxTokens?: number
   onCite: (turn: Turn, n: number) => void
-  onShowTrace: (turn: Turn) => void
   onRetry: (turn: Turn) => void
   onStop: () => void
   onInspect: (turn: Turn) => void
@@ -40,7 +39,7 @@ const lastHeading = (h: string) => {
   return s.length > 26 ? `${s.slice(0, 25)}…` : s
 }
 
-export function Message({ turn, projectId, inspected, activeN, maxTokens, onCite, onShowTrace, onRetry, onStop, onInspect }: MessageProps) {
+export function Message({ turn, projectId, inspected, activeN, maxTokens, onCite, onRetry, onStop, onInspect }: MessageProps) {
   const active = isActive(turn)
   const elapsed = useElapsed(turn.startedAt, active)
   const byN = new Map(turn.retrieved.filter((c) => c.context_n != null).map((c) => [c.context_n!, c]))
@@ -199,7 +198,7 @@ export function Message({ turn, projectId, inspected, activeN, maxTokens, onCite
             {chips.map((c) => (
               <SourceChip
                 key={c.chunk_id}
-                document={c.document}
+                document={`[${c.n}] ${c.document}`}
                 meta={formatPages(c.page_start, c.page_end) || lastHeading(c.heading_path) || undefined}
                 title={`[${c.n}] ${c.document}${c.heading_path ? ` — ${stripTags(c.heading_path)}` : ''}`}
                 aria-label={`Source ${c.n}: ${c.document}`}
@@ -216,11 +215,6 @@ export function Message({ turn, projectId, inspected, activeN, maxTokens, onCite
               <Button size="sm" variant="ghost" icon={<Square size={12} aria-hidden />} onClick={onStop}>Stop</Button>
             ) : (
               turn.answer && <CopyButton text={turn.answer} label="Copy" />
-            )}
-            {turn.trace.length > 0 && (
-              <Button size="sm" variant="ghost" icon={<ListTree size={14} aria-hidden />} onClick={() => onShowTrace(turn)}>
-                Show trace
-              </Button>
             )}
             {!inspected && turn.retrieved.length > 0 && (
               <Button size="sm" variant="ghost" onClick={() => onInspect(turn)}>Inspect sources</Button>

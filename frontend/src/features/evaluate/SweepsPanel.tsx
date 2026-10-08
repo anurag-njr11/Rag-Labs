@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Grid3x3, Rocket, Square, Star } from 'lucide-react'
+import { Rocket, Square, Star } from 'lucide-react'
 import {
   errorMessage, useCancelSweep, useConfigPrior, useCreateVersion, useRuns, useStartSweep, useSweepAxes, useSweeps, useVersions,
 } from '@/api/hooks'
@@ -7,6 +7,7 @@ import { formatBytes, formatMs, formatNumber, formatPer1k, runCostPer1k } from '
 import type { Judge, PipelineConfig, Sweep, SweepAxis, SweepCell } from '@/api/types'
 import { Badge, Banner, Button, Card, EffectBadge, Field, Input, Select, Spinner, Switch, cn, useToast } from '@/components/ui'
 import { EvalJobProgress } from './EvalJobProgress'
+import { PanelIntro } from './PanelIntro'
 
 type Value = SweepAxis['values'][number]
 type Scored = SweepCell & { metrics: NonNullable<SweepCell['metrics']> }
@@ -179,7 +180,7 @@ function AxisPicker({
                     )}
                   >
                     {valueLabel(a.path, v)}
-                    {a.scores && <span className="ml-1 font-mono text-mono-sm text-text-tertiary">{a.scores[String(v)]?.toFixed(1) ?? '—'}</span>}
+                    {a.scores && <span className="ml-1 font-mono text-mono-sm text-text-tertiary">{a.scores[String(v)]?.toFixed(2) ?? '—'}</span>}
                     {current === v && <span className="ml-1 text-text-tertiary">(current)</span>}
                   </button>
                 )
@@ -547,15 +548,12 @@ export function SweepsPanel({ projectId, setId, judge }: { projectId: string; se
 
   return (
     <Card padding="lg" className="flex flex-col gap-5 sm:p-6">
-      <div className="max-w-3xl">
-        <h2 className="flex items-center gap-2 text-title-lg text-text-primary"><Grid3x3 size={20} aria-hidden /> Sweep configurations</h2>
-        <p className="mt-1 text-body-lg text-text-secondary">
-          Score every combination of the values you pick on this eval set — retrieval only, so no LLM calls, except query expansion
+      <PanelIntro summary="Score every combination of the settings you pick on this eval set.">
+        <p>Score every combination of the values you pick on this eval set — retrieval only, so no LLM calls, except query expansion
           (multi-query / HyDE / decompose: one call per question) and the agentic retriever (a few planner calls per question).
           Rebuild axes build one index per value (parsing and embeddings are cached); instant axes reuse it.
-          Include hybrid + a reranker to get a “vs hybrid + rerank” column — quality difference, token and latency multiples.
-        </p>
-      </div>
+          Include hybrid + a reranker to get a “vs hybrid + rerank” column — quality difference, token and latency multiples.</p>
+      </PanelIntro>
 
       {axesQ.isPending || versions.isPending ? (
         <Spinner label="Loading sweep options" />

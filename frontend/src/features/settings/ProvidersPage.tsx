@@ -9,6 +9,7 @@ import {
   useSaveProvider,
   useTestProvider,
 } from '@/api/hooks'
+import { setLabs, useLabs } from '@/app/labs'
 import type { Provider, ProviderInput, ProviderSource, ProviderTestResult } from '@/api/types'
 import {
   Badge,
@@ -51,6 +52,7 @@ export default function ProvidersPage() {
   const enabledNames = new Set(enabled.map((p) => p.name))
   const more = (presets.data ?? []).filter((p) => !enabledNames.has(p.name))
 
+  const labs = useLabs()
   return (
     <div className="mx-auto w-full max-w-[1440px] px-4 py-8 sm:px-12">
       <div className="mb-6 flex flex-wrap items-end justify-between gap-4">
@@ -62,6 +64,11 @@ export default function ProvidersPage() {
             the browser.
           </p>
         </div>
+      <div className="mb-6 max-w-[720px] rounded-lg border border-border-default p-4">
+        <Field label="Labs" help="Show research-grade tools: attested computations (Computations tab, Compute stage), embedding adapter and prompt optimisation." inline>
+          {(f) => <Switch id={f.id} aria-describedby={f.describedBy} checked={labs} onChange={setLabs} />}
+        </Field>
+      </div>
         <Button variant="primary" icon={<Plus size={14} aria-hidden />} onClick={() => setEditing({ provider: null, create: true })}>
           Custom endpoint
         </Button>

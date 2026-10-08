@@ -21,6 +21,8 @@ export interface OptionCardGroupProps<V extends string = string> {
   'aria-label': string
   /** Grid classes; default picks columns from the option count so rows fill evenly (see `evenCols`). */
   className?: string
+  /** Side-panel density: title-only cards two across; the chosen option's description shows under them. */
+  compact?: boolean
 }
 
 /**
@@ -38,10 +40,11 @@ function evenCols(n: number) {
  * Radio-card group (Card/Option). Arrow keys move between enabled options; disabled options show
  * a lock + reason and can't be selected (hover shows the reason as a tooltip).
  */
-export function OptionCardGroup<V extends string>({ items, value, onChange, className, ...aria }: OptionCardGroupProps<V>) {
+export function OptionCardGroup<V extends string>({ items, value, onChange, className, compact, ...aria }: OptionCardGroupProps<V>) {
   const refs = useRef<(HTMLButtonElement | null)[]>([])
   const enabled = items.filter((i) => !i.disabled)
   const focusValue = enabled.some((i) => i.value === value) ? value : enabled[0]?.value
+  const chosen = items.find((i) => i.value === value)
 
   const onKey = (e: KeyboardEvent) => {
     const keys = ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp']
@@ -56,7 +59,7 @@ export function OptionCardGroup<V extends string>({ items, value, onChange, clas
 
   return (
     <div className="@container">
-      <div role="radiogroup" aria-label={aria['aria-label']} onKeyDown={onKey} className={cn('grid gap-3', className ?? evenCols(items.length))}>
+      <div role="radiogroup" aria-label={aria['aria-label']} onKeyDown={onKey} className={cn('grid gap-3', compact ? 'grid-cols-2 gap-2' : (className ?? evenCols(items.length)))}>
         {items.map((it, i) => {
           const selected = it.value === value
           const card = (
@@ -72,7 +75,8 @@ export function OptionCardGroup<V extends string>({ items, value, onChange, clas
               tabIndex={it.disabled ? -1 : it.value === focusValue ? 0 : -1}
               onClick={() => !it.disabled && onChange(it.value)}
               className={cn(
-                'focus-ring flex h-full w-full flex-col gap-2 rounded-xl border p-4 text-left transition-[border-color,box-shadow,background-color]',
+                cn('focus-ring flex h-full w-full flex-col gap-2 rounded-xl border text-left', compact ? 'p-3' : 'p-4'),
+                'text-left transition-[border-color,box-shadow,background-color]',
                 selected
                   ? 'border-accent-default bg-accent-subtle outline outline-[0.5px] outline-accent-default'
                   : 'border-border-default bg-bg-surface',
@@ -80,7 +84,7 @@ export function OptionCardGroup<V extends string>({ items, value, onChange, clas
               )}
             >
               <div className="flex w-full items-center justify-between gap-2">
-                <span className={cn('text-heading-lg', it.disabled ? 'text-text-disabled' : 'text-text-primary')}>{it.title}</span>
+                <span className={cn(compact ? 'text-heading' : 'text-heading-lg', it.disabled ? 'text-text-disabled' : 'text-text-primary')}>{it.title}</span>
                 <span
                   aria-hidden
                   className={cn(
@@ -91,7 +95,7 @@ export function OptionCardGroup<V extends string>({ items, value, onChange, clas
                   {selected && <span className="size-2 rounded-full bg-accent-default" />}
                 </span>
               </div>
-              {it.description && (
+              {it.description && !compact && (
                 <span className={cn('text-body-lg', it.disabled ? 'text-text-disabled' : 'text-text-secondary')}>{it.description}</span>
               )}
               {it.badges && <span className="flex flex-wrap gap-1">{it.badges}</span>}
@@ -112,6 +116,7 @@ export function OptionCardGroup<V extends string>({ items, value, onChange, clas
           )
         })}
       </div>
+      {compact && chosen?.description && <p className="mt-2 text-body text-text-secondary">{chosen.description}</p>}
     </div>
   )
 }

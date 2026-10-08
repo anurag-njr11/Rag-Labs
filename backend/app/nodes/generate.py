@@ -133,6 +133,8 @@ def sync_providers() -> None:
     for name, p in llm.PROVIDERS.items():
         config = CONFIGS.get(name) or (GenerateConfig if p.supports_reasoning else GenericGenerateConfig)
         description = p.description if not p.custom else f"Custom endpoint · {p.base_url}"
+        if p.default_model:
+            description += f" Default model: {p.default_model}."
         _register(name, p.title, description, config)
         _registered.add(name)
 

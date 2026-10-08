@@ -31,6 +31,7 @@ class RetrieveConfig(NodeConfig):
     fusion: Literal["rrf", "weighted"] = ui_field(
         "rrf", title="Fusion method",
         description="How ranked lists from several paths combine. RRF uses ranks only; weighted uses normalised scores.",
+        json_schema_extra={"enum_labels": {"rrf": "Reciprocal rank fusion (RRF)", "weighted": "Weighted scores"}},
     )
     rrf_k: int = ui_field(60, ge=1, le=1000, advanced=True, title="RRF constant (k)",
                           description="Higher flattens the advantage of top ranks.")
@@ -52,16 +53,15 @@ class RetrieveConfig(NodeConfig):
                                  description="1 = pure relevance, 0 = pure diversity.")
     query_expansion: Literal["none", "multi_query", "hyde", "decompose"] = ui_field(
         "none", title="Query expansion",
-        description="multi_query: the Generate model rewrites the question a few ways, each is searched, "
-                    "results fused (RRF). hyde: it writes a hypothetical answer, which the dense path searches "
-                    "with instead of the question. decompose: it splits a multi-part question into "
-                    "sub-questions, each is searched, and the results take turns in the top-k so every part "
-                    "gets evidence. One extra LLM call per question; falls back to the plain question if the "
-                    "call fails.",
+        description="Rewrite several ways: the Generate model rephrases the question and every version is searched. "
+                    "Hypothetical answer: it drafts an answer and the dense path searches with that instead. "
+                    "Split into sub-questions: each part of a multi-part question is searched on its own. "
+                    "Costs one extra LLM call per question.",
+        json_schema_extra={"enum_labels": {"none": "Off", "multi_query": "Rewrite several ways", "hyde": "Hypothetical answer",
+                                           "decompose": "Split into sub-questions"}},
     )
     expansion_queries: int = ui_field(3, ge=1, le=5, advanced=True, title="Rewrites / sub-questions",
-                                      description="multi_query: how many rewrites to search with. "
-                                                  "decompose: the most sub-questions to split into.")
+                                      description="How many rewrites to search with, or the most sub-questions to split into.")
     okf_policy: bool = ui_field(
         False, title="Use document metadata (OKF)",
         description="Leave out documents past their stale_after date, halve the score of documents marked "
@@ -78,6 +78,13 @@ class RetrieveConfig(NodeConfig):
                     "result before reranking and the prompt. Sentence-window / auto-merging style: search "
                     "small, answer with more context. 0 = off.",
     )
+
+
+def dense_used(cfg: dict) -> bool:
+    """Whether queries touch the vector store (else Embed / Vector store are built but unused)."""
+    r = cfg["retrieve"]
+    mode = r.get("search_mode", "fused") if r["type"] == "agentic" else r["type"]
+    return "dense" in MODE_PATHS[mode] or bool(r.get("mmr"))
 
 
 class BaseRetriever(Node):
@@ -112,7 +119,9 @@ class KeywordRetriever(BaseRetriever):
 class AgenticConfig(RetrieveConfig):
     search_mode: Literal["fused", "hybrid", "dense", "keyword"] = ui_field(
         "fused", title="Each search uses",
-        description="The retriever the agent's searches run through.")
+        description="The retriever the agent's searches run through.",
+        json_schema_extra={"enum_labels": {"fused": "Fused (dense + keyword + exact)", "hybrid": "Hybrid (dense + keyword)",
+                                           "dense": "Dense (meaning)", "keyword": "Keyword (BM25)"}})
     max_steps: int = ui_field(3, ge=1, le=6, title="Step budget",
                               description="Most planner LLM calls per question. Each step can search or read; "
                                           "it stops early once it has the evidence.")

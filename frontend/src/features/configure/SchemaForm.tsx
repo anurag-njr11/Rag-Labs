@@ -1,6 +1,7 @@
 import { useMemo, useState, type ComponentProps } from 'react'
 import { Plus, X } from 'lucide-react'
 import { fillOptionsFrom, useOptionsFrom } from '@/api/hooks'
+import { humanize } from '@/api/format'
 import type { NodeConfig, NodeType, SlotCatalog } from '@/api/types'
 import {
   Button, Combobox, Disclosure, EffectBadge, Field, Input, Select, Slider, Switch, Textarea, cn,
@@ -18,13 +19,15 @@ export interface SchemaFormProps {
   changed?: Set<string>
   /** Prefix for control ids (unique per stage). */
   idPrefix: string
+  /** Side-panel density: one column, shorter help text. */
+  compact?: boolean
 }
 
 /**
  * Renders a node type's params purely from its JSON Schema — no node-specific code.
  * Advanced fields go under an "Advanced" disclosure.
  */
-export function SchemaForm({ node, slot, value, onChange, errors, changed, idPrefix }: SchemaFormProps) {
+export function SchemaForm({ node, slot, value, onChange, errors, changed, idPrefix, compact }: SchemaFormProps) {
   const fields = useMemo(() => resolveFields(node.schema), [node.schema])
   const basic = fields.filter((f) => !f.advanced)
   const advanced = fields.filter((f) => f.advanced)
@@ -33,7 +36,7 @@ export function SchemaForm({ node, slot, value, onChange, errors, changed, idPre
   const [advOpen, setAdvOpen] = useState(false)
 
   if (!fields.length) {
-    return <p className="text-body-sm text-text-tertiary">No parameters for this option.</p>
+    return null
   }
 
   const set = (name: string, v: unknown) => onChange({ ...value, [name]: v })
@@ -49,12 +52,13 @@ export function SchemaForm({ node, slot, value, onChange, errors, changed, idPre
       error={errors?.[f.name]}
       changed={changed?.has(f.name)}
       id={`${idPrefix}-${f.name}`}
+      compact={compact}
     />
   )
 
   return (
-    <div className="flex flex-col gap-5">
-      {basic.length > 0 && <div className="grid grid-cols-1 gap-x-10 gap-y-6 md:grid-cols-2">{basic.map(render)}</div>}
+    <div className="@container flex flex-col gap-5">
+      {basic.length > 0 && <div className="grid grid-cols-1 gap-x-8 gap-y-6 @min-[640px]:grid-cols-2">{basic.map(render)}</div>}
       {advanced.length > 0 && (
         <Disclosure
           label="Advanced"
@@ -68,7 +72,7 @@ export function SchemaForm({ node, slot, value, onChange, errors, changed, idPre
           open={advOpen || advancedHasError}
           onOpenChange={setAdvOpen}
         >
-          <div className="grid grid-cols-1 gap-x-10 gap-y-6 md:grid-cols-2">{advanced.map(render)}</div>
+          <div className="grid grid-cols-1 gap-x-8 gap-y-6 @min-[640px]:grid-cols-2">{advanced.map(render)}</div>
         </Disclosure>
       )}
     </div>
@@ -85,6 +89,7 @@ interface SchemaFieldProps {
   error?: string
   changed?: boolean
   id: string
+  compact?: boolean
 }
 
 const wide = (f: ResolvedField) => f.kind === 'list' || f.kind === 'textarea' || f.kind === 'json'
@@ -96,7 +101,7 @@ function niceStep(min: number, max: number) {
   return Math.pow(10, Math.floor(Math.log10(span / 100)))
 }
 
-function SchemaField({ field: f, node, slot, nodeValue, value, onChange, error, changed, id }: SchemaFieldProps) {
+function SchemaField({ field: f, node, slot, nodeValue, value, onChange, error, changed, id, compact }: SchemaFieldProps) {
   const effect = fieldEffect(node, slot, f.name)
   const label = (
     <span className="inline-flex items-center gap-1.5">
@@ -111,8 +116,9 @@ function SchemaField({ field: f, node, slot, nodeValue, value, onChange, error, 
       )}
     </span>
   )
-  const badge = <EffectBadge effect={effect} />
-  const common = { label, badge, help: f.help, error, id, size: 'lg' as const, className: wide(f) ? 'md:col-span-2' : undefined }
+  // Instant is the norm; only flag the fields that re-index.
+  const badge = effect === 'rebuild' ? <EffectBadge effect={effect} /> : undefined
+  const common = { label, badge, help: f.help, error, id, size: 'lg' as const, className: wide(f) ? '@min-[640px]:col-span-2' : undefined, helpLimit: compact ? 70 : undefined }
 
   switch (f.kind) {
     case 'boolean':
@@ -122,7 +128,7 @@ function SchemaField({ field: f, node, slot, nodeValue, value, onChange, error, 
         </Field>
       )
     case 'enum': {
-      const opts = f.enumValues.map((v) => ({ value: String(v), label: f.enumLabels?.[String(v)] ?? String(v) }))
+      const opts = f.enumValues.map((v) => ({ value: String(v), label: f.enumLabels?.[String(v)] ?? (String(v).includes('_') ? humanize(String(v)) : String(v)) }))
       if (f.nullable) opts.unshift({ value: '', label: 'None' })
       const cur = value === null || value === undefined ? '' : String(value)
       if (cur && !opts.some((o) => o.value === cur)) opts.push({ value: cur, label: `${cur} (not in list)` })

@@ -1,9 +1,11 @@
 import { useState } from 'react'
+import { useSearchParams } from 'react-router-dom'
 import { FlaskConical, RefreshCw, Sparkles } from 'lucide-react'
 import { errorMessage, useEvalSet, useEvalSets, useGenerateEvalSet } from '@/api/hooks'
 import type { Judge } from '@/api/types'
+import { useLabs } from '@/app/labs'
 import { useWorkspace } from '@/app/workspace'
-import { Banner, Button, Card, EmptyState, Select, Spinner, useToast } from '@/components/ui'
+import { Banner, Button, Card, EmptyState, Select, Spinner, Tabs, tabPanelProps, useToast } from '@/components/ui'
 import { EvalJobProgress } from './EvalJobProgress'
 import { EvalSetCard } from './EvalSetCard'
 import { JudgePicker } from './JudgePicker'
@@ -12,6 +14,15 @@ import { AdapterPanel } from './AdapterPanel'
 import { PromptOptPanel } from './PromptOptPanel'
 import { InjectionPanel } from './InjectionPanel'
 import { SweepsPanel } from './SweepsPanel'
+
+const VIEWS = [
+  { value: 'quality', label: 'Retrieval quality' },
+  { value: 'sweeps', label: 'Sweeps' },
+  { value: 'adapter', label: 'Embedding adapter' },
+  { value: 'prompt', label: 'Prompt optimisation' },
+  { value: 'injection', label: 'Injection resistance' },
+] as const
+type View = (typeof VIEWS)[number]['value']
 
 const SIZES = [10, 20, 30, 50].map((n) => ({ value: String(n), label: `${n} questions` }))
 
@@ -23,10 +34,17 @@ export default function EvaluateTab() {
   const [size, setSize] = useState('30')
   const [jobId, setJobId] = useState<string | null>(null)
   const [judge, setJudge] = useState<Judge | null>(null)
+  const [params, setParams] = useSearchParams()
+  const view = VIEWS.find((v) => v.value === params.get('view'))?.value ?? 'quality'
+  // Research tools need a sizeable eval set to say anything; until then they sit behind Labs (Settings).
+  const labs = useLabs()
+  const setView = (v: View) => setParams(v === 'quality' ? {} : { view: v }, { replace: true })
 
   const latest = sets.data?.[0]
   const current = sets.data?.find((s) => s.status === 'ready') ?? null
   const detail = useEvalSet(project.id, current?.id)
+  const roomy = (detail.data?.items.length ?? 0) >= 50
+  const views = VIEWS.filter((v) => (v.value !== 'adapter' && v.value !== 'prompt') || labs || roomy || v.value === view)
   const generating = !!jobId || latest?.status === 'running'
 
   const start = () =>
@@ -74,7 +92,7 @@ export default function EvaluateTab() {
             Measure how often retrieval finds the right passage, using questions written from your own documents.
           </p>
         </div>
-        {current && <JudgePicker value={judge} onChange={setJudge} />}
+        {current && (view === 'quality' || view === 'sweeps') && <JudgePicker value={judge} onChange={setJudge} />}
       </header>
       {sets.isPending ? (
         <Spinner label="Loading eval sets" />
@@ -99,12 +117,15 @@ export default function EvaluateTab() {
         </Card>
       ) : detail.data ? (
         <>
-          <RunsPanel
+          <Tabs<View> variant="underline" aria-label="Evaluate tools" items={[...views]} value={view} onChange={setView} idPrefix="eval" />
+          <div {...tabPanelProps('eval', view)} className="flex flex-col gap-6 outline-none">
+          {view === 'quality' && <RunsPanel
             projectId={project.id}
             setId={detail.data.id}
             items={detail.data.items}
             judge={judge}
             setRevision={detail.data.revision}
+            stale={detail.data.corpus_changed}
             side={
               <EvalSetCard
                 compact
@@ -122,11 +143,12 @@ export default function EvaluateTab() {
                 }
               />
             }
-          />
-          <SweepsPanel projectId={project.id} setId={detail.data.id} judge={judge} />
-          <AdapterPanel projectId={project.id} setId={detail.data.id} />
-          <PromptOptPanel projectId={project.id} setId={detail.data.id} />
-          <InjectionPanel projectId={project.id} setId={detail.data.id} />
+          />}
+          {view === 'sweeps' && <SweepsPanel projectId={project.id} setId={detail.data.id} judge={judge} />}
+          {view === 'adapter' && <AdapterPanel projectId={project.id} setId={detail.data.id} />}
+          {view === 'prompt' && <PromptOptPanel projectId={project.id} setId={detail.data.id} />}
+          {view === 'injection' && <InjectionPanel projectId={project.id} setId={detail.data.id} />}
+          </div>
         </>
       ) : (
         <Spinner label="Loading eval set" />

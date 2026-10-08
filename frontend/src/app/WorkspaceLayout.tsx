@@ -11,6 +11,7 @@ import { Button, ButtonLink, EmptyState, Pill, TabLinks, useSwapTransition, useT
 import { PageFallback } from './AppLayout'
 import { JobProgress } from './JobProgress'
 import { ProviderKeyBanner } from './ProviderKeyBanner'
+import { useLabs } from './labs'
 import type { WorkspaceContext } from './workspace'
 
 const INDEX_DOT: Record<IndexStatus['status'], string> = {
@@ -35,12 +36,14 @@ function indexPillText(p: Project): string {
   if (!ix) return p.documents === 0 ? 'No documents' : 'Index not built'
   const parts = [INDEX_LABEL[ix.status] ?? ix.status]
   if (ix.chunk_count) parts.push(`${formatNumber(ix.chunk_count)} chunks`)
-  if (ix.store) parts.push(storeLabel(ix.store))
+  if (ix.store && ix.dense !== false) parts.push(storeLabel(ix.store))
   return parts.join(' · ')
 }
 
 /** Workspace tabs in display order (route segment → index drives the slide direction). */
-const TAB_ORDER = ['documents', 'data', 'configure', 'versions', 'playground', 'evaluate', 'health', 'api']
+const TAB_ORDER = ['documents', 'configure', 'versions', 'playground', 'evaluate', 'health', 'api', 'data']
+/** Tabs where an index rebuild is a natural next step; elsewhere the button would just be noise. */
+const REBUILD_TABS = ['documents', 'configure']
 
 function WorkspaceHeader({ project }: { project: Project }) {
   const build = useBuildVersion(project.id)
@@ -49,7 +52,9 @@ function WorkspaceHeader({ project }: { project: Project }) {
   const runningJob = project.index?.job_id ?? jobId
   const busy = !!project.index?.job_id || project.index?.status === 'building' || project.index?.status === 'pending'
   // The Documents tab shows its own running-jobs card; don't show the same build twice.
-  const onDocumentsTab = useLocation().pathname.endsWith('/documents')
+  const tab = useLocation().pathname.split('/')[3] ?? ''
+  const onDocumentsTab = tab === 'documents'
+  const notBuilt = !project.index || project.index.status === 'not_built'
 
   const rebuild = () => {
     if (!project.active_version_id) return
@@ -60,15 +65,18 @@ function WorkspaceHeader({ project }: { project: Project }) {
   }
 
   const base = `/projects/${project.id}`
+  const labs = useLabs()
+  // A project that already uses computations keeps the tab, whatever the Labs switch says.
+  const showData = labs || (project.active_version?.config.compute?.type ?? 'none') !== 'none' || tab === 'data'
   return (
-    <div className="border-b border-border-default bg-bg-surface px-4 pt-4 sm:px-8">
+    <div className="border-b border-border-default bg-bg-surface px-4 pt-3 sm:px-8">
       <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-body-sm">
         <Link to="/" className="focus-ring rounded-sm text-text-tertiary hover:text-text-primary">Projects</Link>
         <ChevronRight size={12} aria-hidden className="text-text-tertiary" />
         <span aria-current="page" className="truncate text-text-secondary">{project.name}</span>
       </nav>
 
-      <div className="mt-2 flex flex-wrap items-center gap-x-3 gap-y-2">
+      <div className="mt-1 flex flex-wrap items-center gap-x-3 gap-y-2">
         <h1 className="min-w-0 truncate text-display text-text-primary">{project.name}</h1>
         <div className="flex min-w-0 flex-wrap items-center gap-2">
           {project.active_version && (
@@ -78,17 +86,18 @@ function WorkspaceHeader({ project }: { project: Project }) {
             {indexPillText(project)}
           </Pill>
         </div>
-        <div className="ml-auto flex items-center gap-2">
+        {(REBUILD_TABS.includes(tab) || busy || notBuilt) && <div className="ml-auto flex items-center gap-2">
           <Button
+            variant="secondary"
             icon={<RefreshCw size={14} aria-hidden className={busy ? 'animate-spin' : undefined} />}
             onClick={rebuild}
             loading={build.isPending}
             disabled={busy || !project.active_version_id || project.documents === 0}
             title={project.documents === 0 ? 'Add documents first' : undefined}
           >
-            {busy ? 'Building…' : 'Rebuild index'}
+            {busy ? 'Building…' : notBuilt ? 'Build index' : 'Rebuild index'}
           </Button>
-        </div>
+        </div>}
       </div>
 
       {runningJob && (jobId || (busy && !onDocumentsTab)) && (
@@ -113,16 +122,16 @@ function WorkspaceHeader({ project }: { project: Project }) {
 
       <TabLinks
         aria-label="Project sections"
-        className="mt-4"
+        className="mt-2"
         items={[
           { to: `${base}/documents`, label: 'Documents', icon: <FileText aria-hidden /> },
-          { to: `${base}/data`, label: 'Data', icon: <Table2 aria-hidden /> },
           { to: `${base}/configure`, label: 'Configure', icon: <SlidersHorizontal aria-hidden /> },
           { to: `${base}/versions`, label: 'Versions', icon: <History aria-hidden /> },
           { to: `${base}/playground`, label: 'Playground', icon: <MessageSquare aria-hidden /> },
           { to: `${base}/evaluate`, label: 'Evaluate', icon: <FlaskConical aria-hidden /> },
           { to: `${base}/health`, label: 'Health', icon: <HeartPulse aria-hidden /> },
           { to: `${base}/api`, label: 'API', icon: <Code2 aria-hidden /> },
+          ...(showData ? [{ to: `${base}/data`, label: 'Computations', icon: <Table2 aria-hidden /> }] : []),
         ]}
       />
     </div>
@@ -148,9 +157,11 @@ export function WorkspaceLayout() {
   useLayoutEffect(() => {
     const el = chrome.current
     if (!el) return
-    const ro = new ResizeObserver(() => setChromeH(el.offsetHeight))
+    // ceil: a fractional header height rounded down leaves the full-height tabs a fraction too tall -> stray page scrollbar.
+    const measure = () => setChromeH(Math.ceil(el.getBoundingClientRect().height))
+    const ro = new ResizeObserver(measure)
     ro.observe(el)
-    setChromeH(el.offsetHeight)
+    measure()
     return () => ro.disconnect()
   }, [q.data?.id])
 

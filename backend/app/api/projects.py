@@ -16,6 +16,7 @@ from ..core.pipeline import (
 from ..engine import stores, sync
 from . import eval as eval_api
 from ..ingest import builder, export as export_mod
+from ..nodes.retrieve import dense_used
 
 router = APIRouter(prefix="/api/projects", tags=["projects"])
 
@@ -66,7 +67,8 @@ async def build_status(project_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
     running = sync._running.get((project_id, index_config_hash(cfg)))
     job_id = running.id if running and running.status == "running" else None
     if b is None:
-        return {"status": "not_built", "chunk_count": 0, "store": cfg["vector_store"]["type"], "job_id": job_id}
+        return {"status": "not_built", "chunk_count": 0, "store": cfg["vector_store"]["type"], "job_id": job_id,
+                "dense": dense_used(cfg)}
     synced = await builder.build_is_synced(b)
     status = b["status"]
     if status == "ready" and not synced:
@@ -75,7 +77,7 @@ async def build_status(project_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
         status = "building"
     return {"id": b["id"], "status": status, "chunk_count": b["chunk_count"], "store": b["store_type"],
             "dim": b["dim"], "error": b["error"], "stats": db.loads(b["stats"], {}),
-            "finished_at": b["finished_at"], "job_id": job_id}
+            "finished_at": b["finished_at"], "job_id": job_id, "dense": dense_used(cfg)}
 
 
 def _version_out(v: dict[str, Any], active_id: str | None) -> dict[str, Any]:
@@ -96,10 +98,17 @@ async def _project_out(p: dict[str, Any]) -> dict[str, Any]:
         out["index"] = await build_status(p["id"], cfg)
         out["summary"] = {
             "vector_store": cfg["vector_store"]["type"],
+            "dense": dense_used(cfg),
             "embed_model": cfg["embed"].get("model") or cfg["embed"]["type"],
             "generate": cfg["generate"]["type"],
             "model": cfg["generate"].get("model") or "",
         }
+        run = await db.fetch_one(
+            "SELECT metrics FROM eval_runs WHERE project_id=? AND version_id=? AND status='ready'"
+            " ORDER BY created_at DESC, rowid DESC LIMIT 1", (p["id"], active["id"]))
+        m = db.loads(run["metrics"], None) if run else None
+        if m:
+            out["summary"]["quality"] = {"hit_at_k": m["hit_at_k"], "k": m["k"], "n": m["n"]}
     return out
 
 
@@ -236,6 +245,14 @@ async def get_version(project_id: str, version_id: str) -> dict[str, Any]:
     return v
 
 
+def _auto_note(before: dict[str, Any], after: dict[str, Any]) -> str:
+    """A version saved without a note is described by what changed, e.g. "retrieve type hybrid → keyword"."""
+    parts = [f"{c['slot']} {c['field'].replace('_', ' ')} {c['before']} → {c['after']}"
+             for c in diff_pipelines(before, after)]
+    note = "; ".join(parts[:3]) + (f" (+{len(parts) - 3} more)" if len(parts) > 3 else "")
+    return note[:300]
+
+
 @router.post("/{project_id}/versions", status_code=201)
 async def create_version(project_id: str, body: VersionIn) -> dict[str, Any]:
     p = await _project(project_id)
@@ -244,7 +261,8 @@ async def create_version(project_id: str, body: VersionIn) -> dict[str, Any]:
     if active and with_defaults(db.loads(active["config"])) == cfg:
         return {"version": _version_out(active, p["active_version_id"]), "job_id": None, "eval_job_id": None,
                 "unchanged": True}
-    v = await _insert_version(project_id, cfg, body.note.strip(), active["id"] if active else None, body.activate)
+    note = body.note.strip() or (_auto_note(db.loads(active["config"]), cfg) if active else "")
+    v = await _insert_version(project_id, cfg, note, active["id"] if active else None, body.activate)
     job_id = await _maybe_build(project_id, cfg) if body.build else None
     # Regression guard: only when the index is being brought up anyway (or needs no work),
     # so a wizard save with build=false doesn't start a build behind the user's back.

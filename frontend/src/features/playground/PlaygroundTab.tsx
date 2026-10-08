@@ -81,7 +81,8 @@ export default function PlaygroundTab() {
   const providerName = gen?.type
   const provider = providers.data?.find((p) => p.name === providerName)
   const model = (typeof gen?.model === 'string' && gen.model) || provider?.default_model || providerName || ''
-  const store = selectedVersion?.config.vector_store
+  const denseOn = (selectedVersion?.index ?? project.index)?.dense !== false
+  const store = denseOn ? selectedVersion?.config.vector_store : undefined
   const indexType = typeof store?.index_type === 'string' && store.type === 'faiss' ? store.index_type : undefined
   const maxTokens = typeof gen?.max_tokens === 'number' ? gen.max_tokens : undefined
 
@@ -130,11 +131,6 @@ export default function PlaygroundTab() {
     setInspectedId(turn.id)
     setTab('sources')
     setFocus((f) => ({ chunkId: chunk?.id ?? null, n, tick: f.tick + 1 }))
-    openSheet()
-  }, [openSheet])
-  const onShowTrace = useCallback((turn: Turn) => {
-    setInspectedId(turn.id)
-    setTab('trace')
     openSheet()
   }, [openSheet])
   const onInspect = useCallback((turn: Turn) => {
@@ -315,7 +311,6 @@ export default function PlaygroundTab() {
                   activeN={inspected?.id === t.id ? focus.n : null}
                   maxTokens={maxTokens}
                   onCite={onCite}
-                  onShowTrace={onShowTrace}
                   onRetry={(x) => session.retry(x.id)}
                   onStop={session.stop}
                   onInspect={onInspect}
@@ -378,7 +373,7 @@ export default function PlaygroundTab() {
               </div>
             </div>
             <p id="pg-hint" className="mt-2 hidden text-body text-text-tertiary sm:block">
-              Enter to send · Shift+Enter for newline · answers cite sources as [n]
+              Enter to send · Shift+Enter for newline
             </p>
           </div>
         </div>

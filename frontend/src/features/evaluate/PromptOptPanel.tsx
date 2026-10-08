@@ -1,9 +1,9 @@
 import { useState } from 'react'
-import { WandSparkles } from 'lucide-react'
 import { errorMessage, useCreateVersion, usePromptRuns, useStartPromptRun, useVersions } from '@/api/hooks'
 import type { PromptRun } from '@/api/types'
 import { Badge, Banner, Button, Card, CodeBlock, Disclosure, Select, cn, useToast } from '@/components/ui'
 import { EvalJobProgress } from './EvalJobProgress'
+import { PanelIntro } from './PanelIntro'
 
 const sc = (x: number | null | undefined) => (x == null ? '—' : x.toFixed(2))
 
@@ -42,15 +42,12 @@ export function PromptOptPanel({ projectId, setId }: { projectId: string; setId:
 
   return (
     <Card padding="lg" className="flex flex-col gap-5 sm:p-6">
-      <div className="max-w-3xl">
-        <h2 className="flex items-center gap-2 text-title-lg text-text-primary"><WandSparkles size={20} aria-hidden /> Prompt optimisation</h2>
-        <p className="mt-1 text-body-lg text-text-secondary">
-          Turns prompt tweaking into a search, the DSPy way. Questions are split train / val / test. The model's best answers to the train
+      <PanelIntro summary="Search prompt wording and few-shot examples, then check the winner on questions it never saw.">
+        <p>Turns prompt tweaking into a search, the DSPy way. Questions are split train / val / test. The model's best answers to the train
           questions become few-shot examples; it drafts alternative instructions from its weakest ones; every combination answers the val
           questions; the winner and your current prompt then answer the test questions — which played no part in choosing. Score: word overlap
-          with the gold answer (F1), halved when citations are missing.
-        </p>
-      </div>
+          with the gold answer (F1), halved when citations are missing.</p>
+      </PanelIntro>
       <div className="flex flex-wrap items-center gap-3">
         <span className="text-body-sm text-text-tertiary">
           Optimises the active version{active ? ` (v${active.version})` : ''}. Needs ≥ 9 questions; roughly (2 × candidates + 3) × the set size / 3 answers.
@@ -95,6 +92,7 @@ function Result({ run, onUse, saving, canUse }: { run: PromptRun; onUse: () => v
         <span className="text-body text-text-secondary">on {r.test.n} unseen test question{r.test.n === 1 ? '' : 's'}</span>
         {r.best.is_current
           ? <Badge tone="neutral">your current prompt won</Badge>
+          : r.test.n < 20 ? <Badge tone="neutral">inconclusive — only {r.test.n} test questions</Badge>
           : r.improves ? <Badge tone="success">improves unseen questions</Badge> : <Badge tone="warning">no gain on unseen questions</Badge>}
         {!r.best.is_current && (
           <Button size="sm" variant={r.improves ? 'primary' : 'secondary'} className="ml-auto" onClick={onUse} loading={saving} disabled={!canUse}>

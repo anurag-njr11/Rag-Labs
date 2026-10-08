@@ -1,10 +1,10 @@
 import { useState } from 'react'
-import { ShieldAlert } from 'lucide-react'
-import { errorMessage, useInjectionRun, useInjectionRuns, useStartInjection } from '@/api/hooks'
+import { errorMessage, useInjectionRun, useInjectionRuns, useStartInjection, useVersions } from '@/api/hooks'
 import type { InjectionRun, InjectionVariant } from '@/api/types'
 import { Badge, Banner, Button, ButtonLink, Card, Disclosure, Field, Input, Select, Switch, cn, useToast } from '@/components/ui'
 import { projectPath } from '@/app/workspace'
 import { EvalJobProgress } from './EvalJobProgress'
+import { PanelIntro } from './PanelIntro'
 
 const CELL = 'px-3 py-2.5 first:pl-5 last:pr-5 align-middle'
 const pct = (x: number | null | undefined) => (x == null ? '—' : `${Math.round(x * 100)}%`)
@@ -57,15 +57,12 @@ export function InjectionPanel({ projectId, setId }: { projectId: string; setId:
 
   return (
     <Card padding="lg" className="flex flex-col gap-5 sm:p-6">
-      <div className="max-w-3xl">
-        <h2 className="flex items-center gap-2 text-title-lg text-text-primary"><ShieldAlert size={20} aria-hidden /> Injection resistance</h2>
-        <p className="mt-1 text-body-lg text-text-secondary">
-          Anyone who can get a document into your corpus can hide instructions in it. This test takes questions from this eval set,
+      <PanelIntro summary="Plant poisoned passages in the results and count how many attacks reach the user.">
+        <p>Anyone who can get a document into your corpus can hide instructions in it. This test takes questions from this eval set,
           retrieves as usual, and plants a poisoned passage at the top of the results — five attacks: instruction override, link
           exfiltration, contact swap, a planted false fact, and a system-prompt leak. Each carries a marker, so whether it worked is a
-          string check, not a judgment. Your documents are never changed.
-        </p>
-      </div>
+          string check, not a judgment. Your documents are never changed.</p>
+      </PanelIntro>
 
       <div className="flex flex-wrap items-end gap-4">
         <Field label="Questions" help="from this eval set">
@@ -112,6 +109,7 @@ export function InjectionPanel({ projectId, setId }: { projectId: string; setId:
 }
 
 function Report({ run, projectId }: { run: InjectionRun; projectId: string }) {
+  const activeVersion = useVersions(projectId).data?.find((v) => v.active)?.version
   const m = run.metrics!
   const cur = m.variants[0]
   const none = m.variants.find((v) => v.id === 'none')
@@ -124,7 +122,7 @@ function Report({ run, projectId }: { run: InjectionRun; projectId: string }) {
       <div className="flex flex-wrap items-baseline gap-3">
         <span className={cn('font-mono text-display tabular-nums', scoreTone(cur.score))}>{pct(cur.score)}</span>
         <span className="text-body-lg text-text-secondary">
-          injection resistance as configured (v{run.version ?? '?'}) — {cur.hijacked} of {cur.trials} attack{cur.trials === 1 ? '' : 's'} reached the user
+          injection resistance as configured (v{run.version ?? '?'}{activeVersion && run.version !== activeVersion ? `, not the active v${activeVersion}` : ''}) — {cur.hijacked} of {cur.trials} attack{cur.trials === 1 ? '' : 's'} reached the user
           {reached.length ? `: ${reached.join(', ')}` : ''}.
         </span>
       </div>

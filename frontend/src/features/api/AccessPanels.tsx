@@ -28,6 +28,7 @@ export function KeysPanel({ projectId }: { projectId: string }) {
         <h2 className="flex items-center gap-2 text-heading text-text-primary"><KeyRound size={18} aria-hidden /> API keys</h2>
         <p className="mt-1 text-body text-text-secondary">
           Requests from this machine need no key. Anything else must send <code className="font-mono text-mono">Authorization: Bearer rl_…</code>.
+          {' '}Requests relayed by a proxy (<code className="font-mono text-mono">X-Forwarded-For</code>) always need a key; if yours strips that header, set <code className="font-mono text-mono">TRUST_LOOPBACK=false</code>.
           A <strong>chat</strong> key may only call this project's query endpoint; an <strong>admin</strong> key may call the whole API. Only a
           hash is stored — copy the key when it's shown.
         </p>
@@ -70,11 +71,11 @@ export function KeysPanel({ projectId }: { projectId: string }) {
   )
 }
 
-function Stat({ label, value, hint }: { label: string; value: string; hint?: string }) {
+function Stat({ label, value, hint, tone }: { label: string; value: string; hint?: string; tone?: 'warning' | 'danger' }) {
   return (
-    <div className="rounded-lg border border-border-default bg-bg-surface px-3 py-2">
+    <div className={cn('rounded-lg border bg-bg-surface px-3 py-2', tone === 'danger' ? 'border-danger-border bg-danger-bg' : tone === 'warning' ? 'border-warning-border bg-warning-bg' : 'border-border-default')}>
       <dt className="text-caption text-text-tertiary">{label}</dt>
-      <dd className="mt-0.5 font-mono text-mono tabular-nums text-text-primary">{value}</dd>
+      <dd className={cn('mt-0.5 font-mono text-mono tabular-nums', tone === 'danger' ? 'text-danger-fg' : tone === 'warning' ? 'text-warning-fg' : 'text-text-primary')}>{value}</dd>
       {hint && <dd className="text-caption text-text-tertiary">{hint}</dd>}
     </div>
   )
@@ -144,8 +145,10 @@ export function UsagePanel({ projectId }: { projectId: string }) {
         <>
           <dl className="grid grid-cols-2 gap-2 sm:grid-cols-4">
             <Stat label="Requests" value={formatNumber(u.total.requests)} hint={`${formatNumber(u.total.api)} API · ${formatNumber(u.total.playground)} Playground`} />
-            <Stat label="Errors" value={u.total.requests ? `${Math.round((u.total.errors / u.total.requests) * 100)}%` : '—'} hint={`${formatNumber(u.total.errors)} failed`} />
-            <Stat label="Latency p50" value={u.latency.p50_ms != null ? formatMs(u.latency.p50_ms) : '—'} hint={u.latency.p95_ms != null ? `p95 ${formatMs(u.latency.p95_ms)}` : undefined} />
+            <Stat label="Errors" value={u.total.requests ? `${Math.round((u.total.errors / u.total.requests) * 100)}%` : '—'}
+              tone={u.total.requests && u.total.errors / u.total.requests >= 0.05 ? 'danger' : undefined}
+              hint={`${formatNumber(u.total.errors)} failed${u.total.errors ? ' — see Playground runs for the error' : ''}`} />
+            <Stat label="End-to-end p50" tone={(u.latency.p50_ms ?? 0) >= 5000 ? 'warning' : undefined} value={u.latency.p50_ms != null ? formatMs(u.latency.p50_ms) : '—'} hint={u.latency.p95_ms != null ? `p95 ${formatMs(u.latency.p95_ms)} · request to full answer` : undefined} />
             <Stat label="Tokens · cost" value={`${formatNumber(u.total.tokens_in + u.total.tokens_out)}`} hint={`${formatCost(u.total.cost_usd)} at list price`} />
           </dl>
           {u.total.requests > 0 ? <DailyBars u={u} /> : <p className="text-body-sm text-text-tertiary">No requests in this period.</p>}

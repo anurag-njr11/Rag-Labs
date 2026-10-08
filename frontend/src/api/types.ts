@@ -93,6 +93,8 @@ export interface IndexStatus {
   status: IndexStatusValue
   chunk_count: number
   store: string
+  /** False when the retriever never queries the vector store (e.g. keyword-only). */
+  dense?: boolean
   dim?: number | null
   error?: string | null
   stats?: BuildStats
@@ -127,7 +129,10 @@ export interface VersionActivation {
   previous_version: number | null
 }
 export interface ProjectSummary {
+  /** Latest finished eval of the active version (absent if never measured). */
+  quality?: { hit_at_k: number; k: number; n: number }
   vector_store: string
+  dense?: boolean
   embed_model: string
   generate: string
   model: string
@@ -513,6 +518,7 @@ export interface ChatTotals {
 }
 export type ChatEvent =
   | { type: 'status'; message: string; job_id: string }
+  | { type: 'step'; step: TraceStepName; ms: number; hit?: boolean }
   | { type: 'run'; run_id: string; version: number; build_id: string; store: string }
   | { type: 'retrieval'; results: RetrievedChunk[]; trace: TraceStep[] }
   | { type: 'token'; text: string }
@@ -750,11 +756,14 @@ export interface EvalConfigSummary {
   chunk: string
   embed: string
   store: string
+  dense?: boolean
   retrieve: string
   top_k: number
   rerank: string
 }
 export interface EvalMetrics {
+  /** 95% intervals for the retrieval metrics (absent on runs made before they were added). */
+  ci?: Partial<Record<'hit_at_1' | 'hit_at_3' | 'hit_at_k' | 'mrr', [number, number]>>
   n: number
   k: number
   hit_at_1: number
