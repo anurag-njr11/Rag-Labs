@@ -1,11 +1,12 @@
 import { Fragment, type ReactNode } from 'react'
+import { Link } from 'react-router-dom'
 
 export type RenderCitation = (n: number, key: string) => ReactNode
 
 // Order matters: code first (its content is literal), then citations, links, bold, italics, then the
 // allowlisted inline HTML tags (paired, <br>, and stray unpaired ones, which are dropped).
 const INLINE =
-  /(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|\[(\d{1,3}(?:\s*,\s*\d{1,3})*)\](?!\()|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+)\)|\*\*([^*\n][\s\S]*?)\*\*|(?<![\w*])\*([^*\s](?:[^*\n]*[^*\s])?)\*(?![\w*])|(?<![\w])_([^_\s](?:[^_\n]*[^_\s])?)_(?![\w])|<(sup|sub|mark|b|strong|i|em|u)>([\s\S]*?)<\/\9>|<br\s*\/?>|<\/?(?:sup|sub|mark|b|strong|i|em|u)>/g
+  /(`+)([^`]|[^`][\s\S]*?[^`])\1(?!`)|\[(\d{1,3}(?:\s*,\s*\d{1,3})*)\](?!\()|\[([^\]\n]+)\]\((https?:\/\/[^\s)]+|\/docs[^\s)]*)\)|\*\*([^*\n][\s\S]*?)\*\*|(?<![\w*])\*([^*\s](?:[^*\n]*[^*\s])?)\*(?![\w*])|(?<![\w])_([^_\s](?:[^_\n]*[^_\s])?)_(?![\w])|<(sup|sub|mark|b|strong|i|em|u)>([\s\S]*?)<\/\9>|<br\s*\/?>|<\/?(?:sup|sub|mark|b|strong|i|em|u)>/g
 
 /**
  * Wrap `children` in the element for an allowlisted tag. A source `<mark>` (a highlight in the PDF) renders
@@ -30,7 +31,8 @@ export function inlineTag(tag: string, children: ReactNode, key: string): ReactN
   }
 }
 
-export function renderInline(text: string, cite: RenderCitation | undefined, keyPrefix = 'i'): ReactNode[] {
+/** `internalLinks`: render `/docs/...` links as in-app links (docs pages only; elsewhere they stay plain text). */
+export function renderInline(text: string, cite: RenderCitation | undefined, keyPrefix = 'i', internalLinks = false): ReactNode[] {
   const out: ReactNode[] = []
   let last = 0
   let k = 0
@@ -48,16 +50,24 @@ export function renderInline(text: string, cite: RenderCitation | undefined, key
       const ns = m[3].split(',').map((s) => Number(s.trim()))
       if (cite) ns.forEach((n) => out.push(cite(n, key())))
       else out.push(m[0])
+    } else if (m[4] !== undefined && m[5].startsWith('/')) {
+      out.push(
+        internalLinks ? (
+          <Link key={key()} to={m[5]} className="text-accent-text underline underline-offset-2 hover:text-accent-hover">
+            {renderInline(m[4], cite, key(), true)}
+          </Link>
+        ) : m[0],
+      )
     } else if (m[4] !== undefined) {
       out.push(
         <a key={key()} href={m[5]} target="_blank" rel="noreferrer noopener" className="text-accent-text underline underline-offset-2 hover:text-accent-hover">
-          {renderInline(m[4], cite, key())}
+          {renderInline(m[4], cite, key(), internalLinks)}
         </a>,
       )
     } else if (m[6] !== undefined) {
-      out.push(<strong key={key()} className="font-semibold">{renderInline(m[6], cite, key())}</strong>)
+      out.push(<strong key={key()} className="font-semibold">{renderInline(m[6], cite, key(), internalLinks)}</strong>)
     } else if (m[7] !== undefined || m[8] !== undefined) {
-      out.push(<em key={key()}>{renderInline((m[7] ?? m[8])!, cite, key())}</em>)
+      out.push(<em key={key()}>{renderInline((m[7] ?? m[8])!, cite, key(), internalLinks)}</em>)
     } else if (m[9] !== undefined) {
       out.push(inlineTag(m[9], renderInline(m[10], cite, key()), key()))
     } else if (m[0].startsWith('<br')) {

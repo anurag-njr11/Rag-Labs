@@ -18,6 +18,7 @@ const PlaygroundTab = lazy(() => import('@/features/playground/PlaygroundTab'))
 const ApiTab = lazy(() => import('@/features/api/ApiTab'))
 const EvaluateTab = lazy(() => import('@/features/evaluate/EvaluateTab'))
 const HealthTab = lazy(() => import('@/features/health/HealthTab'))
+const DocsPage = lazy(() => import('@/features/docs/DocsPage'))
 const ProvidersPage = lazy(() => import('@/features/settings/ProvidersPage'))
 
 function NotFound() {
@@ -57,6 +58,8 @@ export const router = createBrowserRouter([
       { path: 'projects/new', element: <Navigate to="/new" replace /> },
       { path: 'settings/providers', element: <ProvidersPage /> },
       { path: 'recipes', element: <RecipesPage /> },
+      { path: 'docs', element: <DocsPage /> },
+      { path: 'docs/:slug', element: <DocsPage /> },
       {
         path: 'projects/:id',
         element: <WorkspaceLayout />,

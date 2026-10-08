@@ -69,14 +69,17 @@ export function AppLayout() {
             <span className="hidden sm:inline">LLM providers</span>
             <span className="sr-only sm:hidden">LLM providers</span>
           </NavLink>
-          <a
-            href={BACKEND_DOCS_URL}
-            target="_blank"
-            rel="noreferrer"
-            className="focus-ring hidden h-8 items-center rounded-md px-3 text-label text-text-secondary hover:bg-bg-subtle hover:text-text-primary sm:inline-flex"
+          <NavLink
+            to="/docs"
+            className={({ isActive }) =>
+              cn(
+                'focus-ring inline-flex h-10 items-center rounded-md px-3 sm:h-8 text-label hover:bg-bg-subtle hover:text-text-primary',
+                isActive ? 'text-text-primary' : 'text-text-secondary',
+              )
+            }
           >
             Docs
-          </a>
+          </NavLink>
           <Button
             variant="ghost"
             iconOnly

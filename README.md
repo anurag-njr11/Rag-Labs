@@ -37,6 +37,8 @@ and [`IDEAS.md`](IDEAS.md) the idea catalogue.
 - **Platform** — OKF bundle import, code vertical, attested computation, production-query loop,
   API keys with usage, chat-to-build and recipes.
 
+The in-app **Docs** (top bar) explain every tab, option and metric; they are Markdown files in `frontend/src/features/docs/content/`.
+
 ## What you can tune
 
 | Stage | Options |

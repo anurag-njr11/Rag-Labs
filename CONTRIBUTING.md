@@ -21,6 +21,7 @@ Most contributions are "register one class", no core changes:
 | **Node type** (parser, chunker, embedder, retriever, reranker, prompt, generator, verifier) | `backend/app/nodes/<slot>.py` | Subclass the slot's base class and decorate with `@register("<slot>", "<type>", title=…, description=…)`. Give it a `Config` (`NodeConfig`) using `instant_field` / `rebuild_field`; the UI form is generated from it. Add a test. |
 | **Vector store** | `backend/app/vectorstores/` | Implement the contract in `base.py` and register it; it must pass the shared store test suite (`tests/test_vectorstores.py`). |
 | **LLM provider preset** | `backend/app/llm/presets.py` | Add a `Preset(...)` for any OpenAI-compatible endpoint. |
+| **Docs page** | `frontend/src/features/docs/content/<slug>.md` | Write Markdown (first line `# Title`, then a one-sentence summary), then add the slug to `NAV` in `features/docs/pages.ts`. Supported: headings, tables, code fences, flat lists, `> **Note**`/`**Tip**`/`**Warning**` callouts, `/docs/<slug>` links |
 | **Sweep axis / recipe** | `backend/app/engine/sweep.py`, `recipes.py` | Add an entry plus a test. |
 
 ## Pull requests
