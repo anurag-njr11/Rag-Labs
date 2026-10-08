@@ -42,6 +42,8 @@ def validate_pipeline(cfg: dict[str, Any]) -> PipelineConfig:
     out: PipelineConfig = {}
     for s in SLOTS:
         node_cfg = cfg.get(s.name)
+        if node_cfg is None and s.default:
+            node_cfg = {"type": s.default}
         if not isinstance(node_cfg, dict) or "type" not in node_cfg:
             errors.append({"slot": s.name, "field": "type", "message": "missing node type"})
             continue
@@ -72,7 +74,9 @@ def rebuild_part(cfg: PipelineConfig) -> dict[str, Any]:
     `revision` when non-zero (left out at 0 so existing hashes don't move)."""
     part: dict[str, Any] = {}
     for s in SLOTS:
-        node_cfg = cfg[s.name]
+        node_cfg = cfg.get(s.name)
+        if node_cfg is None:  # a slot added after this config was saved; instant, so never in the index
+            continue
         spec = get_spec(s.name, node_cfg["type"])
         effects = field_effects(s.name, spec.cls.Config)
         fields = {k: node_cfg[k] for k, eff in effects.items() if eff == "rebuild"}
@@ -88,9 +92,9 @@ def index_config_hash(cfg: PipelineConfig) -> str:
 
 
 def with_defaults(cfg: dict[str, Any]) -> PipelineConfig:
-    """Fill fields that didn't exist when a config was saved with their current
-    defaults, so old versions compare cleanly with new ones. Never raises."""
-    out: PipelineConfig = {}
+    """Fill fields (and slots) that didn't exist when a config was saved with their
+    current defaults, so old versions compare cleanly with new ones. Never raises."""
+    out: PipelineConfig = {s.name: default_for(s.name, s.default) for s in SLOTS if s.default and s.name not in cfg}
     for slot, node_cfg in cfg.items():
         if not isinstance(node_cfg, dict) or "type" not in node_cfg:
             out[slot] = node_cfg
@@ -159,6 +163,9 @@ RECOMMENDED = {
     "retrieve": "fused",
     "rerank": "none",
     "prompt": "cited_qa",
+    "verify": "none",
+    "cache": "none",
+    "compute": "none",
 }
 
 

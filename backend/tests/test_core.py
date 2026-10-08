@@ -43,3 +43,27 @@ async def test_run_persists_events(database):
     assert run["status"] == "ok" and run["tokens_in"] == 10 and run["tokens_out"] == 4
     assert [e["step"] for e in run["events"]] == ["retrieve", "generate"]
     assert run["events"][0]["payload"] == {"hits": 2}
+
+
+async def test_trace_start_offsets_show_concurrency(database):
+    import asyncio
+
+    ctx = RunContext()
+
+    async def step(name):
+        with ctx.timed(name):
+            await asyncio.sleep(0.05)
+
+    await asyncio.gather(step("dense_search"), step("keyword_search"))
+    with ctx.timed("generate"):
+        await asyncio.sleep(0.01)
+    a, b, gen = ctx.events
+    assert a.start_ms < b.start_ms + b.ms and b.start_ms < a.start_ms + a.ms  # the two searches overlap
+    assert gen.start_ms >= max(a.start_ms + a.ms, b.start_ms + b.ms) - 1  # generate runs after both
+
+    async with database.tx() as c:
+        await c.execute("INSERT INTO projects (id, name, created_at) VALUES ('p2', 'P', ?)", (database.now_iso(),))
+    run_id = await runs.start_run(project_id="p2", version_id=None, build_id=None, question="q?")
+    await runs.finish_run(run_id, ctx, status="ok")
+    run = await runs.get_run(run_id)
+    assert [e["start_ms"] for e in run["events"]] == [e.start_ms for e in ctx.events]

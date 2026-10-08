@@ -13,6 +13,8 @@ interface Draft {
   document_id: string
   /** Required facts, `|`-separated while editing (same as the CSV column). */
   facets: string
+  /** Python asserts for code answers (FR-3.17); '' = none. */
+  tests: string
 }
 
 const splitFacets = (s: string) => s.split('|').map((f) => f.trim()).filter(Boolean)
@@ -52,6 +54,9 @@ function ItemForm({
       <Field label="Required facts (optional)" help="Short facts a complete answer must state, separated by |. Answer grading flags answers that leave one out.">
         {(f) => <Input id={f.id} value={d.facets} onChange={set('facets')} placeholder="3 retries | exponential backoff" aria-describedby={f.describedBy} />}
       </Field>
+      <Field label="Tests (optional, for code answers)" help="Python asserts the answer's code must pass, e.g. from the library's own test suite. Run in a Docker sandbox; scored as execution-verified correctness.">
+        {(f) => <Textarea id={f.id} rows={3} className="font-mono" value={d.tests} onChange={set('tests')} placeholder="assert add(2, 3) == 5" aria-describedby={f.describedBy} />}
+      </Field>
       <div className="flex justify-end gap-2">
         <Button type="button" variant="secondary" onClick={onCancel}>Cancel</Button>
         <Button type="submit" variant="primary" loading={saving}>Save</Button>
@@ -72,7 +77,7 @@ function Row({ projectId, setId, item }: { projectId: string; setId: string; ite
     return (
       <li className="py-2">
         <ItemForm
-          initial={{ question: item.question, gold_answer: item.gold_answer, evidence: item.evidence, document_id: item.document_id, facets: (item.facets ?? []).join(' | ') }}
+          initial={{ question: item.question, gold_answer: item.gold_answer, evidence: item.evidence, document_id: item.document_id, facets: (item.facets ?? []).join(' | '), tests: item.tests ?? '' }}
           documents={[]}
           lockDocument
           saving={update.isPending}
@@ -80,7 +85,7 @@ function Row({ projectId, setId, item }: { projectId: string; setId: string; ite
           onCancel={() => setEditing(false)}
           onSave={(d) =>
             update.mutate(
-              { itemId: item.id, question: d.question, gold_answer: d.gold_answer, evidence: d.evidence, facets: splitFacets(d.facets) },
+              { itemId: item.id, question: d.question, gold_answer: d.gold_answer, evidence: d.evidence, facets: splitFacets(d.facets), tests: d.tests },
               { onSuccess: () => setEditing(false), onError: (e) => setError(errorMessage(e)) },
             )
           }
@@ -171,11 +176,11 @@ export function EditQuestions({ set }: { set: EvalSetDetail }) {
             </Button>
             <input ref={file} type="file" accept=".csv,text/csv" className="hidden" aria-label="CSV file to import"
               onChange={(e) => void onFile(e.target.files?.[0])} />
-            <span className="self-center text-body-sm text-text-tertiary">CSV columns: question, gold_answer, evidence, document (file name), facets (optional, | between facts)</span>
+            <span className="self-center text-body-sm text-text-tertiary">CSV columns: question, gold_answer, evidence, document (file name), facets (optional, | between facts), tests (optional, Python asserts)</span>
           </div>
           {adding && (
             <ItemForm
-              initial={{ question: '', gold_answer: '', evidence: '', document_id: documents[0]?.value ?? '', facets: '' }}
+              initial={{ question: '', gold_answer: '', evidence: '', document_id: documents[0]?.value ?? '', facets: '', tests: '' }}
               documents={documents}
               saving={add.isPending}
               error={addError}

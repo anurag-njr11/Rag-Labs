@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from typing import Any
 
 from .. import db
@@ -10,6 +11,12 @@ from ..ingest import builder, jobs
 from ..ingest.jobs import Job
 
 _running: dict[tuple[str, str], Job] = {}
+
+
+async def corpus_sha(project_id: str) -> str:
+    """Fingerprint of the project's documents: sha256 of their sorted content hashes (FR-2.5)."""
+    rows = await db.fetch_all("SELECT content_sha FROM documents WHERE project_id=?", (project_id,))
+    return hashlib.sha256("\n".join(sorted(r["content_sha"] for r in rows)).encode()).hexdigest()
 
 
 def version_config(version: dict[str, Any]) -> dict[str, Any]:

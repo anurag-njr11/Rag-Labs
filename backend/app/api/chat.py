@@ -3,14 +3,14 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 from sse_starlette.sse import EventSourceResponse
 
 from .. import db
 from ..core import runs
 from ..engine import chat as chat_engine
-from ..engine import suggest, sync
+from ..engine import answer_cache, monitor, suggest, sync
 
 router = APIRouter(prefix="/api", tags=["chat"])
 
@@ -35,14 +35,20 @@ async def _version_for(project_id: str, version_id: str | None) -> dict[str, Any
 
 
 @router.post("/projects/{project_id}/chat")
-async def chat(project_id: str, body: ChatIn):
+async def chat(project_id: str, body: ChatIn, request: Request):
     version = await _version_for(project_id, body.version_id)
+    # The Playground marks its requests; everything else is production traffic (FR-3.22).
+    key = getattr(request.state, "api_key", None)
+    # A keyed caller is API traffic whatever headers it sends.
+    source = "playground" if not key and request.headers.get("x-raglabs-client") == "playground" else "api"
+    key_id = key["id"] if key else None
 
     if body.stream:
         async def gen():
             try:
-                async for ev in chat_engine.answer(project_id, version, body.question):
+                async for ev in chat_engine.answer(project_id, version, body.question, source, key_id):
                     yield {"event": ev["type"], "data": json.dumps(ev, default=str)}
+                await monitor.maybe_trigger(project_id)
             except chat_engine.ChatError as e:
                 yield {"event": "error", "data": json.dumps({"type": "error", "code": e.code, "message": str(e)})}
 
@@ -50,9 +56,10 @@ async def chat(project_id: str, body: ChatIn):
 
     final: dict[str, Any] | None = None
     try:
-        async for ev in chat_engine.answer(project_id, version, body.question):
+        async for ev in chat_engine.answer(project_id, version, body.question, source, key_id):
             if ev["type"] == "done":
                 final = ev
+        await monitor.maybe_trigger(project_id)
     except chat_engine.ChatError as e:
         raise HTTPException(409 if e.code in ("no_documents", "build_failed") else 502,
                             {"code": e.code, "message": str(e)}) from e
@@ -64,6 +71,8 @@ async def chat(project_id: str, body: ChatIn):
                                         "found_by", "scores", "cited", "text")} for r in final["retrieved"]],
         "run_id": final["run_id"],
         "totals": final["totals"],
+        "verification": final["verification"],  # null unless the Verify slot is on
+        "cache": final.get("cache"),  # {question, similarity, created_at, run_id} when answered from the cache
     }
 
 
@@ -77,6 +86,24 @@ async def get_suggestions(project_id: str) -> dict[str, Any]:
     if not await db.fetch_one("SELECT id FROM projects WHERE id=?", (project_id,)):
         raise HTTPException(404, "project not found")
     return await suggest.suggestions(project_id)
+
+
+async def _project_or_404(project_id: str) -> None:
+    if not await db.fetch_one("SELECT id FROM projects WHERE id=?", (project_id,)):
+        raise HTTPException(404, "project not found")
+
+
+@router.get("/projects/{project_id}/cache")
+async def cache_stats(project_id: str) -> dict[str, Any]:
+    """Semantic answer cache: {entries, hits} across the project's configurations."""
+    await _project_or_404(project_id)
+    return await answer_cache.stats(project_id)
+
+
+@router.delete("/projects/{project_id}/cache")
+async def clear_cache(project_id: str) -> dict[str, Any]:
+    await _project_or_404(project_id)
+    return {"cleared": await answer_cache.clear(project_id)}
 
 
 @router.get("/runs/{run_id}")

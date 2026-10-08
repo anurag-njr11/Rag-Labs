@@ -24,14 +24,16 @@ in place by `refresh()`, so module-level references to it stay valid.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
+import random
 import re
 import time
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from dataclasses import asdict, dataclass, field
-from typing import Any
+from typing import Any, TypeVar
 
 import httpx
 import openai
@@ -43,6 +45,7 @@ from ..config import BACKEND_DIR, REPO_DIR
 from .presets import PRESETS, Preset
 
 log = logging.getLogger(__name__)
+T = TypeVar("T")
 
 NAME_RE = re.compile(r"^[a-z][a-z0-9_-]{1,31}$")
 RESERVED = {"presets", "test"}  # collide with /api/providers/presets and /api/providers/test
@@ -344,7 +347,27 @@ def _opt_bool(v: Any) -> int | None:
 
 
 class ProviderError(Exception):
-    """An error with a message fit to show the user."""
+    """An error with a message fit to show the user. `retryable`: waiting may fix it (rate limit,
+    timeout, overload, 5xx, dropped connection) — batch jobs back off and retry those."""
+
+    def __init__(self, message: str, retryable: bool = False):
+        super().__init__(message)
+        self.retryable = retryable
+
+
+async def retrying(make: Callable[[], Awaitable[T]], attempts: int = 4, base_s: float = 4.0) -> T:
+    """Run `make()` again after a retryable ProviderError, waiting ~base_s, 2×, 4× … (± 25% jitter so
+    parallel calls don't retry in lockstep). For batch work — eval answers, judging, attack tests — where
+    a free tier's rate limit is hit by bursts; interactive chat fails fast instead."""
+    for i in range(attempts):
+        try:
+            return await make()
+        except ProviderError as e:
+            if not e.retryable or i == attempts - 1:
+                raise
+            log.info("retryable LLM error (%s); retry %d/%d", e, i + 1, attempts - 1)
+            await asyncio.sleep(base_s * 2 ** i * (0.75 + random.random() / 2))
+    raise AssertionError("unreachable")
 
 
 def get(name: str) -> Provider:
@@ -425,7 +448,8 @@ def friendly_error(provider: str, e: Exception) -> ProviderError:
     """A user-facing error with every secret scrubbed out — provider error
     bodies sometimes echo (part of) the key or the request headers."""
     err = _friendly_error(provider, e)
-    return err if isinstance(e, ProviderError) and err is e else ProviderError(vault.redact(str(err)))
+    return err if isinstance(e, ProviderError) and err is e else ProviderError(vault.redact(str(err)),
+                                                                                retryable=err.retryable)
 
 
 def _friendly_error(provider: str, e: Exception) -> ProviderError:
@@ -434,12 +458,13 @@ def _friendly_error(provider: str, e: Exception) -> ProviderError:
         return e
     if isinstance(e, openai.RateLimitError):
         return ProviderError(
-            f"{title} rate limit or free quota reached. Wait a minute and retry, or switch provider."
+            f"{title} rate limit or free quota reached. Wait a minute and retry, or switch provider.", retryable=True
         )
     if isinstance(e, openai.AuthenticationError):
         return ProviderError(f"{title} rejected the API key. Check it in Settings → Providers (or .env).")
     if isinstance(e, openai.APITimeoutError):
-        return ProviderError(f"{title} didn't respond in time. The model may be overloaded — retry, or pick another.")
+        return ProviderError(f"{title} didn't respond in time. The model may be overloaded — retry, or pick another.",
+                             retryable=True)
     if isinstance(e, openai.APIStatusError) and e.status_code == 410:
         return ProviderError(f"{title} has retired this model. Pick another model in Configure → Generate.")
     if isinstance(e, openai.NotFoundError):
@@ -448,12 +473,14 @@ def _friendly_error(provider: str, e: Exception) -> ProviderError:
         return ProviderError(f"{title} rejected the request: {getattr(e, 'message', e)}")
     if isinstance(e, openai.APIConnectionError):
         return ProviderError(f"Can't reach {title}. Check your internet connection, the base URL, "
-                             "and — for a local server — that it is running.")
+                             "and — for a local server — that it is running.", retryable=True)
     if isinstance(e, openai.APIStatusError):
-        return ProviderError(f"{title} error {e.status_code}: {getattr(e, 'message', e)}")
+        return ProviderError(f"{title} error {e.status_code}: {getattr(e, 'message', e)}",
+                             retryable=e.status_code >= 500 or e.status_code == 429)
     msg = str(e).strip() or type(e).__name__
     if "overload" in msg.lower() or "unavailable" in msg.lower():
-        return ProviderError(f"{title} is temporarily overloaded. Retry in a moment, or switch provider.")
+        return ProviderError(f"{title} is temporarily overloaded. Retry in a moment, or switch provider.",
+                             retryable=True)
     return ProviderError(f"{title} call failed: {msg}")
 
 

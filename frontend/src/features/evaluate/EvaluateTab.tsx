@@ -8,6 +8,9 @@ import { EvalJobProgress } from './EvalJobProgress'
 import { EvalSetCard } from './EvalSetCard'
 import { JudgePicker } from './JudgePicker'
 import { RunsPanel } from './RunsPanel'
+import { AdapterPanel } from './AdapterPanel'
+import { PromptOptPanel } from './PromptOptPanel'
+import { InjectionPanel } from './InjectionPanel'
 import { SweepsPanel } from './SweepsPanel'
 
 const SIZES = [10, 20, 30, 50].map((n) => ({ value: String(n), label: `${n} questions` }))
@@ -121,6 +124,9 @@ export default function EvaluateTab() {
             }
           />
           <SweepsPanel projectId={project.id} setId={detail.data.id} judge={judge} />
+          <AdapterPanel projectId={project.id} setId={detail.data.id} />
+          <PromptOptPanel projectId={project.id} setId={detail.data.id} />
+          <InjectionPanel projectId={project.id} setId={detail.data.id} />
         </>
       ) : (
         <Spinner label="Loading eval set" />

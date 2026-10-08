@@ -2,7 +2,7 @@ import { Suspense, useLayoutEffect, useRef, useState } from 'react'
 import { Link, Outlet, useLocation, useParams } from 'react-router-dom'
 import {
   ChevronRight, Code2, Database, FileText, FlaskConical, FolderX, HeartPulse, GitCommitHorizontal, History, MessageSquare, RefreshCw,
-  SlidersHorizontal,
+  SlidersHorizontal, Table2,
 } from 'lucide-react'
 import { ApiError, errorMessage, useBuildVersion, useProject } from '@/api/hooks'
 import { formatNumber, storeLabel } from '@/api/format'
@@ -40,7 +40,7 @@ function indexPillText(p: Project): string {
 }
 
 /** Workspace tabs in display order (route segment → index drives the slide direction). */
-const TAB_ORDER = ['documents', 'configure', 'versions', 'playground', 'evaluate', 'health', 'api']
+const TAB_ORDER = ['documents', 'data', 'configure', 'versions', 'playground', 'evaluate', 'health', 'api']
 
 function WorkspaceHeader({ project }: { project: Project }) {
   const build = useBuildVersion(project.id)
@@ -116,6 +116,7 @@ function WorkspaceHeader({ project }: { project: Project }) {
         className="mt-4"
         items={[
           { to: `${base}/documents`, label: 'Documents', icon: <FileText aria-hidden /> },
+          { to: `${base}/data`, label: 'Data', icon: <Table2 aria-hidden /> },
           { to: `${base}/configure`, label: 'Configure', icon: <SlidersHorizontal aria-hidden /> },
           { to: `${base}/versions`, label: 'Versions', icon: <History aria-hidden /> },
           { to: `${base}/playground`, label: 'Playground', icon: <MessageSquare aria-hidden /> },

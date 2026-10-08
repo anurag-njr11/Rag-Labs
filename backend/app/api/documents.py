@@ -2,12 +2,12 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, File, Form, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, Form, HTTPException, Query, Response, UploadFile
 from pydantic import BaseModel, Field
 
 from .. import db
 from ..core.pipeline import index_config_hash
-from ..engine import sync
+from ..engine import okf, sync
 from ..ingest import documents as docs_svc
 from ..ingest import jobs
 from ..ingest.documents import OKF, DocumentError
@@ -104,6 +104,30 @@ async def upload_documents(project_id: str, files: list[UploadFile] = File(...),
     if build and created and cfg:
         job_id = sync.start_sync(project_id, cfg).id
     return {"created": created, "duplicates": duplicates, "errors": errors, "job_id": job_id}
+
+
+@router.post("/okf", status_code=201)
+async def import_okf_bundle(project_id: str, file: UploadFile = File(...),
+                            build: bool = Query(True)) -> dict[str, Any]:
+    """Import an OKF bundle (a zip of Markdown with YAML front matter): one document per Markdown file,
+    its OKF fields read from the front matter; anything else is skipped with a reason (FR-3.18)."""
+    await _require_project(project_id)
+    try:
+        out = await okf.import_bundle(project_id, await file.read())
+    except DocumentError as e:
+        raise HTTPException(422, str(e)) from e
+    cfg = await _active_cfg(project_id)
+    out["job_id"] = sync.start_sync(project_id, cfg).id if build and out["created"] and cfg else None
+    return out
+
+
+@router.get("/okf-export")
+async def export_okf_bundle(project_id: str) -> Response:
+    """The corpus as an OKF bundle: text + provenance, trust tier, lifecycle, usage, health findings (FR-3.20)."""
+    await _require_project(project_id)
+    data = await okf.export_bundle(project_id, await _usage_counts(project_id))
+    return Response(data, media_type="application/zip",
+                    headers={"Content-Disposition": 'attachment; filename="knowledge-base-okf.zip"'})
 
 
 @router.post("/url", status_code=202)

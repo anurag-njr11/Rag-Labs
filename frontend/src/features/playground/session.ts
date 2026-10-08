@@ -1,7 +1,7 @@
 import { useCallback, useSyncExternalStore } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
 import { api, errorMessage, streamChat } from '@/api/hooks'
-import type { ChatEvent, ChatTotals, Citation, RetrievedChunk, RunDetail, TraceStep } from '@/api/types'
+import type { CacheHit, ChatEvent, ChatTotals, Citation, ComputeReceipt, Execution, RetrievedChunk, RunDetail, TraceStep, Verification } from '@/api/types'
 
 export type TurnStatus = 'waiting' | 'retrieved' | 'streaming' | 'done' | 'error' | 'stopped'
 
@@ -21,6 +21,19 @@ export interface Turn {
   citations: Citation[]
   totals?: ChatTotals
   truncated?: boolean
+  /** Grounding check (Verify slot): the latest result, and whether one is running now. */
+  verification?: Verification | null
+  verifying?: boolean
+  /** Retries with more context so far (the answer restarts on each). */
+  retries?: number
+  /** Answered from the semantic cache. */
+  cache?: CacheHit | null
+  /** Compute slot: the computation it was routed to (the answer, if attested). */
+  computation?: ComputeReceipt | null
+  /** Code check result (verify.type = execution_check). */
+  execution?: Execution | null
+  /** What the running check is ('code' = the code check). */
+  verifyingWhat?: 'code'
   error?: { code: string; message: string }
   startedAt: number
   firstTokenAt?: number
@@ -47,6 +60,14 @@ export function applyEvent(t: Turn, ev: ChatEvent, now = Date.now()): Turn {
       return { ...t, status: 'retrieved', retrieved: ev.results, trace: ev.trace }
     case 'token':
       return { ...t, status: 'streaming', answer: t.answer + ev.text, firstTokenAt: t.firstTokenAt ?? now }
+    case 'verifying':
+      return { ...t, verifying: true, verifyingWhat: ev.what }
+    case 'execution':
+      return { ...t, verifying: false, execution: ev.execution }
+    case 'verify':
+      return { ...t, verifying: false, verification: ev.verification }
+    case 'retry':
+      return { ...t, status: 'waiting', answer: '', citations: [], retries: ev.attempt }
     case 'done':
       return {
         ...t,
@@ -58,6 +79,11 @@ export function applyEvent(t: Turn, ev: ChatEvent, now = Date.now()): Turn {
         trace: ev.trace,
         totals: ev.totals,
         truncated: ev.truncated,
+        verification: ev.verification,
+        verifying: false,
+        cache: ev.cache ?? null,
+        computation: ev.computation ?? null,
+        execution: ev.execution ?? null,
         endedAt: now,
       }
     case 'error':
@@ -94,6 +120,11 @@ export function turnFromRun(run: RunDetail): Turn {
       cost_usd: run.cost_usd ?? 0,
     },
     truncated: gen?.payload?.finish_reason === 'length' || undefined,
+    verification: r.verification ?? null,
+    cache: r.cache ?? null,
+    computation: r.computation ?? null,
+    execution: r.execution ?? null,
+    retries: r.verification?.attempt || undefined,
     error: status === 'error' ? { code: 'error', message: typeof run.error === 'string' ? run.error : 'The run failed.' } : undefined,
     startedAt: created,
     endedAt: created + (run.latency_ms ?? 0),

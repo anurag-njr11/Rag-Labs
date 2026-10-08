@@ -11,6 +11,7 @@ export function MetadataForm({ projectId, doc, onDone }: { projectId: string; do
   const update = useUpdateDocumentMetadata(projectId)
   const { toast } = useToast()
   const o = doc.okf
+  const [type, setType] = useState(o.type ?? '')
   const [status, setStatus] = useState(o.status ?? '')
   const [staleAfter, setStaleAfter] = useState(o.stale_after ?? '')
   const [verified, setVerified] = useState(!!o.verified)
@@ -25,9 +26,11 @@ export function MetadataForm({ projectId, doc, onDone }: { projectId: string; do
       {
         docId: doc.id,
         okf: {
+          ...(type.trim() && { type: type.trim() }),
+          ...(o.generated && { generated: o.generated }), // from the source; not edited here
           ...(status && { status }),
           ...(staleAfter && { stale_after: staleAfter }),
-          ...(verified && { verified: verifiedOn || true }),
+          ...(verified && { verified: verifiedOn.trim() || true }),
           ...(srcs.length > 0 && { sources: srcs }),
         },
       },
@@ -43,7 +46,10 @@ export function MetadataForm({ projectId, doc, onDone }: { projectId: string; do
 
   return (
     <form onSubmit={save} className="flex flex-col gap-4">
-      <div className="grid gap-4 sm:grid-cols-2">
+      <div className="grid gap-4 sm:grid-cols-3">
+        <Field label="Type" help="OKF type, e.g. Guide, FAQ, Reference.">
+          {(f) => <Input id={f.id} aria-describedby={f.describedBy} value={type} maxLength={80} onChange={(e) => setType(e.target.value)} />}
+        </Field>
         <Field label="Status">
           {(f) => (
             <Select id={f.id} value={status} onChange={(e) => setStatus(e.target.value)}
@@ -54,12 +60,12 @@ export function MetadataForm({ projectId, doc, onDone }: { projectId: string; do
           {(f) => <Input id={f.id} aria-describedby={f.describedBy} type="date" value={staleAfter} onChange={(e) => setStaleAfter(e.target.value)} />}
         </Field>
       </div>
-      <Field label="Verified" help="Turn on to mark it checked; the date is optional.">
+      <Field label="Verified" help="Turn on to mark it checked. Optionally a review date (2026-05-01) or who checked it: human:alice, process:ci, agent:writer — it sets the trust tier.">
         {(f) => (
           <div className="flex items-center gap-3">
             <Switch checked={verified} onChange={setVerified} aria-label="Verified" />
-            <Input id={f.id} aria-describedby={f.describedBy} aria-label="Verified on" type="date" value={verifiedOn}
-              disabled={!verified} onChange={(e) => setVerifiedOn(e.target.value)} wrapperClassName="flex-1" />
+            <Input id={f.id} aria-describedby={f.describedBy} aria-label="Verified on or by" value={verifiedOn} maxLength={200}
+              placeholder="2026-05-01 or human:alice" disabled={!verified} onChange={(e) => setVerifiedOn(e.target.value)} wrapperClassName="flex-1" />
           </div>
         )}
       </Field>

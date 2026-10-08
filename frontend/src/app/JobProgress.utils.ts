@@ -21,4 +21,10 @@ export const STAGE_LABELS: Record<JobStage, string> = {
   grade: 'Grade answers',
   grade_cells: 'Grade answers of the best configurations',
   rejudge: 'Re-grade close configurations',
+  attack: 'Run injection attacks',
+  train: 'Train the adapter',
+  bootstrap: 'Answer the training questions',
+  propose: 'Draft instructions',
+  select: 'Score candidate prompts',
+  test: 'Compare on unseen questions',
 }

@@ -74,7 +74,7 @@ async def test_eval_run_reports_cost_index_size_and_contextual_scores(project, m
     async with db.tx() as c:
         await c.execute("UPDATE eval_items SET facets=? WHERE id='i1'", (db.dumps(["three times", "backoff"]),))
 
-    async def fake_answer(cfg, question, final):
+    async def fake_answer(cfg, question, final, build=None, tests=None):
         return {"answer": "Three times [1].", "sources": ["a", "b"], "cost_usd": 0.002}
 
     async def fake_complete(provider, opts, system, user):

@@ -173,6 +173,32 @@ function Scorecard({ run, before }: { run: EvalRunDetail; before?: EvalMetrics }
             {m.answers.context_precision != null && (
               <Tile label="Context precision" value={m.answers.context_precision.toFixed(2)} meter={m.answers.context_precision} hint="relevant passages ranked first (judge, rank-weighted)" />
             )}
+            {m.answers.answer_p50_ms != null && (
+              <Tile
+                label="Answer p50"
+                value={formatMs(m.answers.answer_p50_ms)}
+                hint={`p95 ${formatMs(m.answers.answer_p95_ms)} · generation${m.answers.verify ? ' + grounding check' : ''}`}
+              />
+            )}
+            {m.answers.exec_verified_rate != null && (
+              <Tile
+                label="Execution-verified"
+                value={pct(m.answers.exec_verified_rate)}
+                meter={m.answers.exec_verified_rate}
+                hint={`code passed the question's tests in the sandbox · ${m.answers.execution?.tested ?? 0} with tests${m.answers.exec_verified_ci ? ` · 95% CI ${pct(m.answers.exec_verified_ci[0])}–${pct(m.answers.exec_verified_ci[1])}` : ''}`}
+              />
+            )}
+            {m.answers.execution?.sandbox_unavailable ? (
+              <Tile label="Code checks" value="not run" hint="Docker isn't running — start it to execute answers' code" />
+            ) : null}
+            {m.answers.verify && (
+              <Tile
+                label="Grounding check"
+                value={m.answers.verify.pass_rate != null ? pct(m.answers.verify.pass_rate) : '—'}
+                meter={m.answers.verify.pass_rate ?? undefined}
+                hint={`answers it passed · ${m.answers.verify.retried} retried with more context${m.answers.verify.errors ? ` · ${m.answers.verify.errors} check${m.answers.verify.errors === 1 ? '' : 's'} failed to run` : ''}`}
+              />
+            )}
           </>
         )}
       </dl>

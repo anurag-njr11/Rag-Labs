@@ -1,7 +1,7 @@
 import { useState } from 'react'
 import { Grid3x3, Rocket, Square, Star } from 'lucide-react'
 import {
-  errorMessage, useCancelSweep, useCreateVersion, useRuns, useStartSweep, useSweepAxes, useSweeps, useVersions,
+  errorMessage, useCancelSweep, useConfigPrior, useCreateVersion, useRuns, useStartSweep, useSweepAxes, useSweeps, useVersions,
 } from '@/api/hooks'
 import { formatBytes, formatMs, formatNumber, formatPer1k, runCostPer1k } from '@/api/format'
 import type { Judge, PipelineConfig, Sweep, SweepAxis, SweepCell } from '@/api/types'
@@ -54,6 +54,7 @@ function getPath(cfg: PipelineConfig | undefined, path: string): unknown {
 
 function valueLabel(path: string, v: Value) {
   if (path === 'rerank.type') return v === 'none' ? 'off' : 'cross-encoder'
+  if (path === 'verify.type') return v === 'none' ? 'off' : 'on'
   if (path === 'embed.model') return String(v).split('/').pop()!
   return String(v).replace(/_/g, ' ')
 }
@@ -72,7 +73,28 @@ const isBaseline = (cell: SweepCell, base?: PipelineConfig) =>
   !!base && Object.entries(cell.overrides).every(([p, v]) => getPath(base, p) === v)
 
 /** Best first: MRR, then fewer context tokens. */
-const rank = (a: Scored, b: Scored) => b.metrics.mrr - a.metrics.mrr || a.metrics.ctx_tokens - b.metrics.ctx_tokens
+/** The cost axis: tokens a query sends to LLMs (answer context + expansion / agent planning). */
+const qtok = (m: Scored['metrics']) => m.query_tokens ?? m.ctx_tokens
+
+/** Execution-verified correctness leads where both cells have it (FR-3.17: deterministic ground truth), then MRR. */
+const exec = (c: Scored) => c.metrics.answers?.exec_verified_rate
+const rank = (a: Scored, b: Scored) =>
+  (exec(a) != null && exec(b) != null ? exec(b)! - exec(a)! : 0) || b.metrics.mrr - a.metrics.mrr || qtok(a.metrics) - qtok(b.metrics)
+
+/** FR-3.4's reference point: hybrid retrieval + a reranker, the strong conventional baseline. */
+const isHybridRerank = (c: SweepCell) => c.config?.retrieve.type === 'hybrid' && c.config.rerank.type !== 'none'
+
+const times = (a: number, b: number) => (b > 0 ? `${(a / b).toFixed(a / b >= 10 ? 0 : 1)}×` : '—')
+
+/** "+0.04 MRR · 3.1× tokens · 5.2× latency" against the reference cell. */
+function versus(c: Scored, ref: Scored) {
+  const d = Number(c.metrics.mrr.toFixed(2)) - Number(ref.metrics.mrr.toFixed(2))
+  return {
+    mrr: `${d >= 0 ? '+' : '−'}${Math.abs(d).toFixed(2)}`,
+    tokens: times(qtok(c.metrics), qtok(ref.metrics)),
+    latency: times(c.metrics.p50_ms, ref.metrics.p50_ms),
+  }
+}
 
 function insight(cells: Scored[], base?: PipelineConfig): string | null {
   if (cells.length < 2) return null
@@ -84,15 +106,18 @@ function insight(cells: Scored[], base?: PipelineConfig): string | null {
     // from the rounded values shown, so 0.61 → 0.68 reads +0.07
     const d = Number(best.metrics.mrr.toFixed(2)) - Number(baseline.metrics.mrr.toFixed(2))
     parts.push(
-      `${cellLabel(best, base)} lifts MRR from ${baseline.metrics.mrr.toFixed(2)} to ${best.metrics.mrr.toFixed(2)} (+${d.toFixed(2)}) ` +
-        `at ${formatNumber(best.metrics.ctx_tokens)} context tokens per question (now ${formatNumber(baseline.metrics.ctx_tokens)}).`,
+      d > 0
+        ? `${cellLabel(best, base)} lifts MRR from ${baseline.metrics.mrr.toFixed(2)} to ${best.metrics.mrr.toFixed(2)} (+${d.toFixed(2)}) ` +
+            `at ${formatNumber(qtok(best.metrics))} LLM tokens per question (now ${formatNumber(qtok(baseline.metrics))}).`
+        : `${cellLabel(best, base)} matches your current MRR (${best.metrics.mrr.toFixed(2)}) with ` +
+            `${formatNumber(qtok(best.metrics))} LLM tokens per question instead of ${formatNumber(qtok(baseline.metrics))}.`,
     )
   } else parts.push(`Best: ${cellLabel(best, base)}, MRR ${best.metrics.mrr.toFixed(2)}.`)
   const cheap = cells
-    .filter((c) => c.pareto && c !== best && best.metrics.mrr - c.metrics.mrr <= 0.02 && c.metrics.ctx_tokens < best.metrics.ctx_tokens)
-    .sort((a, b) => a.metrics.ctx_tokens - b.metrics.ctx_tokens)[0]
+    .filter((c) => c.pareto && c !== best && best.metrics.mrr - c.metrics.mrr <= 0.02 && qtok(c.metrics) < qtok(best.metrics))
+    .sort((a, b) => qtok(a.metrics) - qtok(b.metrics))[0]
   if (cheap) {
-    const saved = Math.round((1 - cheap.metrics.ctx_tokens / Math.max(1, best.metrics.ctx_tokens)) * 100)
+    const saved = Math.round((1 - qtok(cheap.metrics) / Math.max(1, qtok(best.metrics))) * 100)
     parts.push(`Within 0.02 MRR, ${cellLabel(cheap, base)} sends ${saved}% fewer tokens.`)
   }
   const graded = cells.filter((c) => c.metrics.answers?.n)
@@ -104,6 +129,12 @@ function insight(cells: Scored[], base?: PipelineConfig): string | null {
     parts.push(tied
       ? `Answer quality of the ${graded.length} graded configurations is tied within noise (overlapping 95% intervals).`
       : `Best answers: ${cellLabel(first, base)}, ${Math.round(first.metrics.answers!.correct_rate * 100)}% correct.`)
+  }
+  const ref = cells.find(isHybridRerank)
+  const agent = ref && cells.filter((c) => c.config?.retrieve.type === 'agentic').sort(rank)[0]
+  if (ref && agent) {
+    const v = versus(agent, ref)
+    parts.push(`Agentic vs. hybrid + rerank: ${v.mrr} MRR at ${v.tokens} the tokens and ${v.latency} the retrieval latency.`)
   }
   return parts.join(' ')
 }
@@ -154,6 +185,9 @@ function AxisPicker({
                 )
               })}
             </div>
+            {a.answers_only && (
+              <p className="text-body-sm text-text-tertiary">Retrieval scores are identical either way — only answer grading (Auto-Optimize) tells these apart.</p>
+            )}
           </fieldset>
         )
       })}
@@ -161,13 +195,30 @@ function AxisPicker({
   )
 }
 
+/** FR-3.27: what sweeps on similar corpora picked (or rules, without history) — one click to verify it. */
+function PriorPreset({ projectId, onPick }: { projectId: string; onPick: (axes: { path: string; values: Value[] }[]) => void }) {
+  const q = useConfigPrior(projectId)
+  const p = q.data
+  if (!p || p.verify_axes.length === 0) return null
+  const shown = p.suggestions.filter((s) => !s.current && !s.skipped).slice(0, 4)
+  const title = shown
+    .map((s) => `${s.path} → ${String(s.value)}${s.confidence != null ? ` (confidence ${s.confidence.toFixed(2)}, ${s.sweeps} similar sweep${s.sweeps === 1 ? '' : 's'})` : ''}`)
+    .join('\n')
+  return (
+    <Button size="sm" variant="secondary" onClick={() => onPick(p.verify_axes)}
+      title={`${p.source === 'prior' ? 'Predicted from sweeps on similar corpora on this install' : 'No sweep history yet — rule-based suggestion, not a measurement'}:\n${title}`}>
+      {p.source === 'prior' ? 'Verify the prediction for corpora like yours' : 'Verify the rule-based suggestion'}
+    </Button>
+  )
+}
+
 // ------------------------------------------------------------------------------------------------ chart
 
-/** Quality (MRR) vs. cost (context tokens per question), Pareto frontier drawn as a step line. */
+/** Quality (MRR) vs. cost (LLM tokens per question), Pareto frontier drawn as a step line. */
 function ParetoChart({ cells, base }: { cells: Scored[]; base?: PipelineConfig }) {
   const [hover, setHover] = useState<number | null>(null)
   const W = 720, H = 280, L = 48, R = 16, T = 16, B = 40
-  const xs = cells.map((c) => c.metrics.ctx_tokens)
+  const xs = cells.map((c) => qtok(c.metrics))
   const xMin = Math.min(...xs), xMax = Math.max(...xs)
   const xPad = (xMax - xMin) * 0.08 || Math.max(1, xMax * 0.1)
   const x0 = Math.max(0, xMin - xPad), x1 = xMax + xPad
@@ -175,10 +226,10 @@ function ParetoChart({ cells, base }: { cells: Scored[]; base?: PipelineConfig }
   const y1 = 1
   const sx = (v: number) => L + ((v - x0) / (x1 - x0 || 1)) * (W - L - R)
   const sy = (v: number) => T + (1 - (v - y0) / (y1 - y0 || 1)) * (H - T - B)
-  const frontier = cells.filter((c) => c.pareto).sort((a, b) => a.metrics.ctx_tokens - b.metrics.ctx_tokens)
+  const frontier = cells.filter((c) => c.pareto).sort((a, b) => qtok(a.metrics) - qtok(b.metrics))
   const step = frontier
     .map((c, i) => {
-      const x = sx(c.metrics.ctx_tokens), y = sy(c.metrics.mrr)
+      const x = sx(qtok(c.metrics)), y = sy(c.metrics.mrr)
       return i === 0 ? `M${x},${y}` : `H${x}V${y}`
     })
     .join('')
@@ -194,7 +245,7 @@ function ParetoChart({ cells, base }: { cells: Scored[]; base?: PipelineConfig }
         <span className="text-text-tertiary">Up and left is better.</span>
       </div>
       <div className="relative">
-        <svg viewBox={`0 0 ${W} ${H}`} className="h-auto w-full" role="img" aria-label="Retrieval quality versus context tokens per question for each configuration">
+        <svg viewBox={`0 0 ${W} ${H}`} className="h-auto w-full" role="img" aria-label="Retrieval quality versus LLM tokens per question for each configuration">
           {yTicks.map((t) => (
             <g key={t}>
               <line x1={L} x2={W - R} y1={sy(t)} y2={sy(t)} className="stroke-border-default" strokeDasharray="2 4" />
@@ -204,17 +255,17 @@ function ParetoChart({ cells, base }: { cells: Scored[]; base?: PipelineConfig }
           {xTicks.map((t) => (
             <text key={t} x={sx(t)} y={H - B + 18} textAnchor="middle" className="fill-text-tertiary text-[11px]">{formatNumber(Math.round(t))}</text>
           ))}
-          <text x={L} y={H - 4} className="fill-text-tertiary text-[11px]">Context tokens per question →</text>
+          <text x={L} y={H - 4} className="fill-text-tertiary text-[11px]">LLM tokens per question →</text>
           <text x={12} y={T} transform={`rotate(-90 12 ${T})`} textAnchor="end" className="fill-text-tertiary text-[11px]">MRR</text>
           {step && <path d={step} fill="none" strokeWidth={2} className="stroke-accent-default" opacity={0.5} />}
           {cells.map((c, i) => {
-            const cx = sx(c.metrics.ctx_tokens), cy = sy(c.metrics.mrr)
+            const cx = sx(qtok(c.metrics)), cy = sy(c.metrics.mrr)
             return (
               <g key={i}>
                 {/* larger invisible hit target */}
                 <circle
                   cx={cx} cy={cy} r={12} fill="transparent" tabIndex={0}
-                  aria-label={`${cellLabel(c, base)}: MRR ${c.metrics.mrr.toFixed(2)}, ${c.metrics.ctx_tokens} tokens`}
+                  aria-label={`${cellLabel(c, base)}: MRR ${c.metrics.mrr.toFixed(2)}, ${qtok(c.metrics)} tokens`}
                   onMouseEnter={() => setHover(i)} onMouseLeave={() => setHover(null)}
                   onFocus={() => setHover(i)} onBlur={() => setHover(null)}
                   className="cursor-pointer outline-none"
@@ -227,7 +278,7 @@ function ParetoChart({ cells, base }: { cells: Scored[]; base?: PipelineConfig }
             )
           })}
           {cells[0] && (
-            <text x={sx(cells[0].metrics.ctx_tokens)} y={sy(cells[0].metrics.mrr) - 12} textAnchor="middle" className="fill-text-secondary text-[11px]">best</text>
+            <text x={sx(qtok(cells[0].metrics))} y={sy(cells[0].metrics.mrr) - 12} textAnchor="middle" className="fill-text-secondary text-[11px]">best</text>
           )}
         </svg>
         {h && (
@@ -235,15 +286,15 @@ function ParetoChart({ cells, base }: { cells: Scored[]; base?: PipelineConfig }
             role="tooltip"
             className="pointer-events-none absolute z-10 w-max max-w-64 rounded-md border border-border-default bg-bg-surface px-3 py-2 text-body-sm shadow-lg"
             style={{
-              left: `${(sx(h.metrics.ctx_tokens) / W) * 100}%`,
+              left: `${(sx(qtok(h.metrics)) / W) * 100}%`,
               top: `calc(${(sy(h.metrics.mrr) / H) * 100}% - 10px)`,
               // keep the tooltip inside the chart near either edge
-              translate: `${sx(h.metrics.ctx_tokens) / W < 0.25 ? '-10%' : sx(h.metrics.ctx_tokens) / W > 0.75 ? '-90%' : '-50%'} -100%`,
+              translate: `${sx(qtok(h.metrics)) / W < 0.25 ? '-10%' : sx(qtok(h.metrics)) / W > 0.75 ? '-90%' : '-50%'} -100%`,
             }}
           >
             <p className="font-medium text-text-primary">{cellLabel(h, base)}</p>
             <p className="font-mono text-mono-sm text-text-secondary">
-              MRR {h.metrics.mrr.toFixed(2)} · Hit@{h.metrics.k} {Math.round(h.metrics.hit_at_k * 100)}% · {formatNumber(h.metrics.ctx_tokens)} tok
+              MRR {h.metrics.mrr.toFixed(2)} · Hit@{h.metrics.k} {Math.round(h.metrics.hit_at_k * 100)}% · {formatNumber(qtok(h.metrics))} tok
             </p>
           </div>
         )}
@@ -277,7 +328,10 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
   const hasCost = scored.some((c) => c.metrics.cost_per_1k !== undefined)
   const hasIndex = scored.some((c) => c.metrics.index)
   const hasCtx = scored.some((c) => c.metrics.answers?.context_recall != null || c.metrics.answers?.context_precision != null)
-  const optional = Number(graded) + Number(priced) + Number(hasCost) + Number(hasIndex) + 2 * Number(hasCtx)
+  const hasAnsMs = scored.some((c) => c.metrics.answers?.answer_p95_ms != null)
+  const hasExec = scored.some((c) => c.metrics.answers?.exec_verified_rate != null)
+  const ref = scored.length >= 2 ? scored.find(isHybridRerank) : undefined
+  const optional = 2 * Number(graded) + Number(priced) + Number(hasCost) + Number(hasIndex) + 2 * Number(hasCtx) + Number(hasAnsMs) + Number(!!ref) + Number(hasExec)
   return (
     <div className="flex flex-col gap-4">
       {line && <Banner tone="info">{line}</Banner>}
@@ -293,10 +347,14 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
               <th scope="col" className={cn(CELL, 'text-right font-medium')}>Hit@1</th>
               <th scope="col" className={cn(CELL, 'text-right font-medium')}>Hit@k</th>
               <th scope="col" className={cn(CELL, 'text-right font-medium')} title="Evidence survives the prompt's context budget">In context</th>
-              <th scope="col" className={cn(CELL, 'text-right font-medium')}>Tokens / q</th>
+              <th scope="col" className={cn(CELL, 'text-right font-medium')} title="Tokens a query sends to LLMs: the answer prompt's context plus retrieval-side calls (query expansion, agent planning)">Tokens / q</th>
+              {ref && <th scope="col" className={cn(CELL, 'text-right font-medium')} title="Against hybrid retrieval + reranker: MRR difference, token multiple, retrieval-latency multiple">vs hybrid + rerank</th>}
               <th scope="col" className={cn(CELL, 'text-right font-medium')}>p50</th>
               <th scope="col" className={cn(CELL, 'text-right font-medium')}>p95</th>
+              {hasExec && <th scope="col" className={cn(CELL, 'text-right font-medium')} title="Share of questions with tests whose answer's code passed them in the sandbox — deterministic ground truth">Code ✓</th>}
               {graded && <th scope="col" className={cn(CELL, 'text-right font-medium')} title="LLM-graded, with 95% interval">Answers ✓</th>}
+              {graded && <th scope="col" className={cn(CELL, 'text-right font-medium')} title="Answers whose every claim the judge found backed by a source (faithfulness)">Grounded</th>}
+              {hasAnsMs && <th scope="col" className={cn(CELL, 'text-right font-medium')} title="95th-percentile answer time: generation + grounding checks + retries">Answer p95</th>}
               {hasCtx && <th scope="col" className={cn(CELL, 'text-right font-medium')} title="Share of required facts the passages support (judge)">Ctx recall</th>}
               {hasCtx && <th scope="col" className={cn(CELL, 'text-right font-medium')} title="Relevant passages ranked first (judge, rank-weighted)">Ctx precision</th>}
               {hasCost && <th scope="col" className={cn(CELL, 'text-right font-medium')} title="USD per 1,000 queries at paid-tier list price">$ / 1k q</th>}
@@ -323,9 +381,27 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
                   <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}>{Math.round(m.hit_at_1 * 100)}%</td>
                   <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}>{Math.round(m.hit_at_k * 100)}% <span className="text-text-tertiary">@{m.k}</span></td>
                   <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}>{Math.round(m.context_hit * 100)}%</td>
-                  <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}>{formatNumber(m.ctx_tokens)}</td>
+                  <td
+                    className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}
+                    title={qtok(m) !== m.ctx_tokens ? `${formatNumber(m.ctx_tokens)} answer context + ${formatNumber(qtok(m) - m.ctx_tokens)} retrieval LLM calls` : undefined}
+                  >
+                    {formatNumber(qtok(m))}
+                  </td>
+                  {ref && (
+                    <td className={cn(CELL, 'whitespace-nowrap text-right font-mono text-mono-sm tabular-nums text-text-secondary')}>
+                      {c === ref ? <span className="text-text-tertiary">reference</span> : (() => {
+                        const v = versus(c, ref)
+                        return <>{v.mrr} · {v.tokens} tok · {v.latency} lat</>
+                      })()}
+                    </td>
+                  )}
                   <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums text-text-secondary')}>{formatMs(m.p50_ms)}</td>
                   <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums text-text-secondary')}>{m.p95_ms != null ? formatMs(m.p95_ms) : '—'}</td>
+                  {hasExec && (
+                    <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums text-text-primary')}>
+                      {m.answers?.exec_verified_rate != null ? `${Math.round(m.answers.exec_verified_rate * 100)}%` : '—'}
+                    </td>
+                  )}
                   {graded && (
                     <td
                       className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}
@@ -335,6 +411,17 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
                         : c.grade_error || m.answers ? <span className="text-text-tertiary">not graded{m.answers?.ungraded ? ` (${m.answers.ungraded} failed)` : ''}</span>
                         : <span className="text-text-tertiary">—</span>}
                     </td>
+                  )}
+                  {graded && (
+                    <td
+                      className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}
+                      title={m.answers?.verify ? `grounding check passed ${m.answers.verify.pass_rate != null ? Math.round(m.answers.verify.pass_rate * 100) : '—'}% · ${m.answers.verify.retried} retried` : undefined}
+                    >
+                      {m.answers?.n ? `${Math.round(m.answers.grounded_rate * 100)}%` : '—'}
+                    </td>
+                  )}
+                  {hasAnsMs && (
+                    <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums text-text-secondary')}>{m.answers?.answer_p95_ms != null ? formatMs(m.answers.answer_p95_ms) : '—'}</td>
                   )}
                   {hasCtx && (
                     <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}>{m.answers?.context_recall != null ? `${Math.round(m.answers.context_recall * 100)}%` : '—'}</td>
@@ -349,7 +436,7 @@ function Leaderboard({ sweep, base, onPromote, promoting, cost }: {
                     </td>
                   )}
                   {priced && (
-                    <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}>{usd(monthlyCost(m.ctx_tokens, cost))}</td>
+                    <td className={cn(CELL, 'text-right font-mono text-mono tabular-nums')}>{usd(monthlyCost(qtok(m), cost))}</td>
                   )}
                   <td className={cn(CELL, 'text-right')}>
                     {!baseline && (
@@ -464,8 +551,9 @@ export function SweepsPanel({ projectId, setId, judge }: { projectId: string; se
         <h2 className="flex items-center gap-2 text-title-lg text-text-primary"><Grid3x3 size={20} aria-hidden /> Sweep configurations</h2>
         <p className="mt-1 text-body-lg text-text-secondary">
           Score every combination of the values you pick on this eval set — retrieval only, so no LLM calls, except query expansion
-          (multi-query / HyDE), which makes one call per question. Rebuild axes build one index per value (parsing and embeddings
-          are cached); instant axes reuse it.
+          (multi-query / HyDE / decompose: one call per question) and the agentic retriever (a few planner calls per question).
+          Rebuild axes build one index per value (parsing and embeddings are cached); instant axes reuse it.
+          Include hybrid + a reranker to get a “vs hybrid + rerank” column — quality difference, token and latency multiples.
         </p>
       </div>
 
@@ -473,6 +561,26 @@ export function SweepsPanel({ projectId, setId, judge }: { projectId: string; se
         <Spinner label="Loading sweep options" />
       ) : (
         <>
+          <div className="flex flex-wrap items-center gap-2 text-body-sm text-text-secondary">
+            Presets:
+            <PriorPreset projectId={projectId} onPick={(axes) => setPicked(Object.fromEntries(axes.map((a) => [a.path, a.values])))} />
+            <Button
+              size="sm"
+              variant="secondary"
+              title="hybrid vs agentic retrieval × reranker off/on — the leaderboard then reports agentic's quality, token and latency cost against hybrid + rerank"
+              onClick={() => setPicked({ 'retrieve.type': ['hybrid', 'agentic'], 'rerank.type': ['none', 'cross_encoder'] })}
+            >
+              Agentic vs hybrid + rerank
+            </Button>
+            <Button
+              size="sm"
+              variant="secondary"
+              title="Grounding check off/on, with Auto-Optimize to grade answers: faithfulness vs answer latency"
+              onClick={() => { setPicked({ 'verify.type': ['none', 'grounding_check'] }); setAutoOpt(true) }}
+            >
+              Grounding check on vs off
+            </Button>
+          </div>
           <AxisPicker axes={axes} base={base} picked={picked} onToggle={toggle} onSeed={(path, values) => setPicked((p) => ({ ...p, [path]: values }))} />
           <div className="flex flex-wrap items-center gap-3">
             <Select aria-label="Base version" options={options} value={baseVersion?.id ?? ''} onChange={(e) => setVersionId(e.target.value)} wrapperClassName="min-w-36" />

@@ -102,7 +102,8 @@ export interface StreamChatOptions {
 export async function streamChat(projectId: string, body: ChatBody, opts: StreamChatOptions): Promise<ChatEvent | null> {
   const res = await fetch(buildUrl(`/projects/${projectId}/chat`), {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream' },
+    // Marks Playground testing, so production-traffic counts (Health → Production loop) leave it out.
+    headers: { 'Content-Type': 'application/json', Accept: 'text/event-stream', 'X-RAGLabs-Client': 'playground' },
     body: JSON.stringify({ ...body, stream: true }),
     signal: opts.signal,
   }).catch((e: unknown) => {

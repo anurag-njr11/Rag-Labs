@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from .. import db
 from ..core.pipeline import diff_pipelines
-from ..engine import evaluate, sweep, sync
+from ..engine import adapter, evaluate, injection, prompt_opt, sweep, sync
 from ..ingest import jobs
 from ..llm import provider as llm
 
@@ -27,6 +27,7 @@ class ItemIn(BaseModel):
     evidence: str = Field(min_length=1, max_length=4000)
     document_id: str
     facets: list[str] = Field(default_factory=list, max_length=8)  # required facts (FR-2.6)
+    tests: str | None = Field(None, max_length=8000)  # Python asserts for the answer's code (FR-3.17)
 
 
 class ItemPatch(BaseModel):
@@ -34,6 +35,7 @@ class ItemPatch(BaseModel):
     gold_answer: str | None = Field(None, min_length=1, max_length=2000)
     evidence: str | None = Field(None, min_length=1, max_length=4000)
     facets: list[str] | None = Field(None, max_length=8)
+    tests: str | None = Field(None, max_length=8000)  # "" clears them
     valid: bool | None = None  # restore a rejected item / drop a kept one
 
 
@@ -41,7 +43,7 @@ class CsvIn(BaseModel):
     csv: str = Field(max_length=2_000_000)
 
 
-CSV_COLUMNS = ["question", "gold_answer", "evidence", "document", "valid", "reject_reason", "facets"]
+CSV_COLUMNS = ["question", "gold_answer", "evidence", "document", "valid", "reject_reason", "facets", "tests"]
 MAX_ITEMS = 500  # valid questions per set, for hand adds, restores and CSV import
 _FORMULA = ("=", "+", "-", "@")  # a spreadsheet would run a cell starting with one of these
 
@@ -69,6 +71,18 @@ class EvalRunIn(BaseModel):
     version_id: str | None = None
     answers: bool = False  # also generate + LLM-grade each answer
     judge: JudgeIn | None = None
+
+
+class AdapterIn(BaseModel):
+    set_id: str
+    version_id: str | None = None  # its embedder and index are what the adapter is trained for
+
+
+class InjectionIn(BaseModel):
+    set_id: str
+    version_id: str | None = None
+    questions: int = Field(5, ge=1, le=20)  # × 5 payloads × variants = LLM calls
+    compare: bool = True  # also run every defence variant (FR-3.8)
 
 
 class AxisIn(BaseModel):
@@ -191,9 +205,9 @@ async def _add_item(s: dict[str, Any], body: ItemIn) -> str:
                                      (s["id"],))).fetchone()
         await c.execute(
             "INSERT INTO eval_items (id, eval_set_id, ordinal, question, gold_answer, evidence, document_id,"
-            " gold_chunk_id, valid, facets) VALUES (?,?,?,?,?,?,?,'',1,?)",
+            " gold_chunk_id, valid, facets, tests) VALUES (?,?,?,?,?,?,?,'',1,?,?)",
             (item_id, s["id"], row[0], body.question.strip(), body.gold_answer.strip(), body.evidence.strip(),
-             body.document_id, _facets(body.facets)))
+             body.document_id, _facets(body.facets), (body.tests or "").strip() or None))
         await c.execute(_BUMP, (s["id"],))
     return item_id
 
@@ -230,6 +244,8 @@ async def update_item(project_id: str, set_id: str, item_id: str, body: ItemPatc
             raise HTTPException(422, f"Can't restore it: {reason}")
     if "facets" in changes:
         changes["facets"] = _facets(changes["facets"])
+    if "tests" in changes:
+        changes["tests"] = changes["tests"].strip() or None
     if "valid" in changes:
         changes["valid"] = int(changes["valid"])
         if changes["valid"]:
@@ -264,7 +280,7 @@ async def export_csv(project_id: str, set_id: str) -> Response:
     w.writeheader()
     for i in items:
         row = {**i, "valid": "yes" if i["valid"] else "no", "reject_reason": i["reject_reason"] or "",
-               "facets": " | ".join(db.loads(i["facets"], []) or [])}
+               "facets": " | ".join(db.loads(i["facets"], []) or []), "tests": i.get("tests") or ""}
         w.writerow({k: _csv_safe(row[k]) for k in CSV_COLUMNS})
     return Response(buf.getvalue(), media_type="text/csv",
                     headers={"Content-Disposition": f'attachment; filename="eval-set-{set_id[:8]}.csv"'})
@@ -300,7 +316,8 @@ async def import_csv(project_id: str, set_id: str, body: CsvIn) -> dict[str, Any
         try:
             body_in = ItemIn(question=row.get("question", ""), gold_answer=row.get("gold_answer") or row.get("answer", ""),
                              evidence=row.get("evidence", ""), document_id=doc_id,
-                             facets=[f for f in row.get("facets", "").split("|") if f.strip()])
+                             facets=[f for f in row.get("facets", "").split("|") if f.strip()],
+                             tests=row.get("tests") or None)
             await _add_item(s, body_in)
             added += 1
         except HTTPException as e:
@@ -349,6 +366,150 @@ async def _get_run(project_id: str, run_id: str, full: bool = False) -> dict[str
     if r is None:
         raise HTTPException(404, "eval run not found")
     return _run_out(r, full)
+
+
+def _adapter_out(r: dict[str, Any]) -> dict[str, Any]:
+    out = {k: r[k] for k in ("id", "version_id", "eval_set_id", "status", "error", "created_at", "embed_key", "dim")}
+    out.update(version=r.get("version"), metrics=db.loads(r["metrics"]))
+    return out
+
+
+async def _get_adapter(project_id: str, adapter_id: str) -> dict[str, Any]:
+    r = await db.fetch_one(
+        "SELECT a.*, v.version FROM adapters a LEFT JOIN pipeline_versions v ON v.id = a.version_id"
+        " WHERE a.id=? AND a.project_id=?", (adapter_id, project_id))
+    if r is None:
+        raise HTTPException(404, "adapter not found")
+    return _adapter_out(r)
+
+
+@router.post("/adapters", status_code=201)
+async def create_adapter(project_id: str, body: AdapterIn) -> dict[str, Any]:
+    """Train a query-side embedding adapter on an eval set's labels (FR-3.10)."""
+    s = await _set(project_id, body.set_id)
+    if s["status"] != "ready":
+        raise HTTPException(409, "This eval set isn't ready yet.")
+    v = await _version(project_id, body.version_id)
+    adapter_id = db.new_id()
+    async with db.tx() as c:
+        await c.execute("INSERT INTO adapters (id, project_id, version_id, eval_set_id, created_at) VALUES (?,?,?,?,?)",
+                        (adapter_id, project_id, v["id"], s["id"], db.now_iso()))
+    job = jobs.start("adapter", project_id, lambda job: adapter.train(job, adapter_id, project_id, v, s["id"]))
+    return {"adapter": await _get_adapter(project_id, adapter_id), "job_id": job.id}
+
+
+@router.get("/adapters")
+async def list_adapters(project_id: str) -> list[dict[str, Any]]:
+    rows = await db.fetch_all(
+        "SELECT a.*, v.version FROM adapters a LEFT JOIN pipeline_versions v ON v.id = a.version_id"
+        " WHERE a.project_id=? ORDER BY a.created_at DESC, a.rowid DESC", (project_id,))
+    return [_adapter_out(r) for r in rows]
+
+
+@router.get("/adapters/{adapter_id}")
+async def get_adapter(project_id: str, adapter_id: str) -> dict[str, Any]:
+    return await _get_adapter(project_id, adapter_id)
+
+
+@router.delete("/adapters/{adapter_id}", status_code=204)
+async def delete_adapter(project_id: str, adapter_id: str) -> None:
+    """Versions that still name it skip it from then on (their trace says so)."""
+    await _get_adapter(project_id, adapter_id)
+    async with db.tx() as c:
+        await c.execute("DELETE FROM adapters WHERE id=?", (adapter_id,))
+    adapter.adapter_path(project_id, adapter_id).unlink(missing_ok=True)
+    adapter._loaded.pop(f"{project_id}/{adapter_id}", None)
+
+
+def _prompt_run_out(r: dict[str, Any]) -> dict[str, Any]:
+    out = {k: r[k] for k in ("id", "version_id", "eval_set_id", "status", "error", "created_at")}
+    out.update(version=r.get("version"), result=db.loads(r["result"]))
+    return out
+
+
+async def _get_prompt_run(project_id: str, run_id: str) -> dict[str, Any]:
+    r = await db.fetch_one(
+        "SELECT r.*, v.version FROM prompt_runs r LEFT JOIN pipeline_versions v ON v.id = r.version_id"
+        " WHERE r.id=? AND r.project_id=?", (run_id, project_id))
+    if r is None:
+        raise HTTPException(404, "prompt optimisation run not found")
+    return _prompt_run_out(r)
+
+
+@router.post("/prompt-runs", status_code=201)
+async def create_prompt_run(project_id: str, body: AdapterIn) -> dict[str, Any]:
+    """Optimise the prompt's instructions and examples against an eval set (FR-3.11)."""
+    s = await _set(project_id, body.set_id)
+    if s["status"] != "ready":
+        raise HTTPException(409, "This eval set isn't ready yet.")
+    v = await _version(project_id, body.version_id)
+    run_id = db.new_id()
+    async with db.tx() as c:
+        await c.execute("INSERT INTO prompt_runs (id, project_id, version_id, eval_set_id, created_at) VALUES (?,?,?,?,?)",
+                        (run_id, project_id, v["id"], s["id"], db.now_iso()))
+    job = jobs.start("prompt", project_id, lambda job: prompt_opt.run(job, run_id, project_id, v, s["id"]))
+    return {"run": await _get_prompt_run(project_id, run_id), "job_id": job.id}
+
+
+@router.get("/prompt-runs")
+async def list_prompt_runs(project_id: str) -> list[dict[str, Any]]:
+    rows = await db.fetch_all(
+        "SELECT r.*, v.version FROM prompt_runs r LEFT JOIN pipeline_versions v ON v.id = r.version_id"
+        " WHERE r.project_id=? ORDER BY r.created_at DESC, r.rowid DESC", (project_id,))
+    return [_prompt_run_out(r) for r in rows]
+
+
+@router.get("/prompt-runs/{run_id}")
+async def get_prompt_run(project_id: str, run_id: str) -> dict[str, Any]:
+    return await _get_prompt_run(project_id, run_id)
+
+
+def _injection_out(r: dict[str, Any], full: bool = False) -> dict[str, Any]:
+    out = {k: r[k] for k in ("id", "version_id", "eval_set_id", "status", "error", "created_at")}
+    out.update(version=r.get("version"), options=db.loads(r["options"], {}), metrics=db.loads(r["metrics"]))
+    if full:
+        out["results"] = db.loads(r["results"], [])
+    return out
+
+
+@router.post("/injection", status_code=201)
+async def create_injection_run(project_id: str, body: InjectionIn) -> dict[str, Any]:
+    """Injection-resistance test (FR-3.7/3.8): canary payloads in retrieval, scored per defence variant."""
+    s = await _set(project_id, body.set_id)
+    if s["status"] != "ready":
+        raise HTTPException(409, "This eval set isn't ready yet.")
+    v = await _version(project_id, body.version_id)
+    run_id = db.new_id()
+    options = {"questions": body.questions, "compare": body.compare}
+    async with db.tx() as c:
+        await c.execute("INSERT INTO injection_runs (id, project_id, version_id, eval_set_id, options, created_at)"
+                        " VALUES (?,?,?,?,?,?)", (run_id, project_id, v["id"], s["id"], db.dumps(options),
+                                                  db.now_iso()))
+    job = jobs.start("injection", project_id, lambda job: injection.run(
+        job, run_id, project_id, v, s["id"], body.questions, body.compare))
+    return {"run": await _get_injection(project_id, run_id), "job_id": job.id}
+
+
+async def _get_injection(project_id: str, run_id: str, full: bool = False) -> dict[str, Any]:
+    r = await db.fetch_one(
+        "SELECT r.*, v.version FROM injection_runs r LEFT JOIN pipeline_versions v ON v.id = r.version_id"
+        " WHERE r.id=? AND r.project_id=?", (run_id, project_id))
+    if r is None:
+        raise HTTPException(404, "injection run not found")
+    return _injection_out(r, full)
+
+
+@router.get("/injection")
+async def list_injection_runs(project_id: str) -> list[dict[str, Any]]:
+    rows = await db.fetch_all(
+        "SELECT r.*, v.version FROM injection_runs r LEFT JOIN pipeline_versions v ON v.id = r.version_id"
+        " WHERE r.project_id=? ORDER BY r.created_at DESC, r.rowid DESC", (project_id,))
+    return [_injection_out(r) for r in rows]
+
+
+@router.get("/injection/{run_id}")
+async def get_injection_run(project_id: str, run_id: str) -> dict[str, Any]:
+    return await _get_injection(project_id, run_id, full=True)
 
 
 @router.get("/runs")

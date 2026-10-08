@@ -1,8 +1,11 @@
 import { useEffect, useState } from 'react'
-import { History, ListTree, RotateCcw, Square, TriangleAlert } from 'lucide-react'
+import { DatabaseZap, History, ListTree, RotateCcw, ShieldAlert, ShieldCheck, ShieldQuestion, Square, TriangleAlert } from 'lucide-react'
 import { formatMs, formatNumber, formatPages, stripTags } from '@/api/format'
-import { Banner, Button, ButtonLink, CitationChip, CopyButton, SourceChip, Spinner, cn } from '@/components/ui'
+import type { Verdict, Verification } from '@/api/types'
+import { Badge, Banner, Button, ButtonLink, CitationChip, CopyButton, Disclosure, SourceChip, Spinner, cn } from '@/components/ui'
 import { projectPath } from '@/app/workspace'
+import { Receipt } from '@/features/data/Receipt'
+import { ExecutionSummary } from './ExecutionSummary'
 import { Markdown } from './markdown'
 import { isActive, type Turn } from './session'
 
@@ -52,7 +55,17 @@ export function Message({ turn, projectId, inspected, activeN, maxTokens, onCite
         </span>
       )
     }
-    return <CitationChip key={key} n={n} active={inspected && activeN === n} onClick={() => onCite(turn, n)} />
+    const unsupported = final && turn.verification?.citations?.[n] === 'no'
+    return (
+      <CitationChip
+        key={key}
+        n={n}
+        active={inspected && activeN === n}
+        unsupported={unsupported}
+        title={unsupported ? `Source ${n} doesn't support this claim (grounding check)` : undefined}
+        onClick={() => onCite(turn, n)}
+      />
+    )
   }
 
   // Source chips: one per cited chunk, in [n] order.
@@ -68,6 +81,7 @@ export function Message({ turn, projectId, inspected, activeN, maxTokens, onCite
   let pending: string | null = null
   if (active && !turn.answer) {
     if (turn.indexMessage) pending = `Updating the index first — ${turn.indexMessage}`
+    else if (turn.retries) pending = "A claim wasn't supported by its sources — answering again with more context…"
     else if (turn.status === 'waiting') pending = 'Retrieving passages…'
     else pending = `Retrieved ${turn.retrieved.length} passages · waiting for the model…`
   }
@@ -83,6 +97,13 @@ export function Message({ turn, projectId, inspected, activeN, maxTokens, onCite
 
       {/* Assistant */}
       <div className={cn('space-y-3 rounded-lg pl-0 transition-colors', inspected && 'relative')}>
+        {turn.cache && (
+          <p className="flex flex-wrap items-center gap-1.5 text-body-sm text-text-secondary" title={`Cached ${new Date(turn.cache.created_at).toLocaleString()}`}>
+            <Badge tone="info" icon={<DatabaseZap aria-hidden />}>From cache</Badge>
+            {Math.round(turn.cache.similarity * 100)}% similar to “{turn.cache.question}” — no retrieval or model call.
+          </p>
+        )}
+
         {turn.fromHistory && (
           <p className="inline-flex items-center gap-1 text-caption text-text-tertiary">
             <History size={12} aria-hidden /> From run history
@@ -108,9 +129,19 @@ export function Message({ turn, projectId, inspected, activeN, maxTokens, onCite
 
         {active && turn.answer && (
           <p className="flex items-center gap-2 text-caption text-text-tertiary">
-            <Spinner size={12} /> Generating…
+            <Spinner size={12} /> {turn.verifying ? (turn.verifyingWhat === 'code' ? 'Running the code in the sandbox…' : 'Checking the answer against its sources…') : 'Generating…'}
           </p>
         )}
+
+        {final && turn.verification && <VerificationSummary v={turn.verification} retries={turn.retries ?? 0} />}
+
+        {final && turn.computation && !turn.computation.attested && turn.answer && (
+          <Banner tone="warning" title={`“${turn.computation.name}” matched, but its result didn't pass its checks.`}>
+            So this answer comes from the documents — numbers in them may be out of date.
+          </Banner>
+        )}
+        {final && turn.computation && <Receipt r={turn.computation} compact={!turn.computation.attested} />}
+        {final && turn.execution && <ExecutionSummary e={turn.execution} />}
 
         {final && turn.truncated && (
           <Banner
@@ -128,7 +159,7 @@ export function Message({ turn, projectId, inspected, activeN, maxTokens, onCite
 
         {final && !turn.answer.trim() && <p className="text-body text-text-secondary">The model returned an empty answer.</p>}
 
-        {final && !turn.truncated && turn.answer.trim() && chips.length === 0 && (
+        {final && !turn.truncated && turn.answer.trim() && chips.length === 0 && !turn.computation && (
           <p className="text-body-sm text-text-tertiary">
             No sources cited — the retrieved passages didn't contain the answer, so the model declined rather than guess.
           </p>
@@ -205,5 +236,54 @@ export function Message({ turn, projectId, inspected, activeN, maxTokens, onCite
         )}
       </div>
     </article>
+  )
+}
+
+const VERDICT: Record<Verdict, { label: string; tone: 'success' | 'warning' | 'danger' }> = {
+  yes: { label: 'supported', tone: 'success' },
+  partial: { label: 'partly supported', tone: 'warning' },
+  no: { label: 'not supported', tone: 'danger' },
+}
+
+/** Grounding check result (Verify slot): one line, expandable to the per-claim verdicts. */
+function VerificationSummary({ v, retries }: { v: Verification; retries: number }) {
+  const after = retries ? ` after ${retries} ${retries === 1 ? 'retry' : 'retries'} with more context` : ''
+  if (v.status === 'error') {
+    return (
+      <p className="flex items-center gap-1.5 text-body-sm text-text-tertiary">
+        <ShieldQuestion size={14} aria-hidden /> Grounding check couldn't run{v.error ? ` — ${v.error}` : '.'}
+      </p>
+    )
+  }
+  const bad = v.claims.filter((c) => c.supported === 'no').length
+  const label = !v.claims.length
+    ? 'Grounded — no factual claims to check'
+    : v.grounded
+      ? `Grounded — ${v.claims.length - bad} of ${v.claims.length} claims supported${after}`
+      : `Not grounded — ${bad} of ${v.claims.length} claims not supported by the sources${after}`
+  return (
+    <Disclosure
+      label={
+        <span className={cn('inline-flex items-center gap-1.5', v.grounded ? 'text-success-fg' : 'text-danger-fg')}>
+          {v.grounded ? <ShieldCheck size={14} aria-hidden /> : <ShieldAlert size={14} aria-hidden />}
+          {label}
+        </span>
+      }
+      hint={v.score != null ? `score ${Math.round(v.score * 100)}%` : undefined}
+    >
+      <ul className="space-y-2 py-2">
+        {v.claims.map((c, i) => (
+          <li key={i} className="flex flex-wrap items-start gap-2 text-body-sm">
+            <Badge tone={VERDICT[c.supported].tone} dot>{VERDICT[c.supported].label}</Badge>
+            <span className="min-w-0 flex-1 text-text-secondary">{c.claim}</span>
+            {Object.entries(c.cited).map(([n, verdict]) => (
+              <span key={n} className="font-mono text-mono-sm text-text-tertiary" title={`Source ${n}: ${VERDICT[verdict].label}`}>
+                [{n}] {verdict === 'yes' ? '✓' : verdict === 'partial' ? '~' : '✗'}
+              </span>
+            ))}
+          </li>
+        ))}
+      </ul>
+    </Disclosure>
   )
 }

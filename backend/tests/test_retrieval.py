@@ -248,7 +248,7 @@ def _events(ctx, step):
     return [e for e in ctx.events if e.step == step]
 
 
-@pytest.mark.parametrize("mode", ["multi_query", "hyde"])
+@pytest.mark.parametrize("mode", ["multi_query", "hyde", "decompose"])
 async def test_query_expansion_falls_back_on_llm_error(project, monkeypatch, mode):
     from app.nodes.generate import ProviderGenerator
 
@@ -345,3 +345,32 @@ async def test_context_window_merges_neighbours(project):
     from app.core.node import build_node
     built = build_node("prompt", wcfg["prompt"]).build(q, [hit])
     assert "charlie text here" in built["messages"][1]["content"]
+
+
+def test_interleave_gives_every_group_a_turn():
+    groups = [[("a", 9), ("b", 8), ("c", 7)], [("b", 5), ("d", 4)], [("e", 1)]]
+    assert [cid for cid, _ in R.interleave(groups, 60)] == ["a", "b", "e", "d", "c"]
+    scores = [s for _, s in R.interleave(groups, 60)]
+    assert scores == sorted(scores, reverse=True) and R.interleave([], 60) == []
+
+
+async def test_decompose_searches_each_sub_question(project, monkeypatch):
+    from app.nodes.generate import ProviderGenerator
+
+    cfg = _cfg("numpy")
+    build = await builder.sync_build(project, cfg)
+
+    async def complete(self, prompt, max_tokens):
+        assert "sub-questions" in prompt
+        return "How many times are failed uploads retried?\nWhat is the upload size limit?", 5, 5
+
+    monkeypatch.setattr(ProviderGenerator, "complete", complete)
+    monkeypatch.setattr(retrieval, "_expansions", {})
+    dcfg = validate_pipeline({**cfg, "retrieve": {**cfg["retrieve"], "query_expansion": "decompose", "top_k": 4}})
+    ctx = RunContext()
+    q = "How many times are failed uploads retried, and what is the upload size limit?"
+    res = await retrieval.retrieve(ctx, build=build, cfg=dcfg, question=q)
+    assert len(res) == 4
+    (fuse,) = _events(ctx, "fuse")
+    assert fuse.payload["groups"] == 3 and fuse.payload["method"] == "decompose+rrf"
+    assert len(_events(ctx, "keyword_search")) == 3  # the question + 2 sub-questions

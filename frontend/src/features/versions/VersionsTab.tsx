@@ -1,10 +1,10 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useSearchParams } from 'react-router-dom'
-import { CircleCheck, Download, GitCommitHorizontal, Play } from 'lucide-react'
+import { BookmarkPlus, CircleCheck, Download, GitCommitHorizontal, Play } from 'lucide-react'
 import { API_BASE, errorMessage } from '@/api/client'
 import { formatDateTime, formatNumber, formatRelative, shortHash, storeLabel } from '@/api/format'
 import {
-  useActivateVersion, useBuildVersion, useEstimate, useNodes, useVersion, useVersionDiff, useVersions,
+  useActivateVersion, useBuildVersion, useEstimate, useNodes, useSaveRecipe, useVersion, useVersionDiff, useVersions,
 } from '@/api/hooks'
 import type { Change, EstimateResult, Version } from '@/api/types'
 import { JobProgress } from '@/app/JobProgress'
@@ -132,6 +132,15 @@ function VersionDetail({ version, all }: { version: Version; all: Version[] }) {
 
   const activate = useActivateVersion(project.id)
   const build = useBuildVersion(project.id)
+  const saveRecipe = useSaveRecipe()
+  const asRecipe = () =>
+    saveRecipe.mutate(
+      { name: `${project.name} v${v.version}`.slice(0, 80), description: v.note ?? '', config: v.config, source_project: project.id },
+      {
+        onSuccess: () => toast({ tone: 'success', title: 'Saved to Recipes', description: 'Share it or fork it into another project from the Recipes page.' }),
+        onError: (e) => toast({ tone: 'danger', title: 'Could not save the recipe', description: errorMessage(e) }),
+      },
+    )
   const [confirm, setConfirm] = useState(false)
   const [jobId, setJobId] = useState<string | null>(null)
 
@@ -207,6 +216,10 @@ function VersionDetail({ version, all }: { version: Version; all: Version[] }) {
               Export RAG
             </a>
           )}
+          <Button variant="secondary" icon={<BookmarkPlus size={14} aria-hidden />} loading={saveRecipe.isPending} onClick={asRecipe}
+            title="Keep this pipeline in the recipe gallery — to share as a link or fork into another project">
+            Save as recipe
+          </Button>
           {canBuild && (
             <Button variant="secondary" icon={<Play size={14} aria-hidden />} loading={build.isPending} onClick={doBuild}>
               Build

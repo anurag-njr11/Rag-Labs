@@ -68,7 +68,13 @@ ADDED_COLUMNS = [
     ("eval_sets", "revision", "INTEGER NOT NULL DEFAULT 0"),
     ("eval_sets", "corpus_sha", "TEXT"),
     ("eval_items", "facets", "TEXT"),
+    ("eval_items", "tests", "TEXT"),
     ("eval_runs", "set_revision", "INTEGER"),
+    ("trace_events", "start_ms", "REAL"),
+    ("runs", "source", "TEXT"),
+    ("runs", "api_key_id", "TEXT"),
+    ("corpus_reports", "trigger", "TEXT"),
+    ("corpus_reports", "sources", "TEXT"),
 ]
 
 

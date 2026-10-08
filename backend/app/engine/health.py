@@ -26,7 +26,7 @@ from .. import db
 from ..core import evalmetrics as M
 from ..core.node import RunContext, build_node
 from ..ingest.jobs import Job
-from . import evaluate, retrieval, sync
+from . import evaluate, monitor, retrieval, sync
 
 JUDGE_BATCH = 5
 PAIR_BATCH = 5
@@ -173,10 +173,12 @@ async def _check_pairs(provider: str, opts: dict[str, Any], batch: list[dict[str
 
 # --- the report ----------------------------------------------------------------------
 
-async def real_questions(project_id: str, extra: list[str]) -> list[dict[str, str]]:
-    """Pasted questions first, then distinct Playground/API questions, newest first."""
+async def real_questions(project_id: str, extra: list[str], sources: str = "all") -> list[dict[str, str]]:
+    """Pasted questions first, then distinct Playground/API questions (API only with sources="api"),
+    newest first."""
     rows = await db.fetch_all("SELECT question FROM runs WHERE project_id=? AND kind='chat' AND question != ''"
-                              " ORDER BY created_at DESC LIMIT 1000", (project_id,))
+                              + (" AND COALESCE(source, 'api') = 'api'" if sources == "api" else "")
+                              + " ORDER BY created_at DESC LIMIT 1000", (project_id,))
     seen: set[str] = set()
     out = []
     for source, qs in (("pasted", extra), ("history", [r["question"] for r in rows])):
@@ -244,7 +246,8 @@ async def _coverage(job: Job, build: dict[str, Any], cfg: dict[str, Any],
     summary["retrieval_miss"] = len(misses)
     summary["sources"] = {s: sum(q["source"] == s for q in questions) for s in ("pasted", "history")}
     retrieval_misses = [{"question": m["question"], "verdict": m["verdict"], "source": m["source"]} for m in misses]
-    return {"summary": summary, "topics": topics, "retrieval_misses": retrieval_misses}, used
+    return {"summary": summary, "topics": topics, "retrieval_misses": retrieval_misses,
+            "outcomes": monitor.outcomes(graded, gaps, misses)}, used
 
 
 async def _recheck(job: Job, build: dict[str, Any], cfg: dict[str, Any],
@@ -325,9 +328,9 @@ async def stale_documents(project_id: str, max_age_days: int = STALE_DAYS) -> di
 
 
 async def run_report(job: Job, report_id: str, project_id: str, version: dict[str, Any],
-                     extra: list[str], stale_days: int = STALE_DAYS) -> dict[str, Any]:
+                     extra: list[str], stale_days: int = STALE_DAYS, sources: str = "all") -> dict[str, Any]:
     try:
-        return await _run_report(job, report_id, project_id, version, extra, stale_days)
+        return await _run_report(job, report_id, project_id, version, extra, stale_days, sources)
     except Exception as e:
         async with db.tx() as c:
             await c.execute("UPDATE corpus_reports SET status='failed', error=? WHERE id=?", (str(e), report_id))
@@ -335,18 +338,22 @@ async def run_report(job: Job, report_id: str, project_id: str, version: dict[st
 
 
 async def _run_report(job: Job, report_id: str, project_id: str, version: dict[str, Any],
-                      extra: list[str], stale_days: int) -> dict[str, Any]:
+                      extra: list[str], stale_days: int, sources: str = "all") -> dict[str, Any]:
     cfg = sync.version_config(version)
     build = await evaluate.ready_build(project_id, cfg, job)
     chunks = await db.fetch_all(
         "SELECT c.id, c.document_id, c.text, c.text_sha, c.is_table, c.heading_path, c.page_start,"
         " d.filename AS document FROM chunks c JOIN documents d ON d.id = c.document_id"
         " WHERE c.build_id=? ORDER BY c.document_id, c.ordinal", (build["id"],))
-    questions = await real_questions(project_id, extra)
+    questions = await real_questions(project_id, extra, sources)
     coverage, used = await _coverage(job, build, cfg, questions)
     overlaps = await _overlaps(job, build, cfg, chunks)
+    prev = await db.fetch_one("SELECT result FROM corpus_reports WHERE project_id=? AND status='ready' AND id != ?"
+                              " ORDER BY created_at DESC LIMIT 1", (project_id, report_id))
     result = {"coverage": coverage, **overlaps, "usage": _usage(chunks, used, len(questions)),
-              "staleness": await stale_documents(project_id, stale_days)}
+              "staleness": await stale_documents(project_id, stale_days),
+              "trend": monitor.trend(db.loads(prev["result"]) if prev else None, coverage["outcomes"],
+                                     coverage["summary"]["covered_rate"])}
     async with db.tx() as c:
         await c.execute("UPDATE corpus_reports SET status='ready', result=?, build_id=? WHERE id=?",
                         (db.dumps(result), build["id"], report_id))

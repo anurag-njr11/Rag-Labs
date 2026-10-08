@@ -3,6 +3,128 @@
 All notable changes to RAGLabs. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 phases map to releases (`PRD.md` §5).
 
+## [Unreleased] — Phase 3: Advanced Retrieval & Trust
+
+### Added
+
+- **Trace timeline** (FR-3.6): every trace step records when it started (`start_ms`, offset from the
+  run's start), and the Playground's Trace tab draws steps as a waterfall, so concurrent retrieval
+  paths show up side by side. Runs recorded before this keep plain duration bars.
+- **Grounding check** (FR-3.5) — a new **Verify** pipeline slot. `grounding_check` makes one extra
+  LLM call (the answer's own model, temperature 0) that splits the answer into claims and grades each
+  one against the sources. When a claim isn't supported it either flags the answer or retries with
+  twice the results and context budget (`max_retries`, default 1). The result is shown under the
+  answer, recorded on the run, returned by the API (`verification`) and timed in the trace.
+- **Citation-support checking** (FR-3.9): the same call grades each `[n]` citation against the claim
+  that cites it; a citation whose source doesn't support its claim is marked in the answer.
+- **Grounding check in the Lab** (FR-3.5): answer-graded eval runs and Auto-Optimize answer exactly as
+  chat does — check, retry with more context — and report answer p50/p95 latency and the check's pass
+  rate. `verify.type` is a sweep axis (with a "Grounding check on vs off" preset); cells that tie on
+  retrieval are graded together, since only answer grading tells them apart.
+- **Query decomposition** (FR-3.3): `retrieve.query_expansion = decompose` splits a multi-part question
+  into sub-questions; each is searched and fused on its own, then they take turns in the top-k so
+  every part gets evidence. Ported to repo export.
+- **Agentic retriever** (FR-3.1) with **context offloading** (FR-3.2): `retrieve.type = agentic` — the
+  plain question is searched, then an LLM planner (step budget 1–6) searches again, reads passages in
+  full (offload mode shows it only snippets) and keeps the passages that answer. Every search runs
+  through an ordinary retriever, so its trace steps and badges appear as usual. Runs are cached per
+  question (any `top_k`), and their cost, tokens and time are always counted uncached. Ported to export.
+- **Agentic vs hybrid + rerank on the leaderboard** (FR-3.4): a "vs hybrid + rerank" column (MRR
+  difference, token multiple, latency multiple) and insight line, plus an "Agentic vs hybrid + rerank"
+  preset. The Pareto cost axis is now `query_tokens` — answer context plus retrieval-side LLM calls —
+  so an agentic config no longer looks as cheap as a single search.
+- **Semantic answer cache** — a new `cache` slot, checked before retrieval: a near-identical earlier
+  question (cosine ≥ threshold) reuses its answer with no retrieval and no LLM call. Numbers and code
+  identifiers must match exactly ("top 10" ≠ "top 15"); a hit needs the same config and the same
+  documents. Truncated and not-grounded answers aren't cached. Stats and Clear in the Cache stage.
+- **Injection-resistance testing** (FR-3.7) and **which defences move it** (FR-3.8): Evaluate →
+  Injection resistance plants a poisoned passage at the top of real retrieval results (in memory; the
+  corpus is never changed) carrying one of five payloads — instruction override, link exfiltration,
+  contact swap, planted false fact, system-prompt leak — each with a canary, so success is a string
+  check. Scored per variant: as configured, no defences, each defence alone, all, with 95% intervals.
+- **Injection defences**: `prompt.injection_guard` — `data_rule` (default, as before) · `delimited`
+  (sources wrapped in `<source>` tags marked untrusted; a smuggled closing tag is escaped) · `none`;
+  and `verify.validate_output` — deterministic removal of URLs, emails and phone numbers that appear in
+  no source (the answer is then sent whole, never streamed unvalidated). Both ported to export.
+- **Embedding adapter** (FR-3.10, 3.12): Evaluate → Embedding adapter trains a query-side linear map on
+  the eval set's labels (NumPy, CPU, seconds). λ is chosen by cross-validation inside the training
+  questions; it's reported before/after on held-out questions it never saw, and only *recommended*
+  when it beats the plain embedder in both. Instant to use (`retrieve.adapter`), skipped with a trace
+  note if trained for another embedder, shipped as `data/adapter.npy` in repo export.
+- **Prompt optimisation** (FR-3.11, 3.12), DSPy-style without the framework: bootstrapped few-shot
+  examples from the model's own best answers, LLM-proposed instruction blocks, selection on val
+  questions, before/after on test questions never used to choose. The result lands in
+  `prompt.extra_instructions` / `prompt.examples` (also in export).
+
+- **OKF bundles** (FR-3.18, 3.20): Documents → Import OKF reads a zip of Markdown with YAML front matter —
+  one document per file (bundle path kept in the name), `type / status / stale_after / verified / generated /
+  sources` from the front matter, other files skipped with a reason, missing fields and broken links
+  tolerated. Export OKF writes the corpus back as a bundle: text, provenance, trust tier (human / process /
+  agent from `verified`), lifecycle, usage, and the latest Corpus Health findings, plus an index.
+- **Metadata-aware retrieval** (FR-3.19): `retrieve.okf_policy` leaves out documents past `stale_after`,
+  halves the score of `deprecated` ones and prefers better-verified sources on ties. Ported to export.
+- **Attested Computation** (FR-3.21): a Data tab for CSV tables and computations — a read-only SQL query
+  with typed parameters and declarative checks (rows, columns, non-null, numeric bounds). With the new
+  `compute` slot, numeric questions are routed (the model only picks a computation and fills parameters),
+  run read-only with a time limit, attested, and answered exactly as computed with a receipt; a failed
+  check falls back to the documents with a warning, or refuses. Attesters are declarative rather than
+  OKF's Python files, so uploaded code never runs.
+
+- **Production query loop** (FR-3.22): every answer records whether it came from the Playground or the
+  API; Corpus Health can use production traffic only; a monitor re-runs the report automatically after
+  every N new real questions (checked after each answer, no scheduler); and each report shows its trend
+  against the previous one — coverage change, gaps resolved, questions no longer answered, new gaps.
+
+- **API keys and a usage dashboard** (FR-3.23, self-hosted part): the web UI on this machine needs no
+  key; any other caller sends `Authorization: Bearer rl_…` — a chat key reaches one project's query
+  endpoint only, an admin key the whole API; only a hash is stored. The API tab shows daily requests,
+  errors, latency, tokens and cost, by source and by key. `TRUST_LOOPBACK=false` for reverse proxies.
+  Team workspaces stay with the hosted edition (`OSS_ROADMAP.md`).
+
+- **Chat-to-build** (FR-3.25): Configure → "Describe a change" turns plain language ("add a reranker and
+  switch to hybrid") into a schema-valid draft change — the model only proposes `slot.field` edits, the
+  server applies and validates them (one repair round) — shown with ⚡/🔁 badges before you apply it;
+  the changed stages (or canvas nodes) light up.
+- **Canvas** (FR-3.24): Configure → Canvas draws the pipeline as it actually runs — the query lane with
+  its parallel retrieval paths, the index lane feeding them, and the early exits and loops (cache hit,
+  attested computation, agent search loop, grounding-check retry). Drag nodes (layout kept per project),
+  drop a type from the palette onto its node, toggle retrieval paths, click a node to edit it. Steps keep
+  their order: RAGLabs doesn't rewire them into free-form graphs, so every configuration stays comparable.
+
+- **Recipe gallery** (FR-3.26): a Recipes page with seven built-in starting points (fast & cheap,
+  hybrid + rerank, technical docs, multi-part questions, agentic research, hardened for production, FAQ
+  bot with a cache) and recipes saved from any version. A share link carries the recipe itself, so it
+  works on any install; forking into a project drops a corpus-specific adapter and keeps the project's
+  own LLM if the recipe's isn't connected, and says so.
+- **Config prior** (FR-3.27): predicts settings for a corpus from the sweeps that won on similar corpora
+  on this install, with a stated confidence (agreement × amount of evidence × similarity), falling back
+  to the rule-based recommender — labelled as such — with no history. Evaluate → Sweeps offers it as a
+  preset: verify the prediction against your current settings in one sweep.
+
+- **Code check** (FR-3.13–3.16): `verify.type = execution_check` runs the answer's Python in a throwaway
+  Docker container (no network, 256 MB, 1 CPU, 64 processes, read-only root, unprivileged user, time
+  limit) against tests, in order of strength: the eval question's own, `>>>` examples from the retrieved
+  docs that use the answer's names, or model-written asserts (labelled weaker evidence). A failure goes
+  back to the model to fix, up to `max_steps` (3, at most 4), stopping early when the same error repeats;
+  if nothing passes the best attempt is shown as unverified. No Docker means no check, never a local run.
+  `SANDBOX_IMAGE` picks the image.
+- **Execution-verified correctness** (FR-3.17): eval items take optional `tests` (editor, CSV column);
+  answer-graded runs report the share of tested questions whose code passed, with a 95% interval. When two
+  leaderboard cells both have it, it ranks them before MRR.
+
+### Changed
+
+- Pipelines gained three slots: `verify` (after generate; `none` · `grounding_check` · `execution_check`), `cache` and `compute` (before retrieve). Configs saved
+  without them load with `{type: 'none'}`; index hashes are unchanged.
+- Batch LLM work (eval answers, judging, attack tests) retries rate limits, timeouts, overloads and 5xx
+  with exponential backoff (`ProviderError.retryable`); chat still fails fast.
+- Eval latency counts a cached LLM step (query expansion, agent run) at the time it really takes, so
+  sweep cells that share the cache aren't scored as faster.
+
+### Fixed
+
+- API tests used a host name the trusted-host middleware rejects; they now use `testserver`.
+
 ## [v2.0.0] — 2026-10-06 — Phase 2: Measure & Optimize
 
 ### Added

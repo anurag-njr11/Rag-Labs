@@ -26,7 +26,8 @@ class Preset:
     # Whether the endpoint accepts `reasoning_effort` (incl. "none"). Providers that
     # don't get "default" (send nothing) as their reasoning default.
     supports_reasoning: bool = False
-    # Always shown as a Generate option, configured or not (the original two).
+    # Always registered as a Generate type, configured or not, so the default pipeline
+    # ("gemini" when nothing is connected) stays valid. The UI only lists connected ones.
     pinned: bool = False
 
 

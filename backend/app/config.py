@@ -23,6 +23,12 @@ class Settings(BaseSettings):
     # page re-points its own domain at 127.0.0.1 to drive this API (and its stored
     # keys) from the browser. Comma-separated; "*" disables the check.
     allowed_hosts: str = "localhost,127.0.0.1,::1,[::1],testserver"
+    # Requests from this machine need no API key (the web UI runs here). Behind a reverse proxy every
+    # request looks local: set TRUST_LOOPBACK=false, and every API call then needs a key.
+    trust_loopback: bool = True
+    # Code checks (verify.type = execution_check) run model-written code only in this Docker image, with no
+    # network and tight limits. Use an image that has the libraries your docs are about.
+    sandbox_image: str = "python:3.12-slim"
 
     # Upper bounds that keep a runaway sitemap or upload from eating the machine.
     max_upload_mb: int = 100

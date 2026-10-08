@@ -16,7 +16,7 @@ from ..core.pipeline import PipelineConfig, default_for
 from ..ingest import lookup
 from ..llm import provider as llm
 from ..nodes import retrieve as R
-from . import stores
+from . import adapter, okf, stores
 
 _STOP = set("""a an and are as at be but by can do does for from how i if in into is it its me my of on or
 so that the their them then there these this to was what when where which who why will with you your""".split())
@@ -108,6 +108,10 @@ def store_params(cfg: PipelineConfig) -> Any:
 
 MULTI_QUERY_PROMPT = ("Rewrite this search question {n} different ways: same meaning, different words. "
                       "One rewrite per line, no numbering, nothing else.\n\nQuestion: {q}")
+DECOMPOSE_PROMPT = ("Split this question into the simplest standalone sub-questions needed to answer it, at "
+                    "most {n}. Each must make sense on its own (repeat the subject instead of 'it'). If it asks "
+                    "only one thing, return it unchanged. One per line, no numbering, nothing else."
+                    "\n\nQuestion: {q}")
 HYDE_PROMPT = ("Write a short passage (3-5 sentences) that answers this question the way the product's "
                "documentation would. Plain text, no preamble.\n\nQuestion: {q}")
 _BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
@@ -115,26 +119,26 @@ _BULLET = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s*")
 # every sweep cell then search with the same rewrites, and a repeated question costs no call.
 # ponytail: process-lifetime dict cleared when full; persist it if expansion cost shows up in sweeps.
 # The list cost of the original call is kept, so eval/sweep $/1k queries don't depend on cache hits.
-_expansions: dict[str, tuple[list[str], str | None, float | None]] = {}
+_expansions: dict[str, tuple[list[str], str | None, float | None, int, float]] = {}  # ..., cost, tokens, ms
 
 
 async def expand_query(ctx: RunContext, cfg: PipelineConfig, rc: R.RetrieveConfig, question: str,
                        paths: tuple[str, ...]) -> tuple[list[str], str | None]:
-    """-> (rewrites for multi_query, hypothetical passage for hyde). ([], None) = plain question,
-    including when the LLM call fails."""
+    """-> (rewrites for multi_query / sub-questions for decompose, hypothetical passage for hyde).
+    ([], None) = plain question, including when the LLM call fails."""
     mode = rc.query_expansion
     if mode == "none" or (mode == "hyde" and "dense" not in paths):
         return [], None
     gen = build_node("generate", cfg["generate"])
     key = stable_hash([mode, rc.expansion_queries, cfg["generate"]["type"], cfg["generate"].get("model"), question])
     if key in _expansions:
-        rewrites, passage, cost = _expansions[key]
+        rewrites, passage, cost, tokens, ms = _expansions[key]
         ctx.emit("query_expansion", mode=mode, cached=True, queries=rewrites, passage=passage,
-                 uncached_cost_usd=cost)
+                 uncached_cost_usd=cost, uncached_tokens=tokens, uncached_ms=ms)
         return rewrites, passage
     t0 = time.perf_counter()
-    prompt = (MULTI_QUERY_PROMPT.format(n=rc.expansion_queries, q=question) if mode == "multi_query"
-              else HYDE_PROMPT.format(q=question))
+    prompt = {"multi_query": MULTI_QUERY_PROMPT, "decompose": DECOMPOSE_PROMPT,
+              "hyde": HYDE_PROMPT}[mode].format(n=rc.expansion_queries, q=question)
     try:
         text, tin, tout = await gen.complete(prompt, max_tokens=512)
     except Exception as e:
@@ -142,7 +146,7 @@ async def expand_query(ctx: RunContext, cfg: PipelineConfig, rc: R.RetrieveConfi
         return [], None
     rewrites: list[str] = []
     passage: str | None = None
-    if mode == "multi_query":
+    if mode in ("multi_query", "decompose"):
         lines = (_BULLET.sub("", ln).strip() for ln in text.splitlines())
         rewrites = list(dict.fromkeys(ln for ln in lines if ln and ln.lower() != question.lower()))
         rewrites = rewrites[:rc.expansion_queries]
@@ -156,8 +160,17 @@ async def expand_query(ctx: RunContext, cfg: PipelineConfig, rc: R.RetrieveConfi
     if rewrites or passage:
         if len(_expansions) >= 2048:
             _expansions.clear()
-        _expansions[key] = (rewrites, passage, cost)
+        _expansions[key] = (rewrites, passage, cost, tin + tout, (time.perf_counter() - t0) * 1000)
     return rewrites, passage
+
+
+async def adapter_matrix(project_id: str, adapter_id: str, embed_key: str) -> np.ndarray | None:
+    """The adapter's matrix if it exists, is ready and was trained for this embedder; else None."""
+    row = await db.fetch_one("SELECT embed_key FROM adapters WHERE id=? AND project_id=? AND status='ready'",
+                             (adapter_id, project_id))
+    if row is None or row["embed_key"] != embed_key:
+        return None
+    return adapter.load(project_id, adapter_id)
 
 
 async def add_neighbours(build_id: str, results: list[dict[str, Any]], window: int) -> None:
@@ -178,6 +191,10 @@ async def add_neighbours(build_id: str, results: list[dict[str, Any]], window: i
 
 async def retrieve(ctx: RunContext, *, build: dict[str, Any], cfg: PipelineConfig,
                    question: str) -> list[dict[str, Any]]:
+    if cfg["retrieve"]["type"] == "agentic":
+        from . import agentic
+
+        return await agentic.retrieve(ctx, build=build, cfg=cfg, question=question)
     retriever = build_node("retrieve", cfg["retrieve"])
     rc: R.RetrieveConfig = retriever.config  # type: ignore[assignment]
     paths = retriever.paths
@@ -190,11 +207,17 @@ async def retrieve(ctx: RunContext, *, build: dict[str, Any], cfg: PipelineConfi
     dense_vecs: list[np.ndarray] = []
 
     if "dense" in paths or rc.mmr:
-        with ctx.timed("embed_query", model=getattr(embedder.config, "model", ""), queries=len(queries)):
+        with ctx.timed("embed_query", model=getattr(embedder.config, "model", ""), queries=len(queries)) as t:
             # HyDE: the hypothetical answer is a passage, so embed it like one.
             query_vec = ((await embedder.embed_documents([passage]))[0] if passage
                          else await embedder.embed_query(question))
             dense_vecs = [query_vec, *[await embedder.embed_query(q) for q in rewrites]]
+            if rc.adapter:
+                w = await adapter_matrix(build["project_id"], rc.adapter, embedder.embed_key())
+                t["adapter"] = rc.adapter if w is not None else "skipped: not trained for this embedding model"
+                if w is not None:  # questions only: a HyDE passage is embedded as a document already
+                    dense_vecs = [v if passage and i == 0 else adapter.apply(w, v) for i, v in enumerate(dense_vecs)]
+                    query_vec = dense_vecs[0]
 
     def key(path: str, i: int) -> str:
         return path if i == 0 else f"{path}~{i}"
@@ -229,8 +252,19 @@ async def retrieve(ctx: RunContext, *, build: dict[str, Any], cfg: PipelineConfi
     # Sorted, so float sums don't depend on which path finished first.
     ordered = {k: lists[k] for k in sorted(lists)}
     weights = {k: base[k.split("~")[0]] for k in ordered}
-    with ctx.timed("fuse", method=rc.fusion if len(ordered) > 1 else "none") as t:
-        if len(ordered) == 1:
+    decompose = rc.query_expansion == "decompose" and bool(rewrites)
+    with ctx.timed("fuse", method=("decompose+" if decompose else "") + (rc.fusion if len(ordered) > 1 else "none")) as t:
+        if decompose:
+            # Fuse each (sub-)question's paths, then interleave the groups. Exact matching only ran on
+            # the original question, so it fuses into group 0.
+            groups = []
+            for i in range(len(queries)):
+                g = {k: v for k, v in ordered.items() if (k.split("~") + ["0"])[1] == str(i)}
+                gw = {k: weights[k] for k in g}
+                groups.append(R.rrf(g, gw, rc.rrf_k) if rc.fusion == "rrf" else R.weighted(g, gw))
+            fused = R.interleave(groups, rc.rrf_k)
+            t["groups"] = len(groups)
+        elif len(ordered) == 1:
             fused = next(iter(ordered.values()))
         elif rc.fusion == "rrf":
             fused = R.rrf(ordered, weights, rc.rrf_k)
@@ -238,11 +272,19 @@ async def retrieve(ctx: RunContext, *, build: dict[str, Any], cfg: PipelineConfi
             fused = R.weighted(ordered, weights)
         t["candidates"] = len(fused)
 
+    dropped: set[str] = set()
+    if rc.okf_policy and fused:
+        with ctx.timed("okf_policy") as t:
+            kept, counts = okf.apply_policy(fused, await okf.chunk_meta([c for c, _ in fused]), okf.today())
+            dropped = {c for c, _ in fused} - {c for c, _ in kept}
+            fused = kept
+            t.update(counts)
+
     pinned: list[str] = []
     if rc.pin_definitions and "exact" in lists:
         # Exact-path order already puts heading matches (weight 6) first.
-        pinned = [cid for cid, _ in lists["exact"]
-                  if any(k.startswith("heading:") for k in exact_keys.get(cid, []))]
+        pinned = [cid for cid, _ in lists["exact"] if cid not in dropped
+                  and any(k.startswith("heading:") for k in exact_keys.get(cid, []))]
         if pinned:
             score = dict(fused)
             top_score = fused[0][1] if fused else 0.0

@@ -23,6 +23,20 @@ import type {
   DocumentOkf,
   EstimateResult,
   EvalRun,
+  InjectionRun,
+  Adapter,
+  ConfigPrior,
+  Recipe,
+  BuildChatResult,
+  ApiKey,
+  UsageReport,
+  HealthMonitor,
+  Computation,
+  ComputationSpec,
+  ComputeReceipt,
+  DataTable,
+  OkfImportResult,
+  PromptRun,
   EvalRunDetail,
   EvalSet,
   EvalSetDetail,
@@ -87,6 +101,9 @@ export const qk = {
   evalRun: (id: string, runId: string) => ['projects', id, 'eval', 'run', runId] as const,
   evalFixes: (id: string, runId: string) => ['projects', id, 'eval', 'run', runId, 'fixes'] as const,
   sweeps: (id: string) => ['projects', id, 'eval', 'sweeps'] as const,
+  injection: (id: string) => ['projects', id, 'eval', 'injection'] as const,
+  adapters: (id: string) => ['projects', id, 'eval', 'adapters'] as const,
+  promptRuns: (id: string) => ['projects', id, 'eval', 'prompt-runs'] as const,
   sweepAxes: (id: string) => ['projects', id, 'eval', 'sweep-axes'] as const,
   healthReports: (id: string) => ['projects', id, 'health'] as const,
   healthReport: (id: string, rid: string) => ['projects', id, 'health', rid] as const,
@@ -361,6 +378,19 @@ export const useDocumentChunks = (projectId: string | undefined, docId: string |
     ...o,
   })
 
+/** Import an OKF bundle (zip of Markdown with front matter) as documents (FR-3.18). */
+export function useImportOkf(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (file: File) => {
+      const fd = new FormData()
+      fd.append('file', file, file.name)
+      return api.post<OkfImportResult>(`/projects/${projectId}/documents/okf`, fd)
+    },
+    onSuccess: () => invalidateProject(qc, projectId),
+  })
+}
+
 export function useUploadDocuments(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
@@ -552,6 +582,156 @@ export function useChat(projectId: string) {
   })
 }
 
+export const useBuildChat = (projectId: string) =>
+  useMutation({
+    mutationFn: (body: { instruction: string; config?: PipelineConfig }) =>
+      api.post<BuildChatResult>(`/projects/${projectId}/build-chat`, body),
+  })
+
+export const useConfigPrior = (projectId: string) =>
+  useQuery({ queryKey: ['projects', projectId, 'config-prior'], queryFn: () => api.get<ConfigPrior>(`/projects/${projectId}/config-prior`) })
+
+// ------------------------------------------------------------------------- recipes (FR-3.26)
+
+export const useRecipes = () => useQuery({ queryKey: ['recipes'], queryFn: () => api.get<Recipe[]>('/recipes') })
+
+export function useSaveRecipe() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { name: string; description?: string; tags?: string[]; config: PipelineConfig; source_project?: string }) =>
+      api.post<Recipe>('/recipes', body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['recipes'] }),
+  })
+}
+
+export function useDeleteRecipe() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.del(`/recipes/${id}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['recipes'] }),
+  })
+}
+
+/** A recipe's config made fit for a project, plus notes on what was adjusted. */
+export const useForkConfig = () =>
+  useMutation({
+    mutationFn: ({ projectId, config }: { projectId: string; config: PipelineConfig }) =>
+      api.post<{ config: PipelineConfig; notes: string[] }>(`/projects/${projectId}/recipe-config`, { config }),
+  })
+
+/** Save a version into any project (the recipe page isn't inside a workspace). */
+export function useCreateVersionFor() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ projectId, body }: { projectId: string; body: CreateVersionBody }) =>
+      api.post<CreateVersionResult>(`/projects/${projectId}/versions`, body),
+    onSuccess: (_r, { projectId }) => invalidateProject(qc, projectId),
+  })
+}
+
+// ------------------------------------------------------------------------- API keys & usage (FR-3.23)
+
+export const useApiKeys = () => useQuery({ queryKey: ['api-keys'], queryFn: () => api.get<ApiKey[]>('/keys') })
+
+export function useCreateApiKey() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { name: string; scope: 'chat' | 'admin'; project_id?: string }) => api.post<ApiKey & { key: string }>('/keys', body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['api-keys'] }),
+  })
+}
+
+export function useRevokeApiKey() {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.del(`/keys/${id}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['api-keys'] }),
+  })
+}
+
+export const useUsage = (projectId: string, days: number) =>
+  useQuery({
+    queryKey: ['projects', projectId, 'usage', days],
+    queryFn: () => api.get<UsageReport>(`/projects/${projectId}/usage`, { days }),
+    refetchInterval: 30_000,
+  })
+
+// ------------------------------------------------------------------------- data & computations (FR-3.21)
+
+export const useDataTables = (projectId: string | undefined) =>
+  useQuery({
+    queryKey: ['projects', projectId, 'data'],
+    queryFn: () => api.get<DataTable[]>(`/projects/${projectId}/data`),
+    enabled: !!projectId,
+  })
+
+export function useUploadTables(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (files: File[]) => {
+      const fd = new FormData()
+      for (const f of files) fd.append('files', f, f.name)
+      return api.post<{ created: DataTable[]; errors: { filename: string; error: string }[] }>(`/projects/${projectId}/data`, fd)
+    },
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['projects', projectId, 'data'] }),
+  })
+}
+
+export function useDeleteTable(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (table: string) => api.del(`/projects/${projectId}/data/${encodeURIComponent(table)}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['projects', projectId, 'data'] }),
+  })
+}
+
+export const useComputations = (projectId: string | undefined) =>
+  useQuery({
+    queryKey: ['projects', projectId, 'computations'],
+    queryFn: () => api.get<Computation[]>(`/projects/${projectId}/computations`),
+    enabled: !!projectId,
+  })
+
+export function useSaveComputation(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: ({ id, spec }: { id?: string; spec: ComputationSpec }) =>
+      id ? api.put<Computation>(`/projects/${projectId}/computations/${id}`, spec)
+        : api.post<Computation>(`/projects/${projectId}/computations`, spec),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['projects', projectId, 'computations'] }),
+  })
+}
+
+export function useDeleteComputation(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.del(`/projects/${projectId}/computations/${id}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['projects', projectId, 'computations'] }),
+  })
+}
+
+export const useRunComputation = (projectId: string) =>
+  useMutation({
+    mutationFn: ({ id, parameters }: { id: string; parameters: Record<string, unknown> }) =>
+      api.post<ComputeReceipt>(`/projects/${projectId}/computations/${id}/run`, { parameters }),
+  })
+
+/** Semantic answer cache size for a project (all configurations). */
+export const useCacheStats = (projectId: string | undefined) =>
+  useQuery({
+    queryKey: ['projects', projectId, 'cache'],
+    queryFn: () => api.get<{ entries: number; hits: number }>(`/projects/${projectId}/cache`),
+    enabled: !!projectId,
+  })
+
+export function useClearCache(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: () => api.del<{ cleared: number }>(`/projects/${projectId}/cache`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: ['projects', projectId, 'cache'] }),
+  })
+}
+
 export const useRuns = (projectId: string | undefined, limit = 50, o?: QOpts<RunSummary[]>) =>
   useQuery({
     queryKey: qk.runs(projectId ?? '', limit),
@@ -657,6 +837,73 @@ export const useSweeps = (projectId: string | undefined, o?: QOpts<Sweep[]>) =>
     ...o,
   })
 
+export const useInjectionRuns = (projectId: string | undefined) =>
+  useQuery({
+    queryKey: qk.injection(projectId ?? ''),
+    queryFn: () => api.get<InjectionRun[]>(`${evalBase(projectId!)}/injection`),
+    enabled: !!projectId,
+    refetchInterval: (q) => pollWhileRunning(!!q.state.data?.some((r) => r.status === 'running')),
+  })
+
+export const useInjectionRun = (projectId: string | undefined, runId: string | undefined) =>
+  useQuery({
+    queryKey: [...qk.injection(projectId ?? ''), runId],
+    queryFn: () => api.get<InjectionRun>(`${evalBase(projectId!)}/injection/${runId}`),
+    enabled: !!projectId && !!runId,
+    refetchInterval: (q) => pollWhileRunning(q.state.data?.status === 'running'),
+  })
+
+export const useAdapters = (projectId: string | undefined) =>
+  useQuery({
+    queryKey: qk.adapters(projectId ?? ''),
+    queryFn: () => api.get<Adapter[]>(`${evalBase(projectId!)}/adapters`),
+    enabled: !!projectId,
+    refetchInterval: (q) => pollWhileRunning(!!q.state.data?.some((a) => a.status === 'running')),
+  })
+
+export function useTrainAdapter(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { set_id: string; version_id?: string }) =>
+      api.post<{ adapter: Adapter; job_id: string }>(`${evalBase(projectId)}/adapters`, body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.adapters(projectId) }),
+  })
+}
+
+export function useDeleteAdapter(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.del(`${evalBase(projectId)}/adapters/${id}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.adapters(projectId) }),
+  })
+}
+
+export const usePromptRuns = (projectId: string | undefined) =>
+  useQuery({
+    queryKey: qk.promptRuns(projectId ?? ''),
+    queryFn: () => api.get<PromptRun[]>(`${evalBase(projectId!)}/prompt-runs`),
+    enabled: !!projectId,
+    refetchInterval: (q) => pollWhileRunning(!!q.state.data?.some((r) => r.status === 'running')),
+  })
+
+export function useStartPromptRun(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { set_id: string; version_id?: string }) =>
+      api.post<{ run: PromptRun; job_id: string }>(`${evalBase(projectId)}/prompt-runs`, body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.promptRuns(projectId) }),
+  })
+}
+
+export function useStartInjection(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { set_id: string; version_id?: string; questions: number; compare: boolean }) =>
+      api.post<{ run: InjectionRun; job_id: string }>(`${evalBase(projectId)}/injection`, body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.injection(projectId) }),
+  })
+}
+
 export function useStartSweep(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
@@ -694,10 +941,29 @@ export const useHealthReport = (projectId: string | undefined, reportId: string 
     refetchInterval: (q) => pollWhileRunning(q.state.data?.status === 'running'),
   })
 
+export const useHealthMonitor = (projectId: string) =>
+  useQuery({
+    queryKey: ['projects', projectId, 'health', 'monitor'],
+    queryFn: () => api.get<HealthMonitor>(`${healthBase(projectId)}/monitor`),
+    refetchInterval: 15_000,
+  })
+
+export function useSaveHealthMonitor(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (settings: HealthMonitor['settings']) =>
+      api.put<HealthMonitor & { job_id: string | null }>(`${healthBase(projectId)}/monitor`, settings),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: ['projects', projectId, 'health', 'monitor'] })
+      void qc.invalidateQueries({ queryKey: qk.healthReports(projectId) })
+    },
+  })
+}
+
 export function useStartHealthReport(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (body: { version_id?: string; questions?: string[]; stale_days?: number }) =>
+    mutationFn: (body: { version_id?: string; questions?: string[]; stale_days?: number; sources?: 'all' | 'api' }) =>
       api.post<{ report: HealthReport; job_id: string }>(`${healthBase(projectId)}/reports`, body),
     onSuccess: () => void qc.invalidateQueries({ queryKey: qk.healthReports(projectId) }),
   })
@@ -722,7 +988,7 @@ const invalidateSet = (qc: ReturnType<typeof useQueryClient>, projectId: string,
 export function useAddEvalItem(projectId: string, setId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: (body: { question: string; gold_answer: string; evidence: string; document_id: string; facets?: string[] }) =>
+    mutationFn: (body: { question: string; gold_answer: string; evidence: string; document_id: string; facets?: string[]; tests?: string }) =>
       api.post(`${evalBase(projectId)}/sets/${setId}/items`, body),
     onSuccess: () => invalidateSet(qc, projectId, setId),
   })
@@ -731,7 +997,7 @@ export function useAddEvalItem(projectId: string, setId: string) {
 export function useUpdateEvalItem(projectId: string, setId: string) {
   const qc = useQueryClient()
   return useMutation({
-    mutationFn: ({ itemId, ...body }: { itemId: string; question?: string; gold_answer?: string; evidence?: string; facets?: string[]; valid?: boolean }) =>
+    mutationFn: ({ itemId, ...body }: { itemId: string; question?: string; gold_answer?: string; evidence?: string; facets?: string[]; tests?: string; valid?: boolean }) =>
       api.patch(`${evalBase(projectId)}/sets/${setId}/items/${itemId}`, body),
     onSuccess: () => invalidateSet(qc, projectId, setId),
   })

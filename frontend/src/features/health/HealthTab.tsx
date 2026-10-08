@@ -1,13 +1,13 @@
 import { useState, type ReactNode } from 'react'
-import { CalendarClock, Copy, Download, FileQuestion, GitCompareArrows, HeartPulse, SearchX, Stethoscope } from 'lucide-react'
+import { CalendarClock, Copy, Download, FileQuestion, GitCompareArrows, HeartPulse, Repeat, SearchX, Stethoscope } from 'lucide-react'
 import {
-  errorMessage, healthReportUrl, useHealthReport, useHealthReports, useStartHealthReport,
+  errorMessage, healthReportUrl, useHealthMonitor, useHealthReport, useHealthReports, useSaveHealthMonitor, useStartHealthReport,
 } from '@/api/hooks'
 import { formatNumber, stripTags } from '@/api/format'
-import type { GapTopic, GapVerdict, HealthExcerpt, HealthResult, PassagePair, StaleReason } from '@/api/types'
+import type { GapTopic, GapVerdict, HealthExcerpt, HealthMonitor, HealthResult, HealthTrend, PassagePair, StaleReason } from '@/api/types'
 import { useWorkspace } from '@/app/workspace'
 import {
-  Badge, Banner, Button, Card, Disclosure, EmptyState, Input, ProgressBar, Select, Spinner, Textarea, buttonClasses, cn, useToast,
+  Badge, Banner, Button, Card, Disclosure, EmptyState, Input, ProgressBar, Select, Spinner, Switch, Textarea, buttonClasses, cn, useToast,
   type BadgeTone,
 } from '@/components/ui'
 import { EvalJobProgress } from '@/features/evaluate/EvalJobProgress'
@@ -235,6 +235,63 @@ function Usage({ result }: { result: HealthResult }) {
 
 // ------------------------------------------------------------------------------------------------ tab
 
+/** FR-3.22: how much real traffic arrived since the last report; re-run automatically after N questions. */
+function ProductionLoop({ projectId }: { projectId: string }) {
+  const q = useHealthMonitor(projectId)
+  const save = useSaveHealthMonitor(projectId)
+  const { toast } = useToast()
+  const [draft, setDraft] = useState<HealthMonitor['settings'] | null>(null)
+  if (!q.data) return null
+  const s = draft ?? q.data.settings
+  const since = q.data.since_last_report
+  const dirty = !!draft && JSON.stringify(draft) !== JSON.stringify(q.data.settings)
+  const persist = () =>
+    save.mutate(s, {
+      onSuccess: (r) => {
+        setDraft(null)
+        toast({ tone: 'success', title: s.enabled ? 'Production loop on' : 'Production loop off',
+          description: r.job_id ? 'Enough new questions already — a report has started.' : undefined })
+      },
+      onError: (e) => toast({ tone: 'danger', title: 'Could not save', description: errorMessage(e) }),
+    })
+  return (
+    <Card padding="lg" className="flex flex-col gap-3 sm:p-6">
+      <div className="flex flex-wrap items-center gap-3">
+        <h2 className="flex items-center gap-2 text-heading-lg text-text-primary"><Repeat size={18} aria-hidden /> Production loop</h2>
+        <span className="text-body text-text-secondary">
+          {formatNumber(since.all)} new real question{since.all === 1 ? '' : 's'} since {since.last_report_at ? 'the last report' : 'the start'}
+          <span className="text-text-tertiary"> · {formatNumber(since.api)} API · {formatNumber(since.playground)} Playground</span>
+        </span>
+      </div>
+      <div className="flex flex-wrap items-center gap-3 text-body-sm text-text-secondary">
+        <Switch checked={s.enabled} onChange={(v) => setDraft({ ...s, enabled: v })} aria-label="Re-run automatically" />
+        Re-run this check automatically after every
+        <Input type="number" min={5} max={10000} size="sm" wrapperClassName="w-24" aria-label="Questions between reports"
+          value={s.every_n} onChange={(e) => setDraft({ ...s, every_n: Math.max(5, Number(e.target.value) || 5) })} />
+        new questions from
+        <Select aria-label="Count questions from" value={s.sources} onChange={(e) => setDraft({ ...s, sources: e.target.value as 'all' | 'api' })}
+          options={[{ value: 'api', label: 'the API (production)' }, { value: 'all', label: 'the API and the Playground' }]} />
+        <Button size="sm" variant="primary" onClick={persist} loading={save.isPending} disabled={!dirty}>Save</Button>
+      </div>
+      <p className="text-body-sm text-text-tertiary">
+        Checked after each answer — no scheduler. Each report compares itself with the previous one: gaps resolved, new gaps,
+        coverage up or down.
+      </p>
+    </Card>
+  )
+}
+
+function TrendLine({ t }: { t: HealthTrend }) {
+  const d = t.covered_rate_change
+  return (
+    <Banner tone={d != null && d < 0 ? 'warning' : 'info'} title="Since the previous report">
+      {d != null && `Coverage ${d >= 0 ? 'up' : 'down'} ${Math.abs(Math.round(d * 100))} points. `}
+      {t.resolved} gap{t.resolved === 1 ? '' : 's'} now answered, {t.regressed} question{t.regressed === 1 ? '' : 's'} no longer answered,
+      {' '}{t.new_gaps} new gap{t.new_gaps === 1 ? '' : 's'} among {t.new_questions} new question{t.new_questions === 1 ? '' : 's'}.
+    </Banner>
+  )
+}
+
 export default function HealthTab() {
   const { project } = useWorkspace()
   const reports = useHealthReports(project.id)
@@ -244,6 +301,7 @@ export default function HealthTab() {
   const [jobId, setJobId] = useState<string | null>(null)
   const [picked, setPicked] = useState<string | null>(null)
   const [staleDays, setStaleDays] = useState('365')
+  const [sources, setSources] = useState<'all' | 'api'>('all')
 
   const list = reports.data ?? []
   const latest = list[0]
@@ -255,7 +313,7 @@ export default function HealthTab() {
 
   const run = () =>
     start.mutate(
-      { questions, stale_days: Math.max(1, Math.round(Number(staleDays)) || 365) },
+      { questions, stale_days: Math.max(1, Math.round(Number(staleDays)) || 365), sources },
       {
         onSuccess: (r) => {
           setJobId(r.job_id)
@@ -302,6 +360,11 @@ export default function HealthTab() {
                 wrapperClassName="w-20" aria-label="Staleness threshold in days" />
               days
             </label>
+            <label className="flex items-center gap-2 text-body-sm text-text-secondary">
+              History questions from
+              <Select aria-label="History questions from" value={sources} onChange={(e) => setSources(e.target.value as 'all' | 'api')}
+                options={[{ value: 'all', label: 'Playground + API' }, { value: 'api', label: 'API only (production)' }]} />
+            </label>
             <Button variant="primary" icon={<Stethoscope size={14} aria-hidden />} onClick={run} loading={start.isPending}
               disabled={running || project.documents === 0} title={project.documents === 0 ? 'Add documents first' : undefined}>
               {list.length ? 'Run the check again' : 'Check corpus health'}
@@ -314,6 +377,8 @@ export default function HealthTab() {
         )}
         {!jobId && latest?.status === 'failed' && <p role="alert" className="text-body-sm text-danger-fg">Last check failed: {latest.error}</p>}
       </Card>
+
+      <ProductionLoop projectId={project.id} />
 
       {reports.isPending ? (
         <Spinner label="Loading reports" />
@@ -335,6 +400,8 @@ export default function HealthTab() {
             <span className="text-body text-text-secondary">
               v{detail.data?.version ?? '?'} · {new Date(detail.data!.created_at).toLocaleString()}
             </span>
+            {detail.data?.trigger === 'auto' && <Badge tone="info">automatic</Badge>}
+            {detail.data?.sources === 'api' && <Badge tone="neutral">API traffic only</Badge>}
             {list.filter((r) => r.status === 'ready').length > 1 && (
               <Select
                 aria-label="Show report"
@@ -356,6 +423,7 @@ export default function HealthTab() {
             <Stat label="Stale documents" value={result.staleness ? result.staleness.documents.length : '—'}
               hint={result.staleness ? `deprecated, expired or > ${formatNumber(result.staleness.max_age_days)} days old` : 'not in this report'} />
           </dl>
+          {result.trend && <TrendLine t={result.trend} />}
           <Backlog result={result} />
           <div className="grid items-start gap-6 xl:grid-cols-2">
             <Pairs title="Contradictions" icon={<GitCompareArrows size={20} aria-hidden />} pairs={result.contradictions} contradiction

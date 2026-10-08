@@ -81,7 +81,7 @@ async def build_status(project_id: str, cfg: dict[str, Any]) -> dict[str, Any]:
 def _version_out(v: dict[str, Any], active_id: str | None) -> dict[str, Any]:
     return {"id": v["id"], "version": v["version"], "note": v["note"], "created_at": v["created_at"],
             "index_config_hash": index_config_hash(db.loads(v["config"], {})), "parent_id": v["parent_id"],
-            "active": v["id"] == active_id, "config": db.loads(v["config"], {})}
+            "active": v["id"] == active_id, "config": with_defaults(db.loads(v["config"], {}))}
 
 
 async def _project_out(p: dict[str, Any]) -> dict[str, Any]:
@@ -195,6 +195,7 @@ async def delete_project(project_id: str) -> None:
     for d in docs:
         await asyncio.to_thread(shutil.rmtree, Path(d["raw_path"]).parent, True)
     await asyncio.to_thread(shutil.rmtree, get_settings().stores_dir / project_id, True)
+    (get_settings().data_dir / "compute" / f"{project_id}.db").unlink(missing_ok=True)
 
 
 # --- versions ---------------------------------------------------------------
@@ -283,6 +284,42 @@ async def estimate(project_id: str, body: dict[str, Any]) -> dict[str, Any]:
         "estimate": await builder.estimate(project_id, cfg),
         "index_config_hash": index_config_hash(cfg),
     }
+
+
+class BuildChatIn(BaseModel):
+    instruction: str = Field(min_length=2, max_length=1000)
+    config: dict[str, Any] | None = None  # the draft being edited; default: the active version
+
+
+@router.post("/{project_id}/build-chat")
+async def build_chat(project_id: str, body: BuildChatIn) -> dict[str, Any]:
+    """Chat-to-build (FR-3.25): a plain-language edit → a schema-valid draft + its diff. Saves nothing."""
+    from ..engine import build_chat as bc
+    from ..engine import evaluate
+    from ..llm import provider as llm
+
+    p = await _project(project_id)
+    if body.config is not None:
+        cfg = _validate(body.config)
+    else:
+        v = await db.fetch_one("SELECT config FROM pipeline_versions WHERE id=?", (p["active_version_id"],))
+        cfg = with_defaults(db.loads(v["config"])) if v else recommended_pipeline()
+    provider, opts = evaluate.llm_settings(cfg)
+    try:
+        return await bc.propose(cfg, body.instruction, provider, opts)
+    except llm.ProviderError as e:
+        raise HTTPException(502, str(e)) from e
+
+
+@router.get("/{project_id}/config-prior")
+async def config_prior(project_id: str) -> dict[str, Any]:
+    """FR-3.27: a configuration predicted from sweeps on similar corpora (or rules when there are none),
+    with per-setting confidence and the sweep axes that would verify it."""
+    from ..engine import prior
+
+    p = await _project(project_id)
+    v = await db.fetch_one("SELECT config FROM pipeline_versions WHERE id=?", (p["active_version_id"],))
+    return await prior.for_project(project_id, db.loads(v["config"]) if v else recommended_pipeline())
 
 
 @router.post("/{project_id}/recommend")

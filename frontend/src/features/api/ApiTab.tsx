@@ -3,6 +3,7 @@ import { ExternalLink, Play } from 'lucide-react'
 import { errorMessage, useChat, useRun, useRuns, useSuggestions } from '@/api/hooks'
 import type { ChatResult, RunDetail } from '@/api/types'
 import { BACKEND_DOCS_URL } from '@/app/AppLayout'
+import { KeysPanel, UsagePanel } from './AccessPanels'
 import { useWorkspace } from '@/app/workspace'
 import { Badge, Banner, Button, Card, CodeBlock, CopyButton, Input, Spinner, Tabs, tabPanelProps, useSwapTransition } from '@/components/ui'
 
@@ -131,6 +132,9 @@ export default function ApiTab() {
           Body: <code className="font-mono text-mono">{'{"question": "…", "version_id"?: "…", "stream"?: false}'}</code>
         </p>
       </Card>
+
+      <UsagePanel projectId={project.id} />
+      <KeysPanel projectId={project.id} />
 
       <Card padding="lg" className="space-y-3">
         <div className="flex flex-wrap items-center justify-between gap-2">

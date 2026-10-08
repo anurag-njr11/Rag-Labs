@@ -5,19 +5,23 @@ import { cn } from './cn'
 export interface CitationChipProps extends Omit<ComponentProps<'button'>, 'children'> {
   n: number
   active?: boolean
+  /** The grounding check found this source doesn't support the claim citing it (danger tones). */
+  unsupported?: boolean
 }
 
 /** Inline `[n]` citation chip (18px mono, accent-subtle). Clicking should scroll the Inspector to source n. */
-export function CitationChip({ n, active, className, ...rest }: CitationChipProps) {
+export function CitationChip({ n, active, unsupported, className, ...rest }: CitationChipProps) {
   return (
     <button
       type="button"
-      aria-label={`Source ${n}`}
+      aria-label={unsupported ? `Source ${n} (doesn't support this claim)` : `Source ${n}`}
       className={cn(
         'focus-ring mx-0.5 inline-flex h-[18px] min-w-[18px] items-center justify-center rounded-sm border px-1 align-[1px] font-mono text-mono-sm transition-colors',
         active
           ? 'border-accent-default bg-accent-default text-text-inverse'
-          : 'border-accent-border bg-accent-subtle text-accent-text hover:border-accent-default',
+          : unsupported
+            ? 'border-danger-border bg-danger-bg text-danger-fg line-through hover:border-danger-fg'
+            : 'border-accent-border bg-accent-subtle text-accent-text hover:border-accent-default',
         className,
       )}
       {...rest}

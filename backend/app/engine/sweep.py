@@ -20,7 +20,7 @@ from .. import db
 from ..core import evalmetrics as M
 from ..core.cache import stable_hash
 from ..core.node import slot_types
-from ..core.pipeline import PipelineError, default_for, index_config_hash, validate_pipeline
+from ..core.pipeline import PipelineError, default_for, index_config_hash, validate_pipeline, with_defaults
 from ..ingest.document_analyzer import DocumentMetadata, aggregate_corpus_metadata
 from ..ingest.jobs import Job
 from ..nodes.embed import FASTEMBED_MODELS, mteb_label
@@ -47,10 +47,13 @@ AXES: list[dict[str, Any]] = [
     {"path": "retrieve.type", "label": "Retriever", "effect": "instant",
      "values": list(slot_types("retrieve"))},
     {"path": "retrieve.query_expansion", "label": "Query expansion", "effect": "instant",
-     "values": ["none", "multi_query", "hyde"]},
+     "values": ["none", "multi_query", "hyde", "decompose"]},
     {"path": "retrieve.context_window", "label": "Context window", "effect": "instant", "values": [0, 1, 2]},
     {"path": "retrieve.top_k", "label": "Top k", "effect": "instant", "values": [3, 5, 8, 12]},
     {"path": "rerank.type", "label": "Reranker", "effect": "instant", "values": ["none", "cross_encoder"]},
+    # Only answer grading (Auto-Optimize) tells these cells apart: retrieval scores are identical.
+    {"path": "verify.type", "label": "Grounding check", "effect": "instant", "values": ["none", "grounding_check"],
+     "answers_only": True},
 ]
 
 
@@ -79,6 +82,7 @@ def expand_grid(base: dict[str, Any], axes: list[dict[str, Any]]) -> list[dict[s
     'invalid' cells with the validation message; duplicates are dropped."""
     if not axes:
         raise SweepError("Pick at least one axis to vary.")
+    base = with_defaults(base)  # a version saved before a slot existed still sweeps it
     paths = [a["path"] for a in axes]
     if len(set(paths)) != len(paths):
         raise SweepError("Each axis can appear only once.")
@@ -120,9 +124,14 @@ def pareto(points: list[tuple[float, float]]) -> list[bool]:
     return [not any(q2 >= q and c2 <= c and (q2 > q or c2 < c) for q2, c2 in points) for q, c in points]
 
 
+def cost_axis(cell: dict[str, Any]) -> int:
+    """Tokens a query sends to LLMs (query_tokens); context tokens on sweeps from before it existed."""
+    return cell["metrics"].get("query_tokens", cell["metrics"]["ctx_tokens"])
+
+
 def mark_pareto(cells: list[dict[str, Any]]) -> None:
     done = [c for c in cells if c["status"] == "ready"]
-    for c, on in zip(done, pareto([(c["metrics"]["mrr"], c["metrics"]["ctx_tokens"]) for c in done])):
+    for c, on in zip(done, pareto([(c["metrics"]["mrr"], cost_axis(c)) for c in done])):
         c["pareto"] = on
 
 
@@ -137,10 +146,15 @@ async def _save(sweep_id: str, cells: list[dict[str, Any]], status: str | None =
 
 def to_grade(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Successive halving's second rung: the top quarter of finished cells by MRR
-    (ties -> fewer context tokens), at least 1 and at most MAX_GRADED."""
-    done = sorted((c for c in cells if c["status"] == "ready"),
-                  key=lambda c: (-c["metrics"]["mrr"], c["metrics"]["ctx_tokens"]))
-    return done[:min(MAX_GRADED, max(1, math.ceil(len(done) * GRADE_FRACTION)))] if done else []
+    (ties -> fewer context tokens), at least 1 and at most MAX_GRADED. Cells tied with a picked one
+    on both MRR and context tokens come along (within the cap): they differ only in answer-side
+    settings (model, grounding check), which only answer grading can tell apart."""
+    done = sorted((c for c in cells if c["status"] == "ready"), key=lambda c: (-c["metrics"]["mrr"], cost_axis(c)))
+    n = min(MAX_GRADED, max(1, math.ceil(len(done) * GRADE_FRACTION))) if done else 0
+    picked = {(c["metrics"]["mrr"], cost_axis(c)) for c in done[:n]}
+    while n < min(MAX_GRADED, len(done)) and (done[n]["metrics"]["mrr"], cost_axis(done[n])) in picked:
+        n += 1
+    return done[:n]
 
 
 def near_leader(cells: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -250,10 +264,10 @@ async def record_fingerprint(sweep: dict[str, Any], cells: list[dict[str, Any]],
     Best effort: instrumentation must never fail the sweep."""
     try:
         done = sorted((c for c in cells if c["status"] == "ready"),
-                      key=lambda c: (-c["metrics"]["mrr"], c["metrics"]["ctx_tokens"]))
+                      key=lambda c: (-c["metrics"]["mrr"], cost_axis(c)))
         if len(done) < 2:
             return  # nothing was compared
-        pick = ("mrr", "hit_at_1", "hit_at_k", "ctx_tokens", "context_hit")
+        pick = ("mrr", "hit_at_1", "hit_at_k", "ctx_tokens", "query_tokens", "context_hit")
 
         def score(c: dict[str, Any]) -> dict[str, Any]:
             return {k: c["metrics"].get(k) for k in pick}

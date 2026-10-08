@@ -1,16 +1,20 @@
 /** Types mirrored from frontend/API.md (authoritative backend contract). */
 
-export type Slot = 'parse' | 'chunk' | 'embed' | 'vector_store' | 'retrieve' | 'rerank' | 'prompt' | 'generate'
+export type Slot =
+  | 'parse' | 'chunk' | 'embed' | 'vector_store' | 'cache' | 'compute' | 'retrieve' | 'rerank' | 'prompt' | 'generate'
+  | 'verify'
 export type Effect = 'rebuild' | 'instant'
 
 /** Pipeline order. */
-export const SLOTS: readonly Slot[] = ['parse', 'chunk', 'embed', 'vector_store', 'retrieve', 'rerank', 'prompt', 'generate']
+export const SLOTS: readonly Slot[] = [
+  'parse', 'chunk', 'embed', 'vector_store', 'cache', 'compute', 'retrieve', 'rerank', 'prompt', 'generate', 'verify',
+]
 
 export interface NodeConfig {
   type: string
   [param: string]: unknown
 }
-/** A pipeline: every slot → { type, ...params }. Always contains all 8 slots. */
+/** A pipeline: every slot → { type, ...params }. Always contains all 11 slots. */
 export type PipelineConfig = Record<Slot, NodeConfig>
 
 export interface PipelineFieldError {
@@ -234,12 +238,24 @@ export interface Document {
 }
 /** OKF document fields (FR-2.30). From Markdown front matter or the Documents tab; editing never rebuilds. */
 export interface DocumentOkf {
+  /** OKF's one required key in a bundle (Guide, FAQ, Reference…); any value. */
+  type?: string
   status?: string
   /** ISO date */
   stale_after?: string
-  /** true or an ISO date */
+  /** true, an ISO review date, or provenance like "human:alice@2026-05-01" / "process:ci" / "agent:writer" */
   verified?: boolean | string
+  /** ISO timestamp the source says it was generated */
+  generated?: string
   sources?: string[]
+}
+export interface OkfImportResult {
+  created: { id: string; filename: string }[]
+  duplicates: { id: string; filename: string }[]
+  /** Non-Markdown files in the bundle (references, data, code) — not indexed. */
+  skipped: { path: string; reason: string }[]
+  errors: { path: string; error: string }[]
+  job_id: string | null
 }
 export interface UploadResult {
   created: { id: string; filename: string }[]
@@ -277,6 +293,7 @@ export type JobStage =
   | 'fetch' | 'parse' | 'embed' | 'store' | 'keywords' | 'ready'
   | 'index' | 'generate' | 'validate' | 'evaluate' | 'sweep'
   | 'retrieve' | 'judge' | 'recheck' | 'scan' | 'contradictions' | 'answer' | 'grade' | 'grade_cells' | 'rejudge'
+  | 'attack' | 'train' | 'bootstrap' | 'propose' | 'select' | 'test'
 export const JOB_STAGES: readonly JobStage[] = ['fetch', 'parse', 'embed', 'store', 'keywords', 'ready']
 
 export interface JobDoneResult {
@@ -341,10 +358,141 @@ export interface Citation {
   page_end: number | null
   heading_path: string
   spans: [number, number][]
+  /** Grounding check: does this source support the claims citing it? Absent when Verify is off. */
+  support?: Verdict | null
+}
+export type Verdict = 'yes' | 'partial' | 'no'
+/** Result of the grounding check (Verify slot). `grounded`/`score` are null when the check call failed. */
+export interface Verification {
+  status: 'ok' | 'error'
+  grounded: boolean | null
+  score: number | null
+  claims: { claim: string; supported: Verdict; cited: Record<string, Verdict> }[]
+  /** Source number → worst verdict across the claims citing it. */
+  citations: Record<string, Verdict>
+  /** 0 = first answer; 1+ = after that many retries with more context. */
+  attempt: number
+  error?: string
 }
 export type TraceStepName =
   | 'embed_query' | 'dense_search' | 'keyword_search' | 'exact_search' | 'fuse' | 'pin' | 'mmr'
-  | 'rerank' | 'prompt' | 'generate' | 'query_expansion' | 'context_window'
+  | 'rerank' | 'prompt' | 'generate' | 'query_expansion' | 'context_window' | 'verify' | 'agent' | 'cache_lookup'
+  | 'output_validation' | 'okf_policy' | 'compute_route' | 'compute' | 'execution'
+/** Chat-to-build (FR-3.25): a proposed draft and its diff; nothing is saved. */
+export interface BuildChatResult {
+  config: PipelineConfig
+  changes: Change[]
+  explanation: string
+  attempts: number
+  rebuild?: boolean
+  error?: string
+}
+
+/** Config prior (FR-3.27). */
+export interface ConfigPrior {
+  /** prior = predicted from sweeps on similar corpora; rules = no history, rule-based recommender. */
+  source: 'prior' | 'rules'
+  history: number
+  fingerprint: Record<string, unknown>
+  suggestions: {
+    path: string
+    value: string | number | boolean
+    /** null for rules (not measured). */
+    confidence: number | null
+    votes?: number
+    sweeps?: number
+    mean_similarity?: number
+    reason?: string
+    current?: boolean
+    skipped?: string
+  }[]
+  config: PipelineConfig
+  verify_axes: { path: string; values: (string | number | boolean)[] }[]
+}
+
+/** Recipe gallery (FR-3.26). */
+export interface Recipe {
+  id: string
+  name: string
+  description: string
+  tags: string[]
+  builtin: boolean
+  config: PipelineConfig
+  created_at: string | null
+  source_project?: string | null
+}
+
+/** API keys & usage (FR-3.23). */
+export interface ApiKey {
+  id: string
+  name: string
+  scope: 'chat' | 'admin'
+  project_id: string | null
+  /** First 9 characters, to recognise it. */
+  prefix: string
+  created_at: string
+  last_used_at: string | null
+  revoked_at: string | null
+}
+export interface UsageReport {
+  days: number
+  daily: { day: string; requests: number; errors: number; tokens_in: number; tokens_out: number; cost_usd: number; api: number }[]
+  total: { requests: number; errors: number; tokens_in: number; tokens_out: number; cost_usd: number; api: number; playground: number }
+  latency: { p50_ms: number | null; p95_ms: number | null }
+  by_key: { id: string; name: string; prefix: string; requests: number }[]
+}
+
+/** Attested Computation (FR-3.21). */
+export interface DataTable { table: string; columns: { name: string; type: string }[]; rows: number }
+export interface ComputationParam {
+  name: string
+  type: 'integer' | 'number' | 'string' | 'date'
+  required: boolean
+  description: string
+  options: string[] | null
+}
+export interface ComputationSpec {
+  name: string
+  description: string
+  parameters: ComputationParam[]
+  sql: string
+  attester: { min_rows: number; max_rows: number; columns: string[]; non_null: boolean; bounds: Record<string, [number | null, number | null]> }
+  unit: string
+}
+export interface Computation extends ComputationSpec { id: string; created_at: string; updated_at: string }
+export interface ComputeReceipt {
+  name: string
+  computation_id?: string
+  parameters: Record<string, unknown>
+  sql: string
+  result: { columns: string[]; rows: unknown[][]; truncated: boolean; ms: number } | null
+  checks: { check: string; ok: boolean; detail: string }[]
+  /** Only an attested result is shown as the answer. */
+  attested: boolean
+  answer: string | null
+  error?: string
+}
+
+/** Code check (verify.type = execution_check, FR-3.13–3.16). */
+export type ExecutionStatus = 'verified' | 'unverified' | 'ran_without_tests' | 'missing_dependency' | 'sandbox_unavailable' | 'not_applicable'
+export interface Execution {
+  status: ExecutionStatus
+  /** provided (the question's own) · doctest (>>> examples in the docs) · generated (weaker evidence) · none */
+  test_source?: 'provided' | 'doctest' | 'generated' | 'none'
+  tests?: string
+  attempts?: number
+  steps: { step: number; ok: boolean; stage?: string; tests_run?: number | null; detail: string; ms: number }[]
+  error?: string
+}
+
+/** Answered from the semantic cache (cache slot): the earlier question it matched. */
+export interface CacheHit {
+  question: string
+  similarity: number
+  created_at: string
+  /** The run that produced the cached answer. */
+  run_id: string | null
+}
 export interface TraceStep {
   seq: number
   step: TraceStepName
@@ -353,6 +501,8 @@ export interface TraceStep {
   tokens_out: number
   cost_usd: number
   payload: Record<string, unknown>
+  /** Offset from the run's start; null/absent on runs recorded before it existed. */
+  start_ms?: number | null
 }
 export interface ChatTotals {
   ms: number
@@ -366,6 +516,10 @@ export type ChatEvent =
   | { type: 'run'; run_id: string; version: number; build_id: string; store: string }
   | { type: 'retrieval'; results: RetrievedChunk[]; trace: TraceStep[] }
   | { type: 'token'; text: string }
+  | { type: 'verifying'; what?: 'code' }
+  | { type: 'execution'; execution: Execution }
+  | { type: 'verify'; verification: Verification }
+  | { type: 'retry'; attempt: number; reason: string }
   | {
       type: 'done'
       run_id: string
@@ -375,6 +529,12 @@ export type ChatEvent =
       trace: TraceStep[]
       totals: ChatTotals
       truncated: boolean
+      verification: Verification | null
+      /** Set when the answer came from the semantic cache (no retrieval, no LLM call). */
+      cache?: CacheHit | null
+      /** Compute slot: the computation the question was routed to (attested or not). */
+      computation?: ComputeReceipt | null
+      execution?: Execution | null
     }
   | { type: 'error'; code: string; message: string }
 
@@ -423,6 +583,10 @@ export interface RunDetail extends RunSummary {
     retrieved?: RetrievedChunk[]
     citations?: Citation[]
     messages?: unknown[]
+    verification?: Verification | null
+    cache?: CacheHit | null
+    computation?: ComputeReceipt | null
+    execution?: Execution | null
     [k: string]: unknown
   } | null
   events: TraceStep[]
@@ -513,6 +677,8 @@ export interface EvalItem {
   closed_book_answer: string | null
   /** Required facts a complete answer states (FR-2.6); [] on older items. */
   facets: string[]
+  /** Python asserts the answer's code must pass (FR-3.17); null when none. */
+  tests?: string | null
 }
 export interface EvalSet {
   id: string
@@ -568,6 +734,15 @@ export interface AnswerSummary {
   judge?: string
   /** Sweep cell re-judged 3x with the per-question median (its interval overlapped the leader's). */
   rejudged?: boolean
+  /** Answer time per question: generation + grounding checks + retries (absent on older runs). */
+  answer_p50_ms?: number
+  answer_p95_ms?: number
+  /** Grounding-check roll-up — only when the version's Verify slot is on. */
+  verify?: { checked: number; errors: number; pass_rate: number | null; retried: number; mean_score: number | null }
+  /** FR-3.17: share of questions with tests whose answer's code passed them in the sandbox. */
+  exec_verified_rate?: number
+  exec_verified_ci?: [number, number]
+  execution?: Record<ExecutionStatus, number> & { tested: number }
 }
 
 export interface EvalConfigSummary {
@@ -648,6 +823,95 @@ export interface EvalRunDetail extends EvalRun {
 export type SweepStatus = 'running' | 'ready' | 'failed' | 'cancelled'
 export type SweepCellStatus = 'pending' | 'running' | 'ready' | 'failed' | 'invalid' | 'skipped'
 
+/** Domain embedding adapter (FR-3.10): a query-side matrix trained on an eval set. */
+export interface RankScores { recall_at_k: number; mrr: number; n: number }
+export interface Adapter {
+  id: string
+  version_id: string | null
+  version: number | null
+  eval_set_id: string | null
+  status: 'running' | 'ready' | 'failed'
+  error: string | null
+  created_at: string
+  embed_key: string | null
+  dim: number | null
+  metrics: {
+    questions: number
+    train: number
+    /** Scored on questions the adapter never saw (dense-only ranking of every chunk). */
+    holdout: { before: RankScores; after: RankScores }
+    /** In-sample: the saved adapter, refitted on every question. */
+    full: { before: RankScores; after: RankScores }
+    chunks: number
+    dim: number
+    generalises: boolean
+    /** Beat the plain embedder in cross-validation AND on the unseen holdout (absent on older adapters). */
+    recommended?: boolean
+    cv_passed?: boolean
+    params: Record<string, number>
+    /** Mean held-out-fold MRR per λ tried, and for the plain embedder (`identity`). */
+    cv?: Record<string, number>
+  } | null
+}
+
+/** Prompt optimisation run (FR-3.11). Scores: token F1 vs the gold answer, halved without citations. */
+export interface PromptRun {
+  id: string
+  version_id: string | null
+  version: number | null
+  eval_set_id: string | null
+  status: 'running' | 'ready' | 'failed'
+  error: string | null
+  created_at: string
+  result: {
+    splits: { train: number; val: number; test: number }
+    candidates: { extra_instructions: string; examples: string; val_score: number; answered: number; is_current: boolean }[]
+    best: { extra_instructions: string; examples: string; is_current: boolean }
+    /** On test questions never used to choose. */
+    test: { before: number; after: number; n: number }
+    improves: boolean
+    demos: number
+    samples: { question: string; gold: string; before: string; before_score: number; after: string | null; after_score: number | null }[]
+  } | null
+}
+
+/** Injection-resistance test (FR-3.7/3.8). */
+export type InjectionOutcome = 'hijacked' | 'caught_by_check' | 'caught_by_filter' | 'resisted'
+export type InjectionDefence = 'data_rule' | 'delimited' | 'source_labels' | 'output_validation' | 'grounding_check'
+export interface InjectionVariant {
+  id: 'current' | 'none' | 'all' | InjectionDefence
+  label: string
+  defences: InjectionDefence[]
+  trials: number
+  hijacked: number
+  caught_by_check: number
+  caught_by_filter: number
+  resisted: number
+  /** 1 − hijacked / trials; null when no trial finished. */
+  score: number | null
+  /** 95% Wilson interval for score (absent on older runs). */
+  score_ci?: [number, number]
+  by_payload: Record<string, { trials: number; hijacked: number }>
+}
+export interface InjectionRun {
+  id: string
+  version_id: string | null
+  version: number | null
+  eval_set_id: string | null
+  status: 'running' | 'ready' | 'failed'
+  error: string | null
+  created_at: string
+  options: { questions?: number; compare?: boolean }
+  metrics: {
+    questions: number
+    failed_trials: number
+    payloads: { id: string; label: string; goal: string }[]
+    variants: InjectionVariant[]
+  } | null
+  /** Detail only: one row per trial. */
+  results?: { variant: string; payload: string; outcome: InjectionOutcome; answer: string; removed: string[]; question: string; item_id: string }[]
+}
+
 export interface SweepAxis {
   path: string
   label: string
@@ -661,6 +925,8 @@ export interface SweepAxis {
   scores?: Record<string, number | null>
   /** Suggested starting values, e.g. the top 3 embedders by MTEB retrieval. */
   seed?: SweepAxis['values']
+  /** Only answer-side settings change: needs answer grading (Auto-Optimize) to compare. */
+  answers_only?: boolean
 }
 export interface SweepAxes {
   axes: SweepAxis[]
@@ -671,9 +937,15 @@ export interface SweepCell {
   config: PipelineConfig | null
   status: SweepCellStatus
   error: string | null
-  metrics?: EvalMetrics & { ctx_tokens: number; context_hit: number }
+  metrics?: EvalMetrics & {
+    ctx_tokens: number
+    context_hit: number
+    /** Tokens a query sends to LLMs: the answer prompt's context + retrieval-side calls (query expansion,
+     *  agent planning). The Pareto cost axis; absent on sweeps from before it existed (use ctx_tokens). */
+    query_tokens?: number
+  }
   build_id?: string
-  /** On the quality (MRR) vs. context-token Pareto frontier. */
+  /** On the quality (MRR) vs. LLM-tokens-per-query Pareto frontier. */
   pareto?: boolean
   /** Auto-Optimize: why answer grading failed for this cell. */
   grade_error?: string
@@ -757,8 +1029,28 @@ export interface HealthResult {
   contradictions: PassagePair[]
   pairs_checked: number
   usage: { questions: number; chunks: number; chunks_used: number; unused_documents: number; documents: DocumentUsage[] }
+  /** Against the previous ready report (null for the first). */
+  trend?: HealthTrend | null
+}
+export interface HealthTrend {
+  previous_covered_rate: number | null
+  covered_rate_change: number | null
+  /** Questions in both reports: gap → covered, covered → gap. */
+  resolved: number
+  regressed: number
+  new_gaps: number
+  new_questions: number
+}
+/** Production loop (FR-3.22). */
+export interface HealthMonitor {
+  settings: { enabled: boolean; every_n: number; sources: 'all' | 'api'; stale_days: number }
+  since_last_report: { last_report_at: string | null; api: number; playground: number; all: number }
 }
 export interface HealthReport {
+  /** manual, or auto (started by the production-loop monitor). */
+  trigger?: 'manual' | 'auto'
+  /** Which history questions it used: all, or API traffic only. */
+  sources?: 'all' | 'api'
   id: string
   project_id: string
   version_id: string

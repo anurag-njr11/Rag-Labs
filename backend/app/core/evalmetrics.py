@@ -118,8 +118,51 @@ def answer_summary(grades: list[dict[str, Any]]) -> dict[str, Any]:
         "relevant_rate": round(count("relevant", "yes") / n, 4) if n else 0.0,
         "context_precision": mean([g.get("context_precision") for g in graded]),
         "context_recall": mean([g.get("context_recall") for g in graded]),
-        "cost_per_1k": per_1k([g.get("cost_usd") for g in graded]),  # expansion + answer generation
+        "cost_per_1k": per_1k([g.get("cost_usd") for g in graded]),  # expansion + answer generation (+ checks)
+        **answer_latency(graded),
+        **verify_summary(graded),
+        **execution_summary(graded),
     }
+
+
+def execution_summary(graded: list[dict[str, Any]]) -> dict[str, Any]:
+    """FR-3.17: execution-verified correctness — the share of questions *with tests* whose answer's code
+    passed them in the sandbox. Deterministic given the answers. Absent when no question had tests or
+    no code ran."""
+    ex = [g["execution"] for g in graded if g.get("execution")]
+    tested = [e for e in ex if e.get("has_tests") and e.get("status") in ("verified", "unverified")]
+    out: dict[str, Any] = {}
+    if tested:
+        ok = sum(e["status"] == "verified" for e in tested)
+        out["exec_verified_rate"] = round(ok / len(tested), 4)
+        out["exec_verified_ci"] = list(wilson(ok, len(tested)))
+    if ex:
+        out["execution"] = {s: sum(e.get("status") == s for e in ex) for s in
+                            ("verified", "unverified", "ran_without_tests", "missing_dependency", "sandbox_unavailable",
+                             "not_applicable")}
+        out["execution"]["tested"] = len(tested)
+    return out
+
+
+def answer_latency(graded: list[dict[str, Any]]) -> dict[str, Any]:
+    """p50/p95 of answer time (generation + grounding checks + retries); absent on older runs."""
+    ms = [g["answer_ms"] for g in graded if g.get("answer_ms") is not None]
+    return {"answer_p50_ms": round(percentile(ms, 0.5), 1), "answer_p95_ms": round(percentile(ms, 0.95), 1)} if ms else {}
+
+
+def verify_summary(graded: list[dict[str, Any]]) -> dict[str, Any]:
+    """Grounding-check roll-up (Verify slot on): share of answers it passed, how many needed a
+    retry with more context, and how many checks failed to run. Absent when the check was off."""
+    v = [g["verification"] for g in graded if g.get("verification")]
+    if not v:
+        return {}
+    ok = [x for x in v if x["status"] == "ok"]
+    return {"verify": {
+        "checked": len(ok), "errors": len(v) - len(ok),
+        "pass_rate": round(sum(1 for x in ok if x["grounded"]) / len(ok), 4) if ok else None,
+        "retried": sum(1 for x in v if x["attempt"] > 0),
+        "mean_score": mean([x["score"] for x in ok]),
+    }}
 
 
 def mean(values: list[float | None]) -> float | None:

@@ -37,6 +37,15 @@ def test_to_grade_takes_top_quarter():
     assert sweep.to_grade([]) == []
 
 
+def test_to_grade_brings_cells_tied_on_retrieval():
+    # e.g. grounding check off/on: same retrieval, so only answer grading separates them
+    cells = [{"status": "ready", "metrics": {"mrr": m, "ctx_tokens": t}} for m, t in
+             [(0.9, 300), (0.9, 300), (0.9, 300), (0.5, 100), (0.4, 100), (0.3, 100), (0.2, 100), (0.1, 1)]]
+    assert len(sweep.to_grade(cells)) == 3  # quarter of 8 = 2, plus the third tied cell
+    many = [{"status": "ready", "metrics": {"mrr": 0.9, "ctx_tokens": 300}} for _ in range(8)]
+    assert len(sweep.to_grade(many)) == sweep.MAX_GRADED
+
+
 async def _one_item_set(project):
     doc = await db.fetch_one("SELECT id FROM documents WHERE filename='uploads.md'")
     await _new_set()
@@ -54,7 +63,7 @@ async def _one_item_set(project):
 def _fakes(monkeypatch, calls=None):
     calls = [] if calls is None else calls
 
-    async def fake_answer(cfg, question, final):
+    async def fake_answer(cfg, question, final, build=None, tests=None):
         return {"answer": "Three times [1]." if "retried" in question else "No limit [1].", "sources": ["s"]}
 
     async def fake_complete(provider, opts, system, user):
@@ -225,7 +234,7 @@ async def test_grading_reports_facets_specificity_relevancy_and_uses_the_judge(p
         await c.execute("UPDATE eval_items SET facets=? WHERE id='i1'", (db.dumps(["three times", "backoff"]),))
     seen = {}
 
-    async def fake_answer(cfg, question, final):
+    async def fake_answer(cfg, question, final, build=None, tests=None):
         return {"answer": "It retries [1]." if "retried" in question else "Uploads are limited.", "sources": ["a", "b"]}
 
     async def fake_complete(provider, opts, system, user):

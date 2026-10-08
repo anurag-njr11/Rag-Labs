@@ -139,3 +139,41 @@ async def test_custom_provider_requires_base_url(clean_env, database):
 def test_unknown_provider_is_a_friendly_error(clean_env):
     with pytest.raises(llm.ProviderError, match="Settings"):
         llm.client("nope")
+
+
+async def test_retrying_backs_off_only_on_retryable_errors():
+    calls = []
+
+    async def flaky():
+        calls.append(1)
+        if len(calls) < 3:
+            raise llm.ProviderError("rate limit", retryable=True)
+        return "ok"
+
+    assert await llm.retrying(flaky, base_s=0) == "ok" and len(calls) == 3
+
+    async def bad_key():
+        calls.append(1)
+        raise llm.ProviderError("rejected the API key")
+
+    calls.clear()
+    with pytest.raises(llm.ProviderError):
+        await llm.retrying(bad_key, base_s=0)
+    assert len(calls) == 1  # not retried
+
+    async def always():
+        raise llm.ProviderError("overloaded", retryable=True)
+
+    with pytest.raises(llm.ProviderError):
+        await llm.retrying(always, attempts=2, base_s=0)
+
+
+def test_rate_limit_errors_are_retryable():
+    import httpx
+    import openai
+
+    resp = httpx.Response(429, request=httpx.Request("POST", "http://x"))
+    err = llm.friendly_error("nvidia", openai.RateLimitError("slow down", response=resp, body=None))
+    assert err.retryable
+    resp = httpx.Response(401, request=httpx.Request("POST", "http://x"))
+    assert not llm.friendly_error("nvidia", openai.AuthenticationError("no", response=resp, body=None)).retryable

@@ -160,6 +160,13 @@ def _readme(project: dict[str, Any], version: dict[str, Any], cfg: PipelineConfi
         " (set `FASTEMBED_CACHE_PATH` to put them elsewhere); later runs reuse them offline.\n"
         if local else ""
     )
+    left_out = [text for slot, text in (
+        ("verify", "the grounding check (Verify) — answers from this export are not checked against their sources"),
+        ("cache", "the semantic answer cache — every question is answered from scratch"),
+        ("compute", "attested computations — numeric questions are answered from the documents"),
+    ) if (cfg.get(slot) or {}).get("type", "none") != "none"]
+    not_exported = ("\n**Not included** (these run only inside RAGLabs): " + "; ".join(left_out) + ".\n"
+                    if left_out else "")
     return f"""# {project['name']} — standalone RAG export
 
 Exported from RAGLabs: project "{project['name']}", version {version['version']}.
@@ -167,7 +174,7 @@ Exported from RAGLabs: project "{project['name']}", version {version['version']}
 Pipeline: parse={cfg['parse']['type']} · chunk={cfg['chunk']['type']} · embed={cfg['embed']['type']} · \
 retrieve={cfg['retrieve']['type']} · rerank={cfg['rerank']['type']} · prompt={cfg['prompt']['type']} · \
 generate={cfg['generate']['type']}
-
+{not_exported}
 This bundle runs with **zero** dependency on the RAGLabs backend, the `app` package, or any
 vector-store library (FAISS/Chroma/Qdrant/LanceDB) — retrieval is brute-force NumPy cosine/dot/L2
 search over the vectors in `data/vectors.npy`, which is fine at this corpus's chunk count.
@@ -214,7 +221,9 @@ Endpoints:
 - `config.json` — the resolved pipeline configuration this was exported from.
 - `data/chunks.jsonl` — one JSON object per indexed chunk.
 - `data/vectors.npy` — float32 embedding matrix, row-aligned with `chunks.jsonl`.
-""" + ("- `models/` — created on first run; downloaded local models.\n" if local else "")
+""" + ("- `data/adapter.npy` — the embedding adapter trained on your eval set, applied to every question "
+       "embedding.\n" if cfg["retrieve"].get("adapter") else "") + (
+        "- `models/` — created on first run; downloaded local models.\n" if local else "")
 
 
 async def build_export_zip(project: dict[str, Any], version: dict[str, Any], build: dict[str, Any]) -> bytes:
@@ -225,8 +234,9 @@ async def build_export_zip(project: dict[str, Any], version: dict[str, Any], bui
     rows = await db.fetch_all(
         "SELECT c.id, c.document_id, c.ordinal, c.text, c.text_sha, c.page_start, c.page_end, c.heading_path,"
         " c.is_table,"
-        " d.filename AS document, d.source_url"
+        " d.filename AS document, d.source_url, o.metadata AS okf"
         " FROM chunks c JOIN documents d ON d.id = c.document_id"
+        " LEFT JOIN document_okf o ON o.document_id = d.id"
         " WHERE c.build_id = ? ORDER BY d.filename, c.ordinal",
         (build["id"],),
     )
@@ -259,6 +269,8 @@ async def build_export_zip(project: dict[str, Any], version: dict[str, Any], bui
             "document": r["document"], "source_url": r["source_url"],
             "page_start": r["page_start"], "page_end": r["page_end"],
             "heading_path": r["heading_path"], "is_table": bool(r["is_table"]), "text": r["text"],
+            # retrieve.okf_policy: what the document says about itself
+            "okf": {k: v for k, v in db.loads(r["okf"], {}).items() if k in ("status", "stale_after", "verified")},
         }, ensure_ascii=False))
     if missing:
         raise RuntimeError(
@@ -267,6 +279,15 @@ async def build_export_zip(project: dict[str, Any], version: dict[str, Any], bui
 
     vectors_buf = io.BytesIO()
     np.save(vectors_buf, matrix)
+    # FR-3.12: a query-side embedding adapter ships with the export (same skip rule as the live engine).
+    adapter_buf = None
+    if cfg["retrieve"].get("adapter"):
+        from ..engine import retrieval
+
+        w = await retrieval.adapter_matrix(project["id"], cfg["retrieve"]["adapter"], embed_key)
+        if w is not None:
+            adapter_buf = io.BytesIO()
+            np.save(adapter_buf, w)
 
     buf = io.BytesIO()
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
@@ -277,6 +298,8 @@ async def build_export_zip(project: dict[str, Any], version: dict[str, Any], bui
                                               indent=2, ensure_ascii=False))
         zf.writestr("data/chunks.jsonl", "\n".join(chunk_lines) + ("\n" if chunk_lines else ""))
         zf.writestr("data/vectors.npy", vectors_buf.getvalue())
+        if adapter_buf is not None:
+            zf.writestr("data/adapter.npy", adapter_buf.getvalue())
         zf.write(_RAG_TEMPLATE_PATH, "rag.py")
         zf.writestr("app/__init__.py", "")
         zf.writestr("app/main.py", SERVER_MAIN)

@@ -46,7 +46,8 @@ export default function ProvidersPage() {
   const [editing, setEditing] = useState<{ provider: Provider | null; create: boolean } | null>(null)
   const [toRemove, setToRemove] = useState<Provider | null>(null)
 
-  const enabled = providers.data ?? []
+  // Pinned presets (Gemini, NVIDIA) are always offered to Generate, but until set up they belong with the rest.
+  const enabled = (providers.data ?? []).filter((p) => p.source !== 'preset')
   const enabledNames = new Set(enabled.map((p) => p.name))
   const more = (presets.data ?? []).filter((p) => !enabledNames.has(p.name))
 
@@ -76,6 +77,8 @@ export default function ProvidersPage() {
         <h2 id="connected-h" className="mb-3 text-title text-text-primary">Generate options</h2>
         {providers.isLoading ? (
           <div className="flex justify-center py-12 text-text-tertiary"><Spinner size={20} /></div>
+        ) : enabled.length === 0 ? (
+          <EmptyState icon={<Plug aria-hidden />} title="No provider connected yet" description="Connect one below to generate answers." />
         ) : (
           <div className={GRID}>
             {enabled.map((p) => (

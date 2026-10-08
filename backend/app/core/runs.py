@@ -14,14 +14,14 @@ from .node import RunContext
 
 async def start_run(
     *, project_id: str, version_id: str | None, build_id: str | None,
-    question: str, kind: str = "chat",
+    question: str, kind: str = "chat", source: str | None = None, api_key_id: str | None = None,
 ) -> str:
     run_id = db.new_id()
     async with db.tx() as c:
         await c.execute(
-            "INSERT INTO runs (id, project_id, version_id, build_id, kind, question, created_at)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (run_id, project_id, version_id, build_id, kind, question, db.now_iso()),
+            "INSERT INTO runs (id, project_id, version_id, build_id, kind, question, source, api_key_id, created_at)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            (run_id, project_id, version_id, build_id, kind, question, source, api_key_id, db.now_iso()),
         )
     return run_id
 
@@ -34,10 +34,10 @@ async def finish_run(
     totals = ctx.totals
     async with db.tx() as c:
         await c.executemany(
-            "INSERT INTO trace_events (run_id, seq, step, ms, tokens_in, tokens_out, cost_usd, payload)"
-            " VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO trace_events (run_id, seq, step, ms, tokens_in, tokens_out, cost_usd, payload, start_ms)"
+            " VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             [
-                (run_id, e.seq, e.step, e.ms, e.tokens_in, e.tokens_out, e.cost_usd, db.dumps(e.payload))
+                (run_id, e.seq, e.step, e.ms, e.tokens_in, e.tokens_out, e.cost_usd, db.dumps(e.payload), e.start_ms)
                 for e in ctx.events
             ],
         )
@@ -62,7 +62,7 @@ async def get_run(run_id: str) -> dict[str, Any] | None:
     if row is None:
         return None
     events = await db.fetch_all(
-        "SELECT seq, step, ms, tokens_in, tokens_out, cost_usd, payload"
+        "SELECT seq, step, ms, tokens_in, tokens_out, cost_usd, payload, start_ms"
         " FROM trace_events WHERE run_id=? ORDER BY seq",
         (run_id,),
     )
@@ -76,7 +76,7 @@ async def get_run(run_id: str) -> dict[str, Any] | None:
 async def list_runs(project_id: str, limit: int = 50) -> list[dict[str, Any]]:
     rows = await db.fetch_all(
         "SELECT id, version_id, question, status, latency_ms, tokens_in, tokens_out,"
-        " cost_usd, created_at FROM runs WHERE project_id=? ORDER BY created_at DESC LIMIT ?",
+        " cost_usd, source, created_at FROM runs WHERE project_id=? ORDER BY created_at DESC LIMIT ?",
         (project_id, limit),
     )
     return rows

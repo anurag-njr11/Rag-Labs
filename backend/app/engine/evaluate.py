@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import asyncio
 import copy
-import hashlib
 import json
 import math
 import re
@@ -25,7 +24,8 @@ from ..ingest.jobs import Job
 from ..llm import provider as llm
 from ..nodes.chunk import approx_tokens
 from ..nodes.prompt import packed_text
-from . import chat, retrieval, stores, sync
+from ..nodes import verify as verify_node
+from . import chat, codecheck, retrieval, stores, sync
 
 GEN_BATCH = 5
 VAL_BATCH = 10
@@ -105,13 +105,16 @@ async def complete(provider: str, opts: dict[str, Any], system: str, user: str) 
     opts = {"temperature": 0.3, **opts}  # judge calls pass temperature=0 in opts
     if not opts["model"]:
         opts["model"] = await llm.resolve_model(provider, "chat")
-    async with _llm_slots:
+    async def call() -> Any:
         try:
-            resp = await llm.client(provider).chat.completions.create(
+            return await llm.client(provider).chat.completions.create(
                 messages=[{"role": "system", "content": system}, {"role": "user", "content": user}],
                 max_tokens=4096, stream=False, **opts)
         except Exception as e:
             raise llm.friendly_error(provider, e) from e
+
+    async with _llm_slots:
+        resp = await llm.retrying(call)
     return resp.choices[0].message.content or ""
 
 
@@ -160,10 +163,7 @@ def clean_facets(raw: Any) -> list[str]:
     return out[:MAX_FACETS]
 
 
-async def corpus_sha(project_id: str) -> str:
-    """Fingerprint of the project's documents: sha256 of their sorted content hashes (FR-2.5)."""
-    rows = await db.fetch_all("SELECT content_sha FROM documents WHERE project_id=?", (project_id,))
-    return hashlib.sha256("\n".join(sorted(r["content_sha"] for r in rows)).encode()).hexdigest()
+corpus_sha = sync.corpus_sha
 
 
 async def _closed_book(provider: str, opts: dict[str, Any], questions: list[str]) -> dict[int, str]:
@@ -371,7 +371,9 @@ async def score_item(build: dict[str, Any], cfg: dict[str, Any], deep: dict[str,
     t0 = time.perf_counter()
     retrieved = await retrieval.retrieve(ctx, build=build, cfg=cfg, question=q)
     final = await retrieval.rerank(ctx, cfg, q, retrieved)
-    ms = (time.perf_counter() - t0) * 1000
+    # A cached LLM step (query expansion, agent run) took ~0 ms here; count the time it really takes,
+    # as cost and tokens already are, so cells that share the cache aren't scored as faster.
+    ms = (time.perf_counter() - t0) * 1000 + sum(e.payload.get("uncached_ms", 0.0) for e in ctx.events)
     rank = M.first_hit_rank(final, item)
     # What the prompt packer would actually send: the cost of a query, and whether
     # the evidence survives the context budget (PRD "context inclusion").
@@ -396,6 +398,7 @@ async def score_item(build: dict[str, Any], cfg: dict[str, Any], deep: dict[str,
         "deep_rank": deep_rank,
         "in_context": in_context,
         "ctx_tokens": sum(approx_tokens(packed_text(r)) for r in included),
+        "llm_tokens": query_tokens(ctx.events),
         "cost_usd": query_cost(ctx.events),
         "ms": round(ms, 1),
         "top": [{"id": r["id"], "document": r["document"], "heading_path": r["heading_path"],
@@ -460,10 +463,14 @@ async def score_config(job: Job, project_id: str, cfg: dict[str, Any], items: li
     metrics["p95_ms"] = round(M.percentile([r["ms"] for r in results], 0.95), 1)
     metrics["context_hit"] = round(sum(r["in_context"] for r in results) / len(results), 4) if results else 0.0
     metrics["ctx_tokens"] = round(sum(r["ctx_tokens"] for r in results) / len(results)) if results else 0
+    # The cost axis: what a query sends to LLMs — the answer prompt's context plus retrieval-side calls
+    # (expansion, agent planning). Equals ctx_tokens when retrieval makes no LLM calls.
+    metrics["query_tokens"] = (round(sum(r["ctx_tokens"] + r["llm_tokens"] for r in results) / len(results))
+                               if results else 0)
     metrics["cost_per_1k"] = M.per_1k([r["cost_usd"] for r in results])  # retrieval stage: query expansion
     metrics["index"] = await stores.index_size(build)
     if answers:
-        todo, label = await grade_answers(job, cfg, items, results, finals, judge)
+        todo, label = await grade_answers(job, cfg, items, results, finals, judge, build)
         metrics["answers"] = {**M.answer_summary(results), "judge": label}
         if judged is not None:
             judged.extend(todo)
@@ -474,16 +481,70 @@ async def score_config(job: Job, project_id: str, cfg: dict[str, Any], items: li
 
 # --- answer grading (LLM) ---------------------------------------------------------
 
-async def generate_answer(cfg: dict[str, Any], question: str, final: list[dict[str, Any]]) -> dict[str, Any]:
-    """Answer exactly as the chat path would (same packer, prompt and model), without streaming."""
-    built = build_node("prompt", cfg["prompt"]).build(question, final)
+async def generate_answer(cfg: dict[str, Any], question: str, final: list[dict[str, Any]],
+                          build: dict[str, Any] | None = None, tests: str | None = None) -> dict[str, Any]:
+    """Answer exactly as the chat path would (same packer, prompt and model), without streaming —
+    including the Verify slot: a grounding check, and its retries with more context (which need
+    `build` to retrieve again). `ms` = answer latency: generation + checks + retries."""
     gen = build_node("generate", cfg["generate"])
-    usage: dict[str, Any] = {}
-    async with _llm_slots:
-        text = "".join([d async for d in gen.stream(built["messages"], usage)])
+    verifier = build_node("verify", cfg.get("verify") or {"type": "none"})
+    checking = isinstance(verifier, verify_node.GroundingCheck)
+    retries = (verifier.config.max_retries if checking and build is not None
+               and verifier.config.on_fail == "retry_with_more_context" else 0)
+    t0 = time.perf_counter()
+    cost: float | None = 0.0
+    attempt_cfg, verification = cfg, None
+    for attempt in range(retries + 1):
+        if attempt:
+            attempt_cfg = verify_node.more_context(attempt_cfg)
+            ctx = RunContext()
+            final = await retrieval.rerank(ctx, attempt_cfg, question, await retrieval.retrieve(
+                ctx, build=build, cfg=attempt_cfg, question=question))
+            cost = add_cost(cost, query_cost(ctx.events))
+        built = build_node("prompt", attempt_cfg["prompt"]).build(question, final)
+        usage: dict[str, Any] = {}
+
+        async def answer() -> str:
+            usage.clear()
+            return "".join([d async for d in gen.stream(built["messages"], usage)])
+
+        async with _llm_slots:
+            text = await llm.retrying(answer)
+        cost = add_cost(cost, llm.cost_usd(gen.provider, gen.model_name, usage.get("tokens_in", 0),
+                                           usage.get("tokens_out", 0)))
+        if not checking:
+            break
+        async with _llm_slots:
+            v = await verifier.check(gen, question, text, built["included"])
+        cost = add_cost(cost, v.pop("cost_usd") if v["status"] == "ok" else 0.0)
+        verification = {"status": v["status"], "grounded": v["grounded"], "score": v["score"],
+                        "attempt": attempt, "claims": len(v["claims"])}
+        if v["grounded"] is not False:
+            break
+    # FR-3.17: a question with tests gets its answer's code executed against them whatever the config —
+    # with the code check on, the model may fix failures; otherwise it's one honest run.
+    execution = None
+    exec_check = isinstance(verifier, verify_node.ExecutionCheck)
+    if exec_check or (tests and codecheck.extract_code(text)):
+        c = verifier.config if exec_check else None
+        res = await codecheck.check(gen, question, text, [x["text"] for x in built["included"]], tests=tests,
+                                    max_steps=c.max_steps if c else 1, allow_generated=bool(c and c.allow_generated_tests),
+                                    timeout_s=c.timeout_s if c else 10)
+        cost = add_cost(cost, llm.cost_usd(gen.provider, gen.model_name, res["tokens_in"], res["tokens_out"])
+                        if res["tokens_in"] or res["tokens_out"] else 0.0)
+        text = res["answer"]
+        execution = {k: res.get(k) for k in ("status", "test_source", "attempts", "error")}
+    if verify_node.output_validation(cfg):
+        text, _ = verify_node.filter_unsourced(text, [c["text"] for c in built["included"]])
     return {"answer": text.strip(), "sources": [c["text"][:GRADE_CONTEXT_CHARS] for c in built["included"]],
-            "cost_usd": llm.cost_usd(gen.provider, gen.model_name, usage.get("tokens_in", 0),
-                                     usage.get("tokens_out", 0))}
+            "cost_usd": cost, "ms": round((time.perf_counter() - t0) * 1000, 1), "verification": verification,
+            "execution": execution}
+
+
+def query_tokens(events: list[TraceEvent]) -> int:
+    """LLM tokens (in + out) one retrieval spent — query expansion, agent planning — counting a
+    cached call at what it cost, like `query_cost`."""
+    return sum(e.payload.get("uncached_tokens", e.tokens_in + e.tokens_out) for e in events)
 
 
 def query_cost(events: list[TraceEvent]) -> float | None:
@@ -614,11 +675,12 @@ async def _judge(job: Job, provider: str, opts: dict[str, Any], todo: list[dict[
 
 async def grade_answers(job: Job, cfg: dict[str, Any], items: list[dict[str, Any]],
                         results: list[dict[str, Any]], finals: list[list[dict[str, Any]]],
-                        judge: dict[str, str] | None = None) -> tuple[list[dict[str, Any]], str]:
+                        judge: dict[str, str] | None = None, build: dict[str, Any] | None = None,
+                        ) -> tuple[list[dict[str, Any]], str]:
     """Fill results[i] with answer + verdicts, then diagnose the in-context failures (modes 4–7).
     Returns (the grader's inputs, judge label)."""
     answered, errors = await gather_tolerant(
-        [generate_answer(cfg, it["question"], f) for it, f in zip(items, finals)], job, "answer")
+        [generate_answer(cfg, it["question"], f, build, it.get("tests")) for it, f in zip(items, finals)], job, "answer")
     cites = asks_for_citations(cfg)
     todo = [{"i": i, "question": it["question"], "gold": it["gold_answer"],
              "facets": db.loads(it.get("facets"), []) or [], **a}
@@ -628,6 +690,12 @@ async def grade_answers(job: Job, cfg: dict[str, Any], items: list[dict[str, Any
     for t in todo:
         r = results[t["i"]]
         r["answer"] = t["answer"]
+        if t.get("ms") is not None:
+            r["answer_ms"] = t["ms"]
+        if t.get("verification"):
+            r["verification"] = t["verification"]
+        if t.get("execution"):
+            r["execution"] = {**t["execution"], "has_tests": bool(items[t["i"]].get("tests"))}
         r["cost_usd"] = add_cost(r.get("cost_usd"), t.get("cost_usd"))
         if cites and (problem := format_problem(t["answer"], len(t["sources"]))):
             r["format_error"] = problem

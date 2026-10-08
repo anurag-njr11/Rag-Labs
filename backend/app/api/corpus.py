@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from .. import db
-from ..engine import health
+from ..engine import health, monitor
 from ..ingest import jobs
 from .eval import _version
 
@@ -19,10 +19,13 @@ class ReportIn(BaseModel):
     questions: list[str] = Field(default_factory=list, max_length=500)
     # Staleness: flag documents whose last-modified date is older than this many days.
     stale_days: int = Field(health.STALE_DAYS, ge=1, le=36500)
+    # "api": only production traffic from the API, not Playground testing (FR-3.22)
+    sources: Literal["all", "api"] = "all"
 
 
 def _out(r: dict[str, Any], full: bool = True) -> dict[str, Any]:
     out = {k: r[k] for k in ("id", "project_id", "version_id", "build_id", "status", "error", "created_at")}
+    out["trigger"], out["sources"] = r.get("trigger") or "manual", r.get("sources") or "all"
     out["version"] = r.get("version")
     result = db.loads(r["result"], None)
     if full:
@@ -32,7 +35,8 @@ def _out(r: dict[str, Any], full: bool = True) -> dict[str, Any]:
             **result["coverage"]["summary"], "topics": len(result["coverage"]["topics"]),
             "contradictions": len(result["contradictions"]), "duplicates": len(result["duplicates"]),
             "unused_documents": result["usage"]["unused_documents"],
-            "stale_documents": len((result.get("staleness") or {}).get("documents", []))}
+            "stale_documents": len((result.get("staleness") or {}).get("documents", [])),
+            "trend": result.get("trend")}
     return out
 
 
@@ -53,11 +57,28 @@ async def create_report(project_id: str, body: ReportIn) -> dict[str, Any]:
     pasted = [q.strip()[:500] for q in body.questions if q.strip()]
     report_id = db.new_id()
     async with db.tx() as c:
-        await c.execute("INSERT INTO corpus_reports (id, project_id, version_id, questions, created_at)"
-                        " VALUES (?,?,?,?,?)", (report_id, project_id, v["id"], db.dumps(pasted), db.now_iso()))
+        await c.execute("INSERT INTO corpus_reports (id, project_id, version_id, questions, trigger, sources, created_at)"
+                        " VALUES (?,?,?,?,?,?,?)", (report_id, project_id, v["id"], db.dumps(pasted), "manual",
+                                                    body.sources, db.now_iso()))
     job = jobs.start("health", project_id, lambda job: health.run_report(job, report_id, project_id, v, pasted,
-                                                                           body.stale_days))
+                                                                           body.stale_days, sources=body.sources))
     return {"report": _out(await _report(project_id, report_id)), "job_id": job.id}
+
+
+@router.get("/monitor")
+async def get_monitor(project_id: str) -> dict[str, Any]:
+    """Production loop: the monitor's settings and real questions since the last report (FR-3.22)."""
+    await _version(project_id, None)
+    return {"settings": (await monitor.settings(project_id)).model_dump(),
+            "since_last_report": await monitor.since_last_report(project_id)}
+
+
+@router.put("/monitor")
+async def put_monitor(project_id: str, body: monitor.MonitorSettings) -> dict[str, Any]:
+    await _version(project_id, None)
+    await monitor.save(project_id, body)
+    job_id = await monitor.maybe_trigger(project_id)  # already past the threshold? start now
+    return {**await get_monitor(project_id), "job_id": job_id}
 
 
 @router.get("/reports")

@@ -31,12 +31,25 @@ class DocumentError(ValueError):
 
 
 class OKF(BaseModel):
-    """Optional OKF document fields (PRD FR-2.30). `usage_count` is computed from runs, never stored."""
+    """Optional OKF document fields (PRD FR-2.30, FR-3.18). `usage_count` is computed from runs, never stored."""
     model_config = ConfigDict(extra="ignore")
+    type: str | None = Field(None, max_length=80)  # OKF's one required key; any value is accepted
     status: str | None = Field(None, max_length=40)  # e.g. draft / published / deprecated
     stale_after: date | None = None
-    verified: bool | date | None = None
+    # true, a review date, or provenance like "human:alice@2026-05-01" / "process:ci" / "agent:writer"
+    verified: bool | date | str | None = Field(None, union_mode="left_to_right")
+    generated: str | None = Field(None, max_length=60)
     sources: list[str] | None = Field(None, max_length=50)
+
+    @field_validator("verified", mode="before")
+    @classmethod
+    def _verified(cls, v: Any) -> Any:
+        return v[:200] if isinstance(v, str) else v
+
+    @field_validator("generated", mode="before")
+    @classmethod
+    def _generated(cls, v: Any) -> Any:
+        return v.isoformat() if isinstance(v, (date, datetime)) else v
 
     @field_validator("sources", mode="before")
     @classmethod

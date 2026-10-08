@@ -150,6 +150,8 @@ CREATE TABLE IF NOT EXISTS runs (
     tokens_out  INTEGER NOT NULL DEFAULT 0,
     cost_usd    REAL NOT NULL DEFAULT 0,
     result      TEXT,                                 -- JSON: retrieved, citations
+    source      TEXT,                                 -- chat: playground | api (FR-3.22)
+    api_key_id  TEXT,                                 -- the key a remote caller used (FR-3.23)
     created_at  TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS ix_runs_project ON runs(project_id, created_at);
@@ -163,9 +165,111 @@ CREATE TABLE IF NOT EXISTS trace_events (
     tokens_in  INTEGER NOT NULL DEFAULT 0,
     tokens_out INTEGER NOT NULL DEFAULT 0,
     cost_usd   REAL NOT NULL DEFAULT 0,
-    payload    TEXT NOT NULL DEFAULT '{}'
+    payload    TEXT NOT NULL DEFAULT '{}',
+    start_ms   REAL                       -- offset from run start; NULL on runs recorded before it existed
 );
 CREATE INDEX IF NOT EXISTS ix_trace_run ON trace_events(run_id, seq);
+
+-- Semantic answer cache (cache slot). One row per answered question; a hit must share the
+-- scope (project + answer-relevant config + corpus contents), so edits never serve stale answers.
+CREATE TABLE IF NOT EXISTS answer_cache (
+    id         TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    scope_key  TEXT NOT NULL,
+    question   TEXT NOT NULL,
+    guard      TEXT NOT NULL,   -- JSON: numbers/identifiers that must match exactly
+    vector     BLOB NOT NULL,   -- float32 question embedding (the project's embedder)
+    answer     TEXT NOT NULL,
+    result     TEXT NOT NULL,   -- JSON: citations, retrieved
+    run_id     TEXT,
+    hits       INTEGER NOT NULL DEFAULT 0,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS ix_answer_cache_scope ON answer_cache(project_id, scope_key, created_at);
+
+-- Domain embedding adapters (FR-3.10): a query-side matrix per training, stored as
+-- data/adapters/<project>/<id>.npy and bound to the embedder (embed_key) it was trained for.
+CREATE TABLE IF NOT EXISTS adapters (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    version_id  TEXT,
+    eval_set_id TEXT,
+    build_id    TEXT,
+    embed_key   TEXT,
+    dim         INTEGER,
+    status      TEXT NOT NULL DEFAULT 'running',   -- running | ready | failed
+    metrics     TEXT,                              -- JSON: holdout/full before-after, params
+    error       TEXT,
+    created_at  TEXT NOT NULL
+);
+
+-- Prompt optimisation runs (FR-3.11): candidates scored on val, before/after on test.
+CREATE TABLE IF NOT EXISTS prompt_runs (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    version_id  TEXT,
+    eval_set_id TEXT,
+    status      TEXT NOT NULL DEFAULT 'running',   -- running | ready | failed
+    result      TEXT,                              -- JSON
+    error       TEXT,
+    created_at  TEXT NOT NULL
+);
+
+-- Attested computations (FR-3.21): sanctioned read-only queries over the project's data tables
+-- (data/compute/<project>.db), each with declarative attestation checks.
+CREATE TABLE IF NOT EXISTS computations (
+    id         TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    spec       TEXT NOT NULL,   -- JSON: engine.compute.Computation
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+-- Production query loop (FR-3.22): automatic Corpus Health reports after N new real questions.
+CREATE TABLE IF NOT EXISTS health_monitors (
+    project_id TEXT PRIMARY KEY REFERENCES projects(id) ON DELETE CASCADE,
+    settings   TEXT NOT NULL,   -- JSON: engine.monitor.MonitorSettings
+    updated_at TEXT NOT NULL
+);
+
+-- API keys (FR-3.23): only the SHA-256 is stored; `prefix` (first 9 chars) finds the row.
+CREATE TABLE IF NOT EXISTS api_keys (
+    id           TEXT PRIMARY KEY,
+    name         TEXT NOT NULL,
+    scope        TEXT NOT NULL,          -- chat (one project's chat endpoint) | admin
+    project_id   TEXT REFERENCES projects(id) ON DELETE CASCADE,
+    prefix       TEXT NOT NULL,
+    key_hash     TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    last_used_at TEXT,
+    revoked_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS ix_api_keys_prefix ON api_keys(prefix);
+
+-- Recipe gallery (FR-3.26): saved pipeline configurations (built-in recipes live in code).
+CREATE TABLE IF NOT EXISTS recipes (
+    id             TEXT PRIMARY KEY,
+    name           TEXT NOT NULL,
+    description    TEXT NOT NULL DEFAULT '',
+    tags           TEXT NOT NULL DEFAULT '[]',
+    config         TEXT NOT NULL,
+    source_project TEXT,          -- where it was saved from (none when imported from a link)
+    created_at     TEXT NOT NULL
+);
+
+-- Injection-resistance tests (FR-3.7/3.8): canary payloads injected into retrieval, per defence variant.
+CREATE TABLE IF NOT EXISTS injection_runs (
+    id          TEXT PRIMARY KEY,
+    project_id  TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    version_id  TEXT,
+    eval_set_id TEXT,
+    status      TEXT NOT NULL DEFAULT 'running',   -- running | ready | failed
+    options     TEXT NOT NULL DEFAULT '{}',        -- JSON: {questions, compare}
+    metrics     TEXT,                              -- JSON: per variant score + outcome counts
+    results     TEXT,                              -- JSON: one row per trial
+    error       TEXT,
+    created_at  TEXT NOT NULL
+);
 
 -- Auto-generated eval sets. Gold labels are build-independent (document + evidence
 -- quote), so one set scores any pipeline version.
@@ -196,7 +300,8 @@ CREATE TABLE IF NOT EXISTS eval_items (
     valid              INTEGER NOT NULL DEFAULT 1,
     reject_reason      TEXT,
     closed_book_answer TEXT,
-    facets             TEXT                           -- JSON list of required facts (FR-2.6)
+    facets             TEXT,                          -- JSON list of required facts (FR-2.6)
+    tests              TEXT                           -- Python asserts the answer's code must pass (FR-3.17)
 );
 CREATE INDEX IF NOT EXISTS ix_eval_items_set ON eval_items(eval_set_id, ordinal);
 

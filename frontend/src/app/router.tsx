@@ -10,6 +10,8 @@ import { WorkspaceLayout } from './WorkspaceLayout'
 const ProjectsPage = lazy(() => import('@/features/projects/ProjectsPage'))
 const CreateWizard = lazy(() => import('@/features/wizard/CreateWizard'))
 const DocumentsTab = lazy(() => import('@/features/documents/DocumentsTab'))
+const DataTab = lazy(() => import('@/features/data/DataTab'))
+const RecipesPage = lazy(() => import('@/features/recipes/RecipesPage'))
 const ConfigureTab = lazy(() => import('@/features/configure/ConfigureTab'))
 const VersionsTab = lazy(() => import('@/features/versions/VersionsTab'))
 const PlaygroundTab = lazy(() => import('@/features/playground/PlaygroundTab'))
@@ -53,6 +55,7 @@ export const router = createBrowserRouter([
       { index: true, element: <ProjectsPage /> },
       { path: 'new', element: <CreateWizard /> },
       { path: 'settings/providers', element: <ProvidersPage /> },
+      { path: 'recipes', element: <RecipesPage /> },
       {
         path: 'projects/:id',
         element: <WorkspaceLayout />,
@@ -60,6 +63,7 @@ export const router = createBrowserRouter([
         children: [
           { index: true, element: <Navigate to="documents" replace /> },
           { path: 'documents', element: <DocumentsTab /> },
+          { path: 'data', element: <DataTab /> },
           { path: 'configure', element: <ConfigureTab /> },
           { path: 'versions', element: <VersionsTab /> },
           { path: 'playground', element: <PlaygroundTab /> },

@@ -99,8 +99,8 @@ def test_stopped_sweep_shows_unfinished_cells_as_skipped():
 
 def test_suggested_axes_cover_registered_types_and_expand():
     axes = {a["path"]: a for a in sweep.AXES}
-    assert "semantic" in axes["chunk.type"]["values"] and "fused" in axes["retrieve.type"]["values"]
+    assert "semantic" in axes["chunk.type"]["values"] and {"fused", "agentic"} <= set(axes["retrieve.type"]["values"])
     base = _cfg("numpy")
     cells = sweep.expand_grid(base, [{"path": p, "values": axes[p]["values"]}
                                      for p in ("retrieve.query_expansion", "retrieve.context_window")])
-    assert len(cells) == 9 and all(c["status"] == "pending" for c in cells)
+    assert len(cells) == len(axes["retrieve.query_expansion"]["values"]) * 3 and all(c["status"] == "pending" for c in cells)

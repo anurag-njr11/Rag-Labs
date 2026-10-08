@@ -1,6 +1,6 @@
 import { Suspense, useRef } from 'react'
 import { Link, NavLink, Outlet, useLocation } from 'react-router-dom'
-import { Moon, Plug, Sun } from 'lucide-react'
+import { BookOpen, Moon, Plug, Sun } from 'lucide-react'
 import { Badge, Button, Spinner, cn, useSwapTransition } from '@/components/ui'
 import { BrandMark } from './BrandMark'
 import { useTheme } from './theme'
@@ -41,9 +41,22 @@ export function AppLayout() {
           <span className="text-[22px] font-semibold leading-none tracking-[-0.03em] text-text-primary">
             RAG<span className="text-accent-text">Labs</span>
           </span>
-          <Badge tone="neutral" className="ml-1 hidden sm:inline-flex">Phase 2</Badge>
+          <Badge tone="neutral" className="ml-1 hidden sm:inline-flex">Phase 3</Badge>
         </Link>
         <div className="flex items-center gap-1.5">
+          <NavLink
+            to="/recipes"
+            className={({ isActive }) =>
+              cn(
+                'focus-ring inline-flex h-8 items-center gap-1.5 rounded-md px-3 text-label hover:bg-bg-subtle hover:text-text-primary',
+                isActive ? 'text-text-primary' : 'text-text-secondary',
+              )
+            }
+          >
+            <BookOpen size={14} aria-hidden />
+            <span className="hidden sm:inline">Recipes</span>
+            <span className="sr-only sm:hidden">Recipes</span>
+          </NavLink>
           <NavLink
             to="/settings/providers"
             className={({ isActive }) =>

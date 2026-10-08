@@ -72,6 +72,23 @@ async def test_report_end_to_end(project, monkeypatch):  # noqa: F811
     assert r["usage"]["questions"] == 3 and r["usage"]["chunks_used"] >= 1
     md = health.to_markdown({**row, "result": r, "version": 1}, "P")
     assert "## Content backlog" in md and "invoice export guide" in md
+    assert r["trend"] is None and r["coverage"]["outcomes"]["can i configure sso"] == "gap"
+
+    # FR-3.22: the next report compares itself with this one — SSO got documented
+    async def sso_fixed(provider, opts, system, user):
+        return (await fake_complete(provider, opts, system, user.replace("SSO", "single sign-on"))
+                if system != health.JUDGE_SYSTEM else json.dumps({"results": [
+                    {"id": int(n), "verdict": "missing" if "export" in q else "covered", "missing": "invoice export guide"}
+                    for n, q in re.findall(r"### Question (\d+): (.*)", user)]}))
+
+    monkeypatch.setattr(evaluate, "complete", sso_fixed)
+    async with db.tx() as c:
+        await c.execute("INSERT INTO corpus_reports (id, project_id, version_id, created_at) VALUES ('r2', 'p', ?, ?)",
+                        (v["id"], db.now_iso()))
+    await health.run_report(Job(id="j2", kind="health", project_id="p"), "r2", "p", v,
+                            ["Can I configure SSO?", "how do I export invoices to CSV?"])
+    t = db.loads((await db.fetch_one("SELECT result FROM corpus_reports WHERE id='r2'"))["result"])["trend"]
+    assert (t["resolved"], t["regressed"], t["new_questions"]) == (1, 0, 0) and t["covered_rate_change"] > 0
 
 
 # --- FR-2.30 OKF metadata, FR-2.28 staleness, retrieval-miss labelling ---------------------------
@@ -140,7 +157,7 @@ async def test_document_metadata_api(project):  # noqa: F811
     from app.main import app
 
     base = "/api/projects/p/documents"
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
         r = await client.post(f"{base}?build=false", data={"last_modified": ["1700000000000", "0"]}, files=[
             ("files", ("faq.md", b"---\nstatus: draft\nsources: [https://x]\n---\n# FAQ\n\nAnswers.\n", "text/markdown")),
             ("files", ("notes.txt", b"plain notes", "text/plain"))])

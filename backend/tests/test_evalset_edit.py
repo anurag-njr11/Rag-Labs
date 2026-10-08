@@ -23,7 +23,7 @@ async def _ready_set():
 
 async def test_hand_edits_and_csv_roundtrip(project):  # noqa: F811
     doc = await _ready_set()
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
         bad = await client.post(f"{BASE}/items", json={"question": "How big can uploads be?", "gold_answer": "250 MB",
                                                        "evidence": "uploads may be up to one terabyte", "document_id": doc})
         assert bad.status_code == 422 and "wasn't found" in bad.json()["detail"]
@@ -40,7 +40,7 @@ async def test_hand_edits_and_csv_roundtrip(project):  # noqa: F811
         assert restored.json()["valid"] is True and restored.json()["question"] == "Max upload size?"
 
         csv_text = (await client.get(f"{BASE}/export.csv")).text
-        assert csv_text.splitlines()[0] == "question,gold_answer,evidence,document,valid,reject_reason,facets"
+        assert csv_text.splitlines()[0] == "question,gold_answer,evidence,document,valid,reject_reason,facets,tests"
         assert "Max upload size?" in csv_text and "uploads.md" in csv_text
 
         imported = await client.post(f"{BASE}/import", json={"csv": (
@@ -62,7 +62,7 @@ async def test_hand_edits_and_csv_roundtrip(project):  # noqa: F811
 async def test_csv_formula_escape_cap_and_question_only_edit(project, monkeypatch):  # noqa: F811
     from app.api import eval as eval_api
     doc = await _ready_set()
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
         q = "=HYPERLINK(1) how big can uploads be?"
         item = (await client.post(f"{BASE}/items", json={"question": q, "gold_answer": "-250 MB",
                                                          "evidence": "Each upload is capped at 250 megabytes",
@@ -89,7 +89,7 @@ async def test_csv_formula_escape_cap_and_question_only_edit(project, monkeypatc
         await c.execute("INSERT INTO eval_items (id, eval_set_id, ordinal, question, gold_answer, evidence, document_id,"
                         " gold_chunk_id, valid, reject_reason) VALUES ('bad', 's', 9, 'old?', 'a', 'not in the doc', ?,"
                         " 'x', 0, 'evidence not found in source')", (doc,))
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
         r = await client.patch(f"{BASE}/items/bad", json={"question": "New wording?", "gold_answer": "a",
                                                           "evidence": "not in the doc", "facets": []})
         assert r.status_code == 200 and r.json()["question"] == "New wording?"
@@ -103,7 +103,7 @@ async def test_facets_revision_and_corpus_fingerprint(project):  # noqa: F811
     async def revision():
         return (await db.fetch_one("SELECT revision FROM eval_sets WHERE id='s'"))["revision"]
 
-    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://t") as client:
+    async with httpx.AsyncClient(transport=httpx.ASGITransport(app=app), base_url="http://testserver") as client:
         assert (await client.get(BASE)).json()["corpus_changed"] is False
         ok = await client.post(f"{BASE}/items", json={
             "question": "How big can uploads be?", "gold_answer": "250 MB", "facets": ["250 MB", " ", "250 mb"],

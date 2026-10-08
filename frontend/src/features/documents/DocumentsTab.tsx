@@ -1,14 +1,15 @@
 import { useMemo, useRef, useState, type DragEvent } from 'react'
-import { FileText, Globe, Link as LinkIcon, RefreshCw, Search, Tag, Trash2, TriangleAlert, Upload, X } from 'lucide-react'
+import { Download, FileText, Globe, Link as LinkIcon, PackageOpen, RefreshCw, Search, Tag, Trash2, TriangleAlert, Upload, X } from 'lucide-react'
 import {
-  errorMessage, useDeleteDocument, useDocuments, useProjectJobs, useReindexDocument, useUploadDocuments,
+  errorMessage, useDeleteDocument, useDocuments, useImportOkf, useProjectJobs, useReindexDocument, useUploadDocuments,
 } from '@/api/hooks'
+import { API_BASE } from '@/api/client'
 import { fileTypeLabel, formatBytes, formatNumber } from '@/api/format'
 import type { Document } from '@/api/types'
 import { useWorkspace } from '@/app/workspace'
 import { JobProgress } from '@/app/JobProgress'
 import {
-  Badge, Button, Card, Dialog, EmptyState, Input, Popover, StatusBadge, Tooltip, cn, useToast,
+  Badge, Button, Card, Dialog, EmptyState, Input, Popover, StatusBadge, Tooltip, buttonClasses, cn, useToast,
 } from '@/components/ui'
 import { AddUrlForm } from './AddUrlForm'
 import { ChunkViewer } from './ChunkViewer'
@@ -35,6 +36,8 @@ export default function DocumentsTab() {
   const running = localJobs.length > 0 || (jobsQ.data?.length ?? 0) > 0 || !!project.index?.job_id
   const docsQ = useDocuments(pid, { refetchInterval: running ? 2500 : false })
   const upload = useUploadDocuments(pid)
+  const importOkf = useImportOkf(pid)
+  const bundleInput = useRef<HTMLInputElement>(null)
   const [query, setQuery] = useState('')
   const [urlOpen, setUrlOpen] = useState(false)
   const [viewing, setViewing] = useState<Document | null>(null)
@@ -50,6 +53,26 @@ export default function DocumentsTab() {
     for (const j of jobsQ.data ?? []) if (!list.some((x) => x.id === j.id)) list.push({ id: j.id, label: 'Index update' })
     return list
   }, [localJobs, jobsQ.data])
+
+  const doImportOkf = (file: File | undefined) => {
+    if (!file) return
+    importOkf.mutate(file, {
+      onSuccess: (r) => {
+        const parts = [
+          r.duplicates.length && `${r.duplicates.length} already here`,
+          r.skipped.length && `${r.skipped.length} non-Markdown file${r.skipped.length === 1 ? '' : 's'} skipped`,
+          r.errors.length && `${r.errors.length} failed: ${r.errors.map((e) => `${e.path} (${e.error})`).join(', ')}`,
+        ].filter(Boolean)
+        toast({
+          tone: r.errors.length ? 'warning' : 'success',
+          title: `Imported ${r.created.length} document${r.created.length === 1 ? '' : 's'} from the bundle`,
+          description: parts.join(' · ') || 'Their OKF metadata (type, status, verified, sources, stale_after) came along.',
+        })
+        if (r.job_id) addJob({ id: r.job_id, label: `Indexing ${r.created.length} imported document${r.created.length === 1 ? '' : 's'}` })
+      },
+      onError: (e) => toast({ tone: 'danger', title: 'Bundle import failed', description: errorMessage(e) }),
+    })
+  }
 
   const doUpload = (files: File[]) => {
     upload.mutate(
@@ -136,6 +159,25 @@ export default function DocumentsTab() {
           <Button icon={<LinkIcon size={14} aria-hidden />} onClick={() => setUrlOpen(true)} className="flex-1 sm:flex-none">
             Add URL
           </Button>
+          <Button
+            icon={<PackageOpen size={14} aria-hidden />}
+            loading={importOkf.isPending}
+            onClick={() => bundleInput.current?.click()}
+            title="Import an Open Knowledge Format bundle: a .zip of Markdown files with YAML front matter"
+            className="flex-1 sm:flex-none"
+          >
+            Import OKF
+          </Button>
+          <input ref={bundleInput} type="file" accept=".zip,application/zip" hidden aria-hidden tabIndex={-1}
+            onChange={(e) => { doImportOkf(e.target.files?.[0]); e.target.value = '' }} />
+          <a
+            href={`${API_BASE}/projects/${pid}/documents/okf-export`}
+            download
+            title="Download the corpus as an OKF bundle: text, provenance, trust tier, status, usage and Corpus Health findings"
+            className={cn(buttonClasses({ variant: 'secondary' }), 'flex-1 sm:flex-none')}
+          >
+            <Download size={14} aria-hidden /> Export OKF
+          </a>
           <Button
             variant="primary"
             icon={<Upload size={14} aria-hidden />}
@@ -329,7 +371,13 @@ function DocumentRow({
             <span className="block truncate font-mono text-mono text-text-primary hover:underline">{doc.filename}</span>
             {doc.source_url && <span className="block truncate text-body-sm text-text-tertiary">{doc.source_url}</span>}
           </span>
+          {doc.okf.type && <Badge tone="neutral" className="shrink-0">{doc.okf.type}</Badge>}
           {doc.okf.status && <Badge tone={STATUS_TONE[doc.okf.status.toLowerCase()] ?? 'neutral'} className="shrink-0">{doc.okf.status}</Badge>}
+          {typeof doc.okf.verified === 'string' && /^(human|process|agent):/i.test(doc.okf.verified) && (
+            <Badge tone={doc.okf.verified.toLowerCase().startsWith('human') ? 'success' : 'info'} className="shrink-0" title={`verified: ${doc.okf.verified}`}>
+              {doc.okf.verified.split(':')[0].toLowerCase()}-verified
+            </Badge>
+          )}
         </button>
       </td>
       <td className={cn(CELL, 'text-body text-text-secondary')}>{fileTypeLabel(doc.filename)}</td>

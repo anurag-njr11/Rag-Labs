@@ -26,6 +26,8 @@ The single organising insight behind almost everything below:
 Every idea that survived was kept because it serves that sentence. Every idea that was
 cut, was cut because it didn't.
 
+Post-v3 ideas (open source launch, Bring Your Own RAG, SaaS) live in `OSS_ROADMAP.md`.
+
 ---
 
 ## 1. Core thesis ideas

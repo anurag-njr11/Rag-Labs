@@ -1,12 +1,15 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
-import { TriangleAlert } from 'lucide-react'
+import { ArrowRight, TriangleAlert } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { errorMessage } from '@/api/client'
-import { useNodes } from '@/api/hooks'
+import { useCacheStats, useClearCache, useNodes } from '@/api/hooks'
+import { formatNumber } from '@/api/format'
 import type { Change, NodeConfig, NodeType, PipelineConfig, PipelineFieldError, Slot, SlotCatalog } from '@/api/types'
 import { SLOTS } from '@/api/types'
 import { TOPBAR_H } from '@/app/AppLayout'
 import {
-  Badge, Banner, Card, EffectBadge, ExactBadge, OptionCardGroup, Spinner, cn, smoothScrollTo, useIndicator, useSwapTransition,
+  Badge, Banner, Button, Card, EffectBadge, ExactBadge, OptionCardGroup, Spinner, cn, smoothScrollTo, useIndicator, useSwapTransition,
+  useToast,
 } from '@/components/ui'
 import { useScrollReveal } from '@/components/ui/scrollReveal'
 import { SchemaForm } from './SchemaForm'
@@ -38,7 +41,7 @@ function chosenLabel(cfg: NodeConfig | undefined, nt: NodeType | undefined) {
  * Full pipeline editor: sticky stage nav (desktop) + one card per stage with a type picker and a
  * schema-driven parameter form. Controlled: `value` in, `onChange` out. Never hardcodes node fields.
  */
-export function ConfigEditor({ value, onChange, errors, baseline, className }: ConfigEditorProps) {
+export function ConfigEditor({ value, onChange, errors, baseline, className, projectId }: ConfigEditorProps) {
   const nodes = useNodes()
   const [active, setActive] = useState<Slot>('parse')
   const catalog = nodes.data
@@ -212,6 +215,7 @@ export function ConfigEditor({ value, onChange, errors, baseline, className }: C
                 changes={changedBySlot.get(slot)}
                 errors={errors}
                 onChange={(cfg) => setSlot(slot, cfg)}
+                projectId={projectId}
               />
             )
           })}
@@ -221,7 +225,7 @@ export function ConfigEditor({ value, onChange, errors, baseline, className }: C
   )
 }
 
-interface StageCardProps {
+export interface StageCardProps {
   n: number
   slot: Slot
   catalog: SlotCatalog | undefined
@@ -230,9 +234,32 @@ interface StageCardProps {
   changes?: Change[]
   errors?: PipelineFieldError[]
   onChange: (cfg: NodeConfig) => void
+  projectId?: string
 }
 
-function StageCard({ n, slot, catalog, value, baseline, changes, errors, onChange }: StageCardProps) {
+/** How full the semantic cache is, with a way to empty it (e.g. after fixing a wrong answer). */
+function CacheStats({ projectId }: { projectId: string }) {
+  const stats = useCacheStats(projectId)
+  const clear = useClearCache(projectId)
+  const { toast } = useToast()
+  if (!stats.data) return null
+  return (
+    <div className="mt-3 flex flex-wrap items-center gap-3 text-body-sm text-text-secondary">
+      <span>{formatNumber(stats.data.entries)} cached answer{stats.data.entries === 1 ? '' : 's'} · {formatNumber(stats.data.hits)} hit{stats.data.hits === 1 ? '' : 's'} so far</span>
+      <Button
+        size="sm"
+        variant="ghost"
+        disabled={!stats.data.entries}
+        loading={clear.isPending}
+        onClick={() => clear.mutate(undefined, { onSuccess: (r) => toast({ tone: 'success', title: `Cleared ${r.cleared} cached answer${r.cleared === 1 ? '' : 's'}` }) })}
+      >
+        Clear cache
+      </Button>
+    </div>
+  )
+}
+
+export function StageCard({ n, slot, catalog, value, baseline, changes, errors, onChange, projectId }: StageCardProps) {
   const cfg = value ?? { type: '' }
   const nt = catalog?.types.find((t) => t.type === cfg.type)
   const { fieldErrors, general } = errorsFor(errors, slot)
@@ -240,7 +267,9 @@ function StageCard({ n, slot, catalog, value, baseline, changes, errors, onChang
   const typeChanged = !!baseline && baseline.type !== cfg.type
   const isStore = catalog?.types.some((t) => t.exact !== null || t.exact_when) ?? false
 
-  const items = (catalog?.types ?? []).map((t) => {
+  // Generate offers only connected providers; the selected one stays visible (disabled) if it was disconnected.
+  const types = (catalog?.types ?? []).filter((t) => slot !== 'generate' || t.available || t.type === cfg.type)
+  const items = types.map((t) => {
     const exact = isStore ? isExact(t, cfg) : null
     return {
       value: t.type,
@@ -299,6 +328,15 @@ function StageCard({ n, slot, catalog, value, baseline, changes, errors, onChang
             if (t && type !== cfg.type) onChange({ ...t.defaults, type })
           }}
         />
+      )}
+
+      {slot === 'cache' && projectId && cfg.type !== 'none' && <CacheStats projectId={projectId} />}
+
+      {slot === 'generate' && (
+        <Link to="/settings/providers" className="focus-ring mt-3 inline-flex items-center gap-1 rounded-sm text-body-sm text-accent-text hover:underline">
+          {types.some((t) => t.available) ? 'Connect another provider' : 'Connect a provider'} (Gemini, NVIDIA, OpenAI, Anthropic, Ollama, your own endpoint…){' '}
+          <ArrowRight size={12} aria-hidden />
+        </Link>
       )}
 
       {!nt && cfg.type && (

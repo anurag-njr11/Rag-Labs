@@ -64,6 +64,7 @@ class TraceEvent:
     tokens_out: int = 0
     cost_usd: float = 0.0
     payload: dict[str, Any] = field(default_factory=dict)
+    start_ms: float = 0.0  # offset from the run's start; steps run concurrently can overlap
 
 
 @dataclass
@@ -76,6 +77,7 @@ class RunContext:
 
     listener: Callable[[TraceEvent], None] | None = None
     events: list[TraceEvent] = field(default_factory=list)
+    t0: float = field(default_factory=time.perf_counter)
 
     def emit(
         self,
@@ -98,6 +100,8 @@ class RunContext:
             tokens_out=tokens_out,
             cost_usd=cost_usd,
             payload=payload,
+            # emitted when the step ends, so it started `ms` ago
+            start_ms=round(max(0.0, (time.perf_counter() - self.t0) * 1000 - ms), 2),
         )
         self.events.append(ev)
         if self.listener is not None:
@@ -158,6 +162,8 @@ class SlotSpec:
     title: str
     description: str
     effect: Effect
+    # Slots added after release: configs saved without them get this node type.
+    default: str | None = None
 
 
 # Order is the pipeline order.
@@ -166,10 +172,16 @@ SLOTS: tuple[SlotSpec, ...] = (
     SlotSpec("chunk", "Chunk", "Split documents into retrievable pieces.", "rebuild"),
     SlotSpec("embed", "Embed", "Turn each chunk into a vector.", "rebuild"),
     SlotSpec("vector_store", "Vector store", "Where vectors live and how they are searched.", "rebuild"),
+    SlotSpec("cache", "Cache", "Answer a repeated question from earlier answers, before retrieving.", "instant",
+             default="none"),
+    SlotSpec("compute", "Compute", "Answer numeric questions from attested computations over your data.",
+             "instant", default="none"),
     SlotSpec("retrieve", "Retrieve", "Find the chunks most relevant to a question.", "instant"),
     SlotSpec("rerank", "Rerank", "Re-score the top results with a slower, sharper model.", "instant"),
     SlotSpec("prompt", "Prompt", "How retrieved chunks are presented to the model.", "instant"),
     SlotSpec("generate", "Generate", "The language model that writes the answer.", "instant"),
+    SlotSpec("verify", "Verify", "Check the answer against its sources before returning it.", "instant",
+             default="none"),
 )
 SLOT_BY_NAME = {s.name: s for s in SLOTS}
 

@@ -6,6 +6,7 @@
 | **Last updated** | 2026-10-06 |
 | **Owner** | Anurag |
 | **Companion doc** | `IDEAS.md` — full idea catalogue, including rejected ideas and rationale |
+| **Post-v3 roadmap** | `OSS_ROADMAP.md` — open source launch, Bring Your Own RAG, SaaS path (deferred until Phases 1–3 ship) |
 
 ---
 
@@ -389,6 +390,34 @@ mode in plain English → Corpus Health lists at least one real gap → repo exp
 ## 8. Phase 3 — Advanced Retrieval & Trust
 
 Items here are **independently shippable**; release them as increments rather than one drop.
+
+### 8.0 Build status (2026-10-08) — all of §8 built
+
+| Area | Status | Notes |
+|---|---|---|
+| Trace view (FR-3.6) | ✅ Built | Per-step table plus a waterfall timeline from each step's `start_ms`; per-step latency, tokens and cost. Steps repeated by a grounding-check retry appear again in order |
+| Grounding check (FR-3.5) | ✅ Built | `verify` slot: `none` · `grounding_check` (`on_fail`: `retry_with_more_context` · `flag`, `max_retries` 0–2, default 1). One LLM call grades every claim; a retry doubles `top_k`, `top_n` and the context budget. A failed check never fails the answer. Runs in chat, answer-graded eval and Auto-Optimize (answer p50/p95, pass rate); `verify.type` sweep axis. Not in repo export (README says so) |
+| Citation-support checking (FR-3.9) | ✅ Built | The same call grades each cited source per claim → `Citation.support`; unsupported citations are marked in the answer |
+| Agentic retriever (FR-3.1) | ✅ Built | `retrieve.type = agentic`: question searched first, then an LLM planner (budget 1–6 steps) chooses search / read / done; keeps passages by alias. Cached per question for eval's deep pass; cost/tokens/time counted uncached. Ported to export |
+| Context offloading (FR-3.2) | ✅ Built | `offload`: the planner sees references (doc › heading + snippet), reads in full on request; its context size is in the trace |
+| Query decomposition (FR-3.3) | ✅ Built | `query_expansion = decompose`: sub-questions searched and fused separately, interleaved into the top-k. Ported to export |
+| Agentic as a sweep axis (FR-3.4) | ✅ Built | `retrieve.type` axis + "Agentic vs hybrid + rerank" preset; leaderboard "vs hybrid + rerank" column (MRR Δ, token ×, latency ×) and insight. Pareto cost = `query_tokens` (context + retrieval-side LLM tokens) |
+| Injection resistance (FR-3.7, 3.8) | ✅ Built | 5 canary payloads at rank 1 of real retrieval (in memory); outcomes hijacked / caught by check / caught by filter / resisted; variants: configured, none, each defence alone, all; 95% intervals. Defences: `prompt.injection_guard` (data_rule · delimited · none), source labels, `verify.validate_output`, grounding check |
+| Embedding adapter (FR-3.10) | ✅ Built | Query-side linear map, contrastive loss over all chunks, λ by CV inside train; holdout before/after; `recommended` only if it beats the plain embedder in CV and holdout |
+| DSPy-style prompt optimisation (FR-3.11) | ✅ Built | Native (no DSPy dependency): bootstrapped demos + proposed instructions, val selection, test report; F1-vs-gold metric |
+| Per-corpus artifacts in export (FR-3.12) | ✅ Built | Adapter → `data/adapter.npy`; optimised prompt → `prompt.extra_instructions` / `examples` in `config.json` |
+| Semantic answer cache (§7.4 `cache` axis) | ✅ Built | `cache` slot (before retrieve); threshold, TTL, size; exact guard on numbers/identifiers; scoped to config + corpus |
+| OKF bundle import (FR-3.18) | ✅ Built | Documents → Import OKF (zip); `type/status/stale_after/verified/generated/sources`; non-Markdown skipped with a reason; tolerant per spec |
+| OKF metadata in retrieval (FR-3.19) | ✅ Built | `retrieve.okf_policy`: drop past `stale_after`, deprecated × 0.5, human > process > agent > unverified on ties; ported to export |
+| OKF bundle export (FR-3.20) | ✅ Built | Documents → Export OKF: text + provenance, trust tier, lifecycle, usage, Corpus Health findings, `index.md` |
+| Attested Computation (FR-3.21) | ✅ Built | Data tab (CSV tables, computations), `compute` slot; read-only SQLite (`mode=ro`, `query_only`, 2 s), typed parameters, declarative attester (deliberately not OKF's Python attester), receipt in the answer |
+| Production query ingestion (FR-3.22) | ✅ Built | `runs.source` (playground / api); reports from API traffic only; monitor auto-runs Corpus Health after N new questions; report `trend` vs the previous one |
+| API keys + usage dashboard (FR-3.23) | ✅ Built (self-hosted part) | Remote callers need a key (chat: one project's endpoint; admin: all); hashed storage; `TRUST_LOOPBACK`; usage by day / source / key on the API tab. **Multi-tenant projects and team members: deferred to the hosted edition** (`OSS_ROADMAP.md`) |
+| Canvas (FR-3.24) | ✅ Built | Configure → Canvas: execution graph incl. parallel paths, index lane, early exits and loops; drag layout (persisted), drop types onto nodes, toggle paths, edit in a side panel. **Deliberately not** free-form branching: the runtime runs a fixed slot order so configs stay comparable; branching lives inside slots (paths, fan-out, agent loop, exits, retry) |
+| Chat-to-build (FR-3.25) | ✅ Built | `POST /build-chat` → validated draft + diff (one repair round); Configure shows it, Apply highlights changed stages / nodes |
+| Recipe gallery (FR-3.26) | ✅ Built | Built-in + saved recipes; share by link (self-contained, no server); fork with portability notes; "Save as recipe" on Versions |
+| Config prior (FR-3.27) | ✅ Built | Similarity-weighted votes over local `sweep_fingerprints`; confidence formula; rules fallback; "verify with a sweep" preset. Cross-install data is the hosted edition's job (`OSS_ROADMAP.md`) |
+| Code vertical (FR-3.13–3.17) | ✅ Built | `verify.type = execution_check`: answer's Python runs in Docker only (`--network none`, 256 MB, 1 CPU, 64 pids, read-only root, nobody user, timeout); tests: item's own → docs' `>>>` examples → generated (labelled weaker); `max_steps` ≤ 4, same-error stop, honest `unverified`; no Docker → `sandbox_unavailable`, never a host run. `exec_verified_rate` (+ Wilson CI) on eval runs, leads the leaderboard when both cells have it. Not in repo export |
 
 ### 8.1 Advanced retrieval
 

@@ -18,6 +18,7 @@ function payloadFacts(s: TraceStep): string[] {
   switch (s.step) {
     case 'embed_query':
       if (str(p.model)) f.push(String(p.model))
+      if (str(p.adapter)) f.push(String(p.adapter).startsWith('skipped') ? `adapter ${p.adapter}` : 'adapter applied')
       break
     case 'dense_search':
       if (num(p.hits) != null) f.push(`${p.hits} hits`)
@@ -43,6 +44,49 @@ function payloadFacts(s: TraceStep): string[] {
       if (str(p.reasoning_effort) && p.reasoning_effort !== 'none') f.push(`reasoning ${p.reasoning_effort}`)
       if (str(p.finish_reason)) f.push(`finish: ${p.finish_reason}`)
       break
+    case 'compute_route':
+      f.push(p.error ? `routing failed: ${p.error}` : p.computation ? `→ ${p.computation}` : 'no computation fits → documents')
+      break
+    case 'compute':
+      f.push(String(p.name ?? ''))
+      f.push(p.error ? `failed: ${p.error}` : p.attested ? `attested · ${p.rows} row${p.rows === 1 ? '' : 's'}` : 'failed attestation')
+      break
+    case 'execution':
+      f.push(String(p.status ?? '').replace(/_/g, ' '))
+      if (num(p.attempts)) f.push(`${p.attempts} run${p.attempts === 1 ? '' : 's'}`)
+      if (str(p.test_source) && p.test_source !== 'none') f.push(`tests: ${p.test_source}`)
+      break
+    case 'okf_policy':
+      f.push(`${p.dropped ?? 0} stale left out · ${p.demoted ?? 0} deprecated demoted`)
+      break
+    case 'output_validation':
+      f.push(num(p.removed) ? `removed ${p.removed} unsourced link${p.removed === 1 ? '' : 's'} / contact${p.removed === 1 ? '' : 's'}` : 'nothing to remove')
+      break
+    case 'cache_lookup':
+      f.push(p.hit ? 'hit' : p.guard_blocked ? 'miss — similar question, but its numbers or identifiers differ' : 'miss')
+      if (num(p.similarity) != null) f.push(`best ${Math.round(num(p.similarity)! * 100)}% (needs ${Math.round(num(p.threshold)! * 100)}%)`)
+      if (num(p.entries) != null) f.push(`${p.entries} cached`)
+      break
+    case 'agent':
+      if (p.cached) {
+        f.push(`cached agent run · ${p.steps} step${p.steps === 1 ? '' : 's'}`)
+        break
+      }
+      if (num(p.turn) != null) f.push(`step ${p.turn}`)
+      if (p.action === 'search' && Array.isArray(p.queries)) f.push(`search: ${(p.queries as string[]).map((q) => `“${q}”`).join(', ') || 'nothing new'}`)
+      else if (p.action === 'read') f.push(`read ${p.read} passage${p.read === 1 ? '' : 's'} in full`)
+      else if (p.action === 'done') f.push(p.invalid_reply ? 'unusable reply → kept search order' : `kept ${p.keep}`)
+      else if (p.action === 'error') f.push('planner call failed → kept search order')
+      if (num(p.context_chars) != null) f.push(`${formatNumber(Math.round(num(p.context_chars)! / 4))} tok context${p.offload ? ' (offloaded)' : ''}`)
+      break
+    case 'verify':
+      if (p.status === 'error') f.push('check failed')
+      else {
+        if (num(p.claims) != null) f.push(`${p.claims} claim${p.claims === 1 ? '' : 's'}`)
+        if (num(p.unsupported)) f.push(`${p.unsupported} not supported`)
+        if (typeof p.grounded === 'boolean') f.push(p.grounded ? 'grounded' : 'not grounded')
+      }
+      break
     default:
       for (const [k, v] of Object.entries(p)) {
         if (f.length >= 3) break
@@ -65,6 +109,9 @@ export function TracePanel({ turn, indexType }: { turn: Turn; indexType?: string
   const dense = steps.find((s) => s.step === 'dense_search')
   const exact = typeof dense?.payload?.exact === 'boolean' ? (dense.payload.exact as boolean) : undefined
   const maxMs = Math.max(1, ...steps.map((s) => s.ms))
+  // Waterfall when every step has a start offset (concurrent steps overlap); plain duration bars otherwise.
+  const timed = steps.every((s) => typeof s.start_ms === 'number')
+  const span = timed ? Math.max(1, ...steps.map((s) => (s.start_ms ?? 0) + s.ms)) : maxMs
   const sumMs = steps.reduce((a, s) => a + s.ms, 0)
   const tin = steps.reduce((a, s) => a + s.tokens_in, 0)
   const tout = steps.reduce((a, s) => a + s.tokens_out, 0)
@@ -118,7 +165,7 @@ export function TracePanel({ turn, indexType }: { turn: Turn; indexType?: string
           <thead>
             <tr className="h-9 bg-bg-subtle text-left text-caption text-text-tertiary">
               <th scope="col" className="px-3 font-medium">Step</th>
-              <th scope="col" className="px-3 font-medium">ms</th>
+              <th scope="col" className="px-3 font-medium">{timed ? 'ms · timeline' : 'ms'}</th>
               <th scope="col" className="whitespace-nowrap px-3 text-right font-medium">Tokens in / out</th>
               <th scope="col" className="hidden px-3 text-right font-medium sm:table-cell">Cost</th>
             </tr>
@@ -136,10 +183,17 @@ export function TracePanel({ turn, indexType }: { turn: Turn; indexType?: string
                   <td className="px-3 py-2">
                     <div className="flex items-center gap-2">
                       <span className="w-11 shrink-0 text-right sm:w-14 font-mono text-mono tabular-nums text-text-primary">{formatNumber(Math.round(s.ms))}</span>
-                      <span className="hidden h-1.5 w-full max-w-40 min-w-10 rounded-full bg-bg-muted sm:block" aria-hidden>
+                      <span
+                        className="hidden h-1.5 w-full max-w-56 min-w-10 rounded-full bg-bg-muted sm:block"
+                        aria-hidden
+                        title={timed ? `starts at ${formatMs(s.start_ms ?? 0)}, takes ${formatMs(s.ms)}` : undefined}
+                      >
                         <span
                           className={cn('block h-full rounded-full', isGen ? 'bg-accent-default' : 'bg-accent-default/30')}
-                          style={{ width: `${Math.max(2, (s.ms / maxMs) * 100)}%` }}
+                          style={{
+                            marginLeft: timed ? `${((s.start_ms ?? 0) / span) * 100}%` : undefined,
+                            width: `${Math.max(timed ? 1 : 2, (s.ms / span) * 100)}%`,
+                          }}
                         />
                       </span>
                     </div>
@@ -175,7 +229,7 @@ export function TracePanel({ turn, indexType }: { turn: Turn; indexType?: string
         </p>
       )}
 
-      {!active && turn.runId && (
+      {!active && turn.runId && !turn.cache && !turn.computation?.attested && (
         <Disclosure label="Prompt sent to model" hint={messages.length ? `${messages.length} messages` : undefined}>
           {run.isPending ? (
             <p className="flex items-center gap-2 text-body-sm text-text-secondary"><Spinner size={12} /> Loading prompt…</p>

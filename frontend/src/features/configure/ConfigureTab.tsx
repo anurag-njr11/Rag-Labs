@@ -4,12 +4,20 @@ import { ApiError, errorMessage } from '@/api/client'
 import {
   useCreateVersion, useEstimate, useNodes, useRecommendedPipeline, useValidatePipeline, useVersions,
 } from '@/api/hooks'
-import type { EstimateResult, PipelineConfig, PipelineFieldError } from '@/api/types'
+import type { Change, EstimateResult, PipelineConfig, PipelineFieldError, Slot } from '@/api/types'
 import { JobProgress } from '@/app/JobProgress'
 import { useWorkspace } from '@/app/workspace'
 import { Banner, Button, EffectBadge, Input, Spinner, useToast } from '@/components/ui'
+import { BuildChat } from './BuildChat'
+import { Canvas } from './Canvas'
 import { ConfigEditor } from './ConfigEditor'
 import { deepEqual, localChanges } from './schema'
+
+function changedBySlot(changes: Change[]) {
+  const m = new Map<Slot, Change[]>()
+  for (const c of changes) m.set(c.slot, [...(m.get(c.slot) ?? []), c])
+  return m
+}
 
 /** Configure tab: edit a draft of the active version's pipeline, see what it costs, save as a new version. */
 export default function ConfigureTab() {
@@ -32,6 +40,7 @@ export default function ConfigureTab() {
   }
 
   const [note, setNote] = useState('')
+  const [view, setView] = useState<'form' | 'canvas'>('form')
   /** Result of the latest validate → estimate round, tagged with the draft it was computed for. */
   const [check, setCheck] = useState<{
     draft: PipelineConfig
@@ -153,7 +162,23 @@ export default function ConfigureTab() {
             </p>
           </div>
         </div>
-        <ConfigEditor value={draft} onChange={setDraft} projectId={project.id} errors={errors} baseline={baseline} />
+        <div className={view === 'form' ? '@min-[900px]:pl-[296px]' : undefined}>
+          <BuildChat projectId={project.id} draft={draft} onApply={setDraft} />
+          <div className="mb-4 inline-flex rounded-md border border-border-default p-0.5" role="group" aria-label="View">
+            {(['form', 'canvas'] as const).map((v) => (
+              <button key={v} type="button" aria-pressed={view === v} onClick={() => setView(v)}
+                className={`focus-ring rounded px-3 py-1 text-body-sm ${view === v ? 'bg-accent-subtle text-accent-text' : 'text-text-secondary hover:bg-bg-subtle'}`}>
+                {v === 'form' ? 'Form' : 'Canvas'}
+              </button>
+            ))}
+          </div>
+        </div>
+        {view === 'form' ? (
+          <ConfigEditor value={draft} onChange={setDraft} projectId={project.id} errors={errors} baseline={baseline} />
+        ) : (
+          <Canvas projectId={project.id} value={draft} onChange={setDraft} baseline={baseline} catalog={nodes.data ?? []}
+            errors={errors} changedBySlot={changedBySlot(localChanges(baseline, draft, nodes.data))} />
+        )}
       </div>
 
       <div
