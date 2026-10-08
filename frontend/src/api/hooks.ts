@@ -12,7 +12,6 @@ import { api, buildUrl } from './client'
 import { subscribeJobEvents } from './sse'
 import type {
   AddUrlBody,
-  Build,
   ChatBody,
   ChatResult,
   ChunksResult,
@@ -45,7 +44,6 @@ import type {
   EvalFix,
   Judge,
   HealthReport,
-  Health,
   Job,
   JobDoneResult,
   JobEvent,
@@ -121,13 +119,9 @@ const isBusy = (s?: string) => s === 'building' || s === 'pending'
 
 // ------------------------------------------------------------------------------------------ system
 
-export const useHealth = (o?: QOpts<Health>) =>
-  useQuery({ queryKey: qk.health, queryFn: () => api.get<Health>('/health'), staleTime: 60_000, ...o })
-
 export const useProviders = (o?: QOpts<Provider[]>) =>
   useQuery({ queryKey: qk.providers, queryFn: () => api.get<Provider[]>('/providers'), staleTime: 60_000, ...o })
 
-/** True when no LLM provider key is configured (show the warning banner). undefined while loading. */
 export const useProviderPresets = (o?: QOpts<Provider[]>) =>
   useQuery({ queryKey: qk.providerPresets, queryFn: () => api.get<Provider[]>('/providers/presets'), staleTime: 60_000, ...o })
 
@@ -168,11 +162,6 @@ export const useTestProvider = () =>
         ? api.post<ProviderTestResult>('/providers/test', { ...body, name })
         : api.post<ProviderTestResult>(`/providers/${encodeURIComponent(name ?? '')}/test`),
   })
-
-export function useNoProviderKey(): boolean | undefined {
-  const { data } = useProviders()
-  return data ? !data.some((p) => p.available) : undefined
-}
 
 export const useProviderModels = (name: string | undefined, kind: ModelKind = 'chat', o?: QOpts<ModelList>) =>
   useQuery({
@@ -326,14 +315,6 @@ export const useVersionDiff = (projectId: string | undefined, a: string | undefi
     ...o,
   })
 
-export const useBuilds = (projectId: string | undefined, o?: QOpts<Build[]>) =>
-  useQuery({
-    queryKey: qk.builds(projectId ?? ''),
-    queryFn: () => api.get<Build[]>(`/projects/${projectId}/builds`),
-    enabled: !!projectId,
-    ...o,
-  })
-
 export function useCreateVersion(projectId: string) {
   const qc = useQueryClient()
   return useMutation({
@@ -451,15 +432,6 @@ export function useReindexDocument(projectId: string) {
 }
 
 // ------------------------------------------------------------------------------------------ jobs
-
-export const useJob = (jobId: string | null | undefined, o?: QOpts<Job>) =>
-  useQuery({
-    queryKey: qk.job(jobId ?? ''),
-    queryFn: () => api.get<Job>(`/jobs/${jobId}`),
-    enabled: !!jobId,
-    retry: false,
-    ...o,
-  })
 
 /** Running jobs for a project. Polls every 3s while any are running. */
 export const useProjectJobs = (projectId: string | undefined, o?: QOpts<Job[]>) =>

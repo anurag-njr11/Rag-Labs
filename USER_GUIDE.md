@@ -924,7 +924,7 @@ All under `/api/projects/{project_id}/health`:
 - **Available now**: Corpus Health — a ranked backlog of what your documents can't answer, plus contradictions, duplicates and unused content (Health tab)
 - **Also available**: one-click fixes from diagnoses, eval-set editing with CSV import/export, MTEB-ranked embedding candidates, and a monthly cost projection in the sweep leaderboard
 - **Phase 2** (remaining): versioned eval sets, answer-facet scoring, a separate judge model (see `FOLLOW_UPS.md`)
-- **Phase 3** (future): Agentic retrieval, query decomposition, injection resistance testing, embed adapters
+- **Phase 3** (available): agentic retrieval, query decomposition, grounding checks, injection-resistance testing, embedding adapters and prompt optimisation (see `CHANGELOG.md` v3.0.0)
 
 The recommended loop is **upload → configure → chat → inspect → evaluate**. Use the Versions tab to keep what works, and the Evaluate tab to prove it.
 

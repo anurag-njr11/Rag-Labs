@@ -703,3 +703,12 @@ so defer ANN until corpus size genuinely forces it (~50k+ chunks).
 - FloTorch — The 2026 RAG Performance Landscape: <https://www.flotorch.ai/blogs/the-2026-rag-performance-landscape-what-every-enterprise-leader-needs-to-know>
 - arXiv — Chunking Methods on RAG: effectiveness vs. computational cost: <https://arxiv.org/pdf/2606.00881>
 - arXiv — Evaluating Chunking Strategies for RAG in Oil and Gas Enterprise Documents: <https://arxiv.org/pdf/2603.24556>
+
+---
+
+## 14. Open source, BYO-RAG and the SaaS split
+
+- **BYO-RAG** — connect any RAG over an HTTP endpoint and score it with the same metrics (PRD §8.7). It fixes the weakness that every metric assumed the RAG *is* a RAGLabs pipeline.
+- **CLI / CI gate** — `raglabs eval ... --min-mrr` exits non-zero on regression; the strongest OSS adoption feature.
+- **OSS / SaaS split** — OSS = single-user and local; SaaS = teams, scheduled re-evals, production-query ingestion, hosted sweeps, config prior (PRD §17).
+- **User-authored Python nodes stay rejected**, except the adapter case (an adapter that wraps an external system is not an arbitrary node).

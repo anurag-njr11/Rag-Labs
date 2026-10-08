@@ -1,6 +1,6 @@
 # RAGLabs — Open Source, Bring Your Own RAG, and the SaaS Path
 
-> **Status: Deferred. Starts after Phases 1–3 (PRD.md) are complete.**
+> **Status: In progress (started 2026-10-08, after Phases 1–3 completed).** Part A docs and OSS hygiene files are done; FR-4.x is being built.
 > Drafted 2026-10-07. Companion to `PRD.md` and `IDEAS.md`.
 
 ---

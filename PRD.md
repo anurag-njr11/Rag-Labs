@@ -64,6 +64,8 @@ here are the twelve missing topics ranked by query volume."*
 | G3 | Shift the user's attention upstream — from `top_k` to *"can this corpus answer the question at all?"* |
 | G4 | Produce artifacts the user owns (a config, a repo, a cleaned knowledge base), not a service they rent |
 | G5 | Ship three standalone, fully usable releases rather than one big-bang launch |
+| G6 | Evaluate any RAG system, not just ones built here (§8.7) |
+| G7 | Be a credible open-source project others can extend (§17) |
 
 ### 2.2 Non-goals
 
@@ -92,9 +94,9 @@ here are the twelve missing topics ranked by query volume."*
 
 | Persona | Situation | Needs | Phase served |
 |---|---|---|---|
-| **Priya — AI engineer** (primary, P1–P2) | Built a RAG prototype, knows it's mediocre, no idea why | Evidence about which config wins; a diagnosis, not a dashboard | 1, 2 |
-| **Marcus — docs / knowledge-ops lead** (primary, P2–P3) | Owns the documentation the bot reads; blamed when it's wrong | A ranked content backlog: gaps, contradictions, stale pages | 2, 3 |
-| **Sana — support lead** (secondary, P3) | Wants ticket deflection; needs to know what the bot can't answer | Coverage reporting driven by real user questions | 3 |
+| **Priya — AI engineer / OSS developer** (primary, all phases; the OSS audience, §17) | Built a RAG prototype, knows it's mediocre, no idea why | Evidence about which config wins; a diagnosis, not a dashboard | 1, 2 |
+| **Marcus — docs / knowledge-ops lead** (SaaS buyer, P2–P3) | Owns the documentation the bot reads; blamed when it's wrong | A ranked content backlog: gaps, contradictions, stale pages | 2, 3 |
+| **Sana — support lead** (SaaS buyer, P3) | Wants ticket deflection; needs to know what the bot can't answer | Coverage reporting driven by real user questions | 3 |
 | **Dev — solo builder** (secondary, P1) | Wants a working RAG chatbot over their docs today | Upload → chat → endpoint, with no code | 1 |
 
 **Buyer evolution:** Phase 1–2 sells to an engineer solving a one-time tuning task (small,
@@ -481,6 +483,24 @@ Items here are **independently shippable**; release them as increments rather th
 
 ---
 
+### 8.7 Bring Your Own RAG (OSS phase)
+
+Most developers already have a RAG (LangChain, LlamaIndex, custom). Retrieval scoring is already
+system-agnostic (`core/evalmetrics.py:is_hit` = document match **and** verbatim evidence in the returned
+text), so RAGLabs can be the eval harness for whatever they built.
+
+| ID | Requirement |
+|---|---|
+| FR-4.1 | **Connection = HTTP endpoint contract**: `POST <url> {"question"}` → `{"answer", "contexts":[{"text","source","score"}]}`. Optional field mapping (dotted paths) for existing APIs; auth headers stored encrypted via the vault. Retrieval-only endpoints (no `answer`) allowed |
+| FR-4.2 | **External system version kind**: a version whose config is `{"external": {url, mapping, headers}}` instead of a pipeline; same Eval and Leaderboard tabs |
+| FR-4.3 | **Corpus**: upload the same documents (eval-set generation and Corpus Health only, no build) or import an eval set via CSV |
+| FR-4.4 | **Scoring**: evidence match on returned text, document match replaced by filename match when `source` is given, else evidence-only. Hit@k/MRR/nDCG, latency p50/p95 and answer grading reuse `evaluate.py`. Only diagnoses computable from outside apply (`not_retrieved`, answer modes); the rest show "n/a for external" |
+| FR-4.5 | **Head-to-head leaderboard**: the external system is a row beside RAGLabs configs on the same eval set |
+| FR-4.6 | **CLI / CI gate**: `raglabs eval --endpoint URL --set eval.csv --min-mrr 0.6` exits non-zero on regression |
+| FR-4.7 | Later: Python SDK adapter for in-process testing; OpenTelemetry trace ingestion |
+
+---
+
 ## 9. Architecture
 
 ### 9.1 Phase 1 (deliberately minimal)
@@ -709,3 +729,13 @@ Corpus Health report as one JSON result (instead of `corpus_findings` rows), and
 | **RRF** | Reciprocal Rank Fusion — merges ranked lists without score calibration |
 | **Time to first evidence** | Upload → leaderboard with a Pareto frontier |
 | **Trace event** | One emitted step record within a run |
+
+---
+
+## 17. Open source & SaaS path
+
+- **License: Apache-2.0** (patent grant, business-friendly, keeps an open-core SaaS possible).
+- **Repo hygiene**: `LICENSE`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, issue/PR templates, GitHub Actions CI (backend pytest + frontend build).
+- **Contribution surfaces are the registries that already exist**: node types (`@register`), vector-store adapters, LLM provider presets (`backend/app/llm/presets.py`), and BYO adapters. See `CONTRIBUTING.md`.
+- **Distribution**: `raglabs` CLI (`serve`, `eval`) and a Docker image (the §9.2 trigger "someone else needs to run it" has fired).
+- **Open-core line**: OSS keeps everything single-user and local. A hosted SaaS adds what only a service can: team workspaces/auth (FR-3.23), scheduled re-evals and regression alerts on a connected endpoint, production-query ingestion at scale (FR-3.22), hosted GPU sweeps, and the config prior (FR-3.27, needs cross-user data). Opt-in anonymous telemetry in OSS would feed it.

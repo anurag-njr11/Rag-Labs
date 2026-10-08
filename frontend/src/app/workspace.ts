@@ -1,4 +1,4 @@
-import { useOutletContext, useParams } from 'react-router-dom'
+import { useOutletContext } from 'react-router-dom'
 import type { Project } from '@/api/types'
 
 export interface WorkspaceContext {
@@ -9,11 +9,6 @@ export interface WorkspaceContext {
 /** Inside a workspace tab: the current project, loaded by WorkspaceLayout. */
 export function useWorkspace(): WorkspaceContext {
   return useOutletContext<WorkspaceContext>()
-}
-
-/** The `:id` route param (project id). */
-export function useProjectId(): string {
-  return useParams<{ id: string }>().id ?? ''
 }
 
 /** Workspace routes, for links: `projectPath(id, 'configure')`. */

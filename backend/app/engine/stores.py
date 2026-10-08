@@ -7,7 +7,6 @@ index). Search-time parameters come from whichever pipeline version is asking.
 from __future__ import annotations
 
 import asyncio
-import shutil
 from pathlib import Path
 from typing import Any
 
@@ -65,7 +64,3 @@ async def close_all() -> None:
     for build_id in list(_open):
         await close_store(build_id)
 
-
-async def drop_store_files(project_id: str, build_id: str) -> None:
-    await close_store(build_id)
-    await asyncio.to_thread(shutil.rmtree, store_path(project_id, build_id), True)

@@ -3,7 +3,9 @@
 All notable changes to RAGLabs. The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/);
 phases map to releases (`PRD.md` §5).
 
-## [Unreleased] — Phase 3: Advanced Retrieval & Trust
+## [Unreleased]
+
+## [v3.0.0] — 2026-10-08 — Phase 3: Advanced Retrieval & Trust
 
 ### Added
 

@@ -8,8 +8,8 @@ passages were found, by which search path, and what each step cost.
 **Measure it, too:** test questions written from your own documents, sweeps into a
 quality-vs-cost leaderboard, and a content backlog of what your documents can't answer.
 
-**v2.0** — **Phase 1 (Build & Chat)** and **Phase 2 (Measure & Optimize)** are complete; see
-[`CHANGELOG.md`](CHANGELOG.md). [`PRD.md`](PRD.md) has the full plan (§7.0: what Phase 2 built)
+**v3.0** — **Phase 1 (Build & Chat)**, **Phase 2 (Measure & Optimize)** and **Phase 3 (Advanced
+Retrieval & Trust)** are complete; see [`CHANGELOG.md`](CHANGELOG.md). [`PRD.md`](PRD.md) has the full plan (§7.0: what Phase 2 built)
 and [`IDEAS.md`](IDEAS.md) the idea catalogue.
 
 ## Measure & optimize (v2.0)
@@ -22,6 +22,20 @@ and [`IDEAS.md`](IDEAS.md) the idea catalogue.
   the quality-vs-cost Pareto frontier and **Promote** makes the winner the live version.
 - **Corpus Health** — real user questions → a ranked backlog of what the documents can't answer
   (vs. what retrieval merely missed), plus duplicates, contradictions, unused and stale documents.
+
+## Advanced retrieval & trust (v3.0)
+
+- **Agentic retrieval & query decomposition** — an LLM planner searches again and keeps what answers;
+  multi-part questions are split and fused. Both are sweep axes, so you can see whether they pay for
+  their extra tokens and latency.
+- **Grounding check** — every claim and citation in an answer is graded against its sources; an
+  unsupported claim flags the answer or retries with more context.
+- **Injection-resistance testing** — plant poisoned passages in real retrieval results and measure
+  which defences stop them.
+- **Embedding adapter & prompt optimisation** — train a query-side map and DSPy-style few-shot
+  prompts on your eval set, with held-out before/after numbers.
+- **Platform** — OKF bundle import, code vertical, attested computation, production-query loop,
+  API keys with usage, chat-to-build and recipes.
 
 ## What you can tune
 
@@ -107,9 +121,13 @@ http://127.0.0.1:8000/docs.
 ## Tests
 
 ```bash
-cd backend && uv run pytest -q     # 110+ tests: contracts, all vector stores, pipeline rules, retrieval, eval, answer grading, sweeps, corpus health, eval-set editing
+cd backend && uv run pytest -q     # 240+ tests: contracts, all vector stores, pipeline rules, retrieval, eval, answer grading, sweeps, corpus health, eval-set editing
 cd frontend && npm run build       # type-check + production build
 ```
+
+## Contributing & license
+
+See [`CONTRIBUTING.md`](CONTRIBUTING.md) (how to add a node type, vector store or LLM preset). Licensed under [Apache-2.0](LICENSE).
 
 ## Layout
 
