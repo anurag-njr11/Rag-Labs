@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 
 from .. import db
 from ..core.pipeline import diff_pipelines
-from ..engine import adapter, evaluate, injection, prompt_opt, sweep, sync
+from ..engine import adapter, evaluate, external, injection, prompt_opt, sweep, sync
 from ..ingest import jobs
 from ..llm import provider as llm
 
@@ -141,6 +141,7 @@ def _run_out(r: dict[str, Any], full: bool = False) -> dict[str, Any]:
     out = {k: r[k] for k in ("id", "eval_set_id", "version_id", "build_id", "status", "error", "created_at",
                              "set_revision")}
     out["version"] = r.get("version")
+    out["external"] = r.get("external_name")  # a bring-your-own RAG's name (version_id is its id)
     out["metrics"] = db.loads(r["metrics"], None)
     if full:
         out["results"] = db.loads(r["results"], [])
@@ -332,7 +333,10 @@ async def create_run(project_id: str, set_id: str, body: EvalRunIn) -> dict[str,
     s = await _set(project_id, set_id)
     if s["status"] != "ready":
         raise HTTPException(409, "This eval set isn't ready yet.")
-    v = await _version(project_id, body.version_id)
+    if body.version_id and (system := await external.get(project_id, body.version_id)):
+        v = {"id": system["id"], "config": db.dumps({"external": system["config"].model_dump()})}  # never stored
+    else:
+        v = await _version(project_id, body.version_id)
     judge = body.judge.checked() if body.judge else None
     run_id, job_id = await start_run(project_id, set_id, v, body.answers, judge)
     return {"run": await _get_run(project_id, run_id), "job_id": job_id}
@@ -361,7 +365,8 @@ async def regression_check(project_id: str, v: dict[str, Any]) -> str | None:
 
 async def _get_run(project_id: str, run_id: str, full: bool = False) -> dict[str, Any]:
     r = await db.fetch_one(
-        "SELECT r.*, v.version FROM eval_runs r LEFT JOIN pipeline_versions v ON v.id = r.version_id"
+        "SELECT r.*, v.version, e.name AS external_name FROM eval_runs r LEFT JOIN pipeline_versions v ON v.id = r.version_id"
+           " LEFT JOIN external_systems e ON e.id = r.version_id"
         " WHERE r.id=? AND r.project_id=?", (run_id, project_id))
     if r is None:
         raise HTTPException(404, "eval run not found")
@@ -514,7 +519,8 @@ async def get_injection_run(project_id: str, run_id: str) -> dict[str, Any]:
 
 @router.get("/runs")
 async def list_runs(project_id: str, set_id: str | None = None) -> list[dict[str, Any]]:
-    sql = ("SELECT r.*, v.version FROM eval_runs r LEFT JOIN pipeline_versions v ON v.id = r.version_id"
+    sql = ("SELECT r.*, v.version, e.name AS external_name FROM eval_runs r LEFT JOIN pipeline_versions v ON v.id = r.version_id"
+           " LEFT JOIN external_systems e ON e.id = r.version_id"
            " WHERE r.project_id=?")
     params: tuple = (project_id,)
     if set_id:

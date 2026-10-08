@@ -383,3 +383,14 @@ CREATE TABLE IF NOT EXISTS llm_providers (
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 );
+
+-- A RAG system that runs elsewhere (PRD §8.7). Its id goes in eval_runs.version_id, so runs,
+-- the leaderboard and regression history treat it like a version. Headers are vault-encrypted.
+CREATE TABLE IF NOT EXISTS external_systems (
+    id         TEXT PRIMARY KEY,
+    project_id TEXT NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    name       TEXT NOT NULL,
+    config     TEXT NOT NULL,                         -- JSON ExternalConfig minus headers
+    headers    TEXT NOT NULL DEFAULT '',              -- vault token of the JSON headers
+    created_at TEXT NOT NULL
+);

@@ -47,8 +47,20 @@ def contains_evidence(text: str, evidence: str, threshold: float = EVIDENCE_COVE
     return coverage(evidence, text) >= threshold
 
 
+def same_file(source: str, filename: str | None) -> bool:
+    """Whether an external system's `source` (a path or URL) names the eval item's document file."""
+    def base(s: str) -> str:
+        return re.split(r"[/\\]", s.split("?")[0].split("#")[0].rstrip("/\\"))[-1].strip().lower()
+
+    return not filename or base(source) == base(filename)
+
+
 def is_hit(chunk: dict[str, Any], item: dict[str, Any]) -> bool:
-    return chunk.get("document_id") == item["document_id"] and contains_evidence(chunk.get("text", ""), item["evidence"])
+    if not contains_evidence(chunk.get("text", ""), item["evidence"]):
+        return False
+    if "external_source" in chunk:  # a bring-your-own RAG: match by file name if it names one, else on evidence alone
+        return not chunk["external_source"] or same_file(chunk["external_source"], item.get("filename"))
+    return chunk.get("document_id") == item["document_id"]
 
 
 def first_hit_rank(results: Iterable[dict[str, Any]], item: dict[str, Any]) -> int | None:

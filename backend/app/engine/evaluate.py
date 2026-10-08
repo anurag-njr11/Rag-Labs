@@ -26,7 +26,7 @@ from ..nodes.chunk import approx_tokens
 from ..nodes.prompt import packed_text
 from ..nodes.retrieve import dense_used
 from ..nodes import verify as verify_node
-from . import chat, codecheck, retrieval, stores, sync
+from . import chat, codecheck, external, retrieval, stores, sync
 
 GEN_BATCH = 5
 VAL_BATCH = 10
@@ -448,7 +448,10 @@ async def score_config(job: Job, project_id: str, cfg: dict[str, Any], items: li
     """Score one pipeline config against eval items -> (build, metrics, per-item results).
     `answers=True` also generates each answer and has an LLM grade it (costs LLM calls); the grader
     is `judge` = {provider, model}, default the version's own model. `judged`, if given, receives
-    the grader's inputs so a caller can re-judge them (sweep median-of-3)."""
+    the grader's inputs so a caller can re-judge them (sweep median-of-3). A config with an `external`
+    key is a RAG system running elsewhere (PRD §8.7): scored by calling it, with no build."""
+    if "external" in cfg:
+        return await score_external(job, project_id, cfg, items, stage, answers, judge, judged)
     build = await ready_build(project_id, cfg, job)
     deep = deep_config(cfg)
     results = []
@@ -479,6 +482,72 @@ async def score_config(job: Job, project_id: str, cfg: dict[str, Any], items: li
     metrics["diagnoses"] = {d: sum(1 for r in results if r["diagnosis"] == d) for d in DIAGNOSES}
     metrics["config"] = config_summary(cfg)
     return build, metrics, results
+
+
+async def score_item_external(ext: external.ExternalConfig, item: dict[str, Any]) -> dict[str, Any]:
+    """Score one question against an external system. Only what's observable from outside: the rank of the
+    evidence in the contexts it returned (`not_retrieved` if absent); the rerank/budget modes need our internals."""
+    try:
+        got = await external.query(ext, item["question"])
+    except external.ExternalError as e:
+        return {"item_id": item["id"], "rank": None, "hit": False, "diagnosis": None, "deep_rank": None,
+                "in_context": False, "ctx_tokens": 0, "llm_tokens": 0, "cost_usd": None, "ms": 0.0, "top": [],
+                "error": vault.redact(str(e)), "_final": [], "_answer": None}
+    final = got["contexts"]
+    rank = M.first_hit_rank(final, item)
+    return {
+        "item_id": item["id"], "rank": rank, "hit": rank is not None,
+        "diagnosis": None if rank else "not_retrieved", "deep_rank": None, "in_context": rank is not None,
+        "ctx_tokens": sum(approx_tokens(c["text"]) for c in final), "llm_tokens": 0,
+        "cost_usd": None,  # the external system's own cost is unknown to us
+        "ms": round(got["ms"], 1),
+        "top": [{"id": str(i), "document": c["external_source"], "heading_path": "", "hit": M.is_hit(c, item)}
+                for i, c in enumerate(final[:5], start=1)],
+        "_final": final, "_answer": got["answer"],
+    }
+
+
+async def score_external(job: Job, project_id: str, cfg: dict[str, Any], items: list[dict[str, Any]],
+                         stage: str | None, answers: bool, judge: dict[str, str] | None,
+                         judged: list[dict[str, Any]] | None,
+                         ) -> tuple[dict[str, Any], dict[str, Any], list[dict[str, Any]]]:
+    ext = external.ExternalConfig(**cfg["external"])
+    if answers and not judge:
+        raise EvalError("Pick a judge model to grade an external system's answers.")
+    names = {d["id"]: d["filename"] for d in await db.fetch_all(
+        "SELECT id, filename FROM documents WHERE project_id=?", (project_id,))}
+    if stage:
+        job.progress(stage, 0, len(items))
+    results = []
+    for i, item in enumerate(items, start=1):  # one at a time, like a native run, so latency is honest
+        results.append(await score_item_external(ext, {**item, "filename": names.get(item["document_id"])}))
+        if stage:
+            job.progress(stage, i, len(items))
+    failed = [r for r in results if r.get("error")]
+    if len(failed) == len(results):
+        raise EvalError(failed[0]["error"])
+    finals = [r.pop("_final") for r in results]
+    sent = [r.pop("_answer") for r in results]
+
+    metrics = M.summarize([r["rank"] for r in results], ext.top_k)
+    metrics["p50_ms"] = round(M.percentile([r["ms"] for r in results if not r.get("error")], 0.5), 1)
+    metrics["p95_ms"] = round(M.percentile([r["ms"] for r in results if not r.get("error")], 0.95), 1)
+    metrics["context_hit"] = round(sum(r["in_context"] for r in results) / len(results), 4)
+    metrics["ctx_tokens"] = metrics["query_tokens"] = round(sum(r["ctx_tokens"] for r in results) / len(results))
+    metrics["cost_per_1k"] = None
+    metrics["errors"] = len(failed)
+    if answers:
+        if not any(sent):
+            raise EvalError("The system returned no answers to grade (retrieval-only?). Turn off answer grading.")
+        answered = [{"answer": a, "sources": [c["text"][:GRADE_CONTEXT_CHARS] for c in f], "cost_usd": None,
+                     "ms": r["ms"]} if a is not None else None for a, f, r in zip(sent, finals, results)]
+        todo, label = await grade_answers(job, cfg, items, results, finals, judge, answered=answered)
+        metrics["answers"] = {**M.answer_summary(results), "judge": label}
+        if judged is not None:
+            judged.extend(todo)
+    metrics["diagnoses"] = {d: sum(1 for r in results if r["diagnosis"] == d) for d in DIAGNOSES}
+    metrics["config"] = {"external": vault.redact_url(ext.url)}
+    return {"id": None}, metrics, results
 
 
 # --- answer grading (LLM) ---------------------------------------------------------
@@ -678,12 +747,16 @@ async def _judge(job: Job, provider: str, opts: dict[str, Any], todo: list[dict[
 async def grade_answers(job: Job, cfg: dict[str, Any], items: list[dict[str, Any]],
                         results: list[dict[str, Any]], finals: list[list[dict[str, Any]]],
                         judge: dict[str, str] | None = None, build: dict[str, Any] | None = None,
+                        answered: list[dict[str, Any] | None] | None = None,
                         ) -> tuple[list[dict[str, Any]], str]:
     """Fill results[i] with answer + verdicts, then diagnose the in-context failures (modes 4–7).
+    `answered` = answers already produced elsewhere (an external system); else they're generated here.
     Returns (the grader's inputs, judge label)."""
-    answered, errors = await gather_tolerant(
-        [generate_answer(cfg, it["question"], f, build, it.get("tests")) for it, f in zip(items, finals)], job, "answer")
-    cites = asks_for_citations(cfg)
+    errors: list[Any] = []
+    if answered is None:
+        answered, errors = await gather_tolerant(
+            [generate_answer(cfg, it["question"], f, build, it.get("tests")) for it, f in zip(items, finals)], job, "answer")
+    cites = "external" not in cfg and asks_for_citations(cfg)
     todo = [{"i": i, "question": it["question"], "gold": it["gold_answer"],
              "facets": db.loads(it.get("facets"), []) or [], **a}
             for i, (it, a) in enumerate(zip(items, answered)) if a]
