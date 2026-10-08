@@ -37,6 +37,9 @@ import type {
   OkfImportResult,
   PromptRun,
   EvalRunDetail,
+  ExternalConfig,
+  ExternalSystem,
+  ExternalTestResult,
   EvalSet,
   EvalSetDetail,
   Sweep,
@@ -95,6 +98,7 @@ export const qk = {
   run: (runId: string) => ['runs', runId] as const,
   evalSets: (id: string) => ['projects', id, 'eval', 'sets'] as const,
   evalSet: (id: string, setId: string) => ['projects', id, 'eval', 'sets', setId] as const,
+  external: (id: string) => ['projects', id, 'external'] as const,
   evalRuns: (id: string, setId: string) => ['projects', id, 'eval', 'runs', setId] as const,
   evalRun: (id: string, runId: string) => ['projects', id, 'eval', 'run', runId] as const,
   evalFixes: (id: string, runId: string) => ['projects', id, 'eval', 'run', runId, 'fixes'] as const,
@@ -788,6 +792,39 @@ export function useRunEval(projectId: string, setId: string) {
     onSuccess: () => void qc.invalidateQueries({ queryKey: qk.evalRuns(projectId, setId) }),
   })
 }
+
+// ------------------------------------------------------------------------------------------ bring your own RAG
+
+export const useExternalSystems = (projectId: string | undefined, o?: QOpts<ExternalSystem[]>) =>
+  useQuery({
+    queryKey: qk.external(projectId ?? ''),
+    queryFn: () => api.get<ExternalSystem[]>(`/projects/${projectId}/external`),
+    enabled: !!projectId,
+    ...o,
+  })
+
+export function useCreateExternal(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (body: { name: string; config: ExternalConfig }) =>
+      api.post<ExternalSystem>(`/projects/${projectId}/external`, body),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.external(projectId) }),
+  })
+}
+
+export function useDeleteExternal(projectId: string) {
+  const qc = useQueryClient()
+  return useMutation({
+    mutationFn: (id: string) => api.del(`/projects/${projectId}/external/${id}`),
+    onSuccess: () => void qc.invalidateQueries({ queryKey: qk.external(projectId) }),
+  })
+}
+
+export const useTestExternal = (projectId: string) =>
+  useMutation({
+    mutationFn: (body: { config: ExternalConfig; question?: string }) =>
+      api.post<ExternalTestResult>(`/projects/${projectId}/external/test`, body),
+  })
 
 // ------------------------------------------------------------------------------------------ sweeps
 

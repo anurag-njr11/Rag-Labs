@@ -539,6 +539,8 @@ async def get_run(project_id: str, run_id: str) -> dict[str, Any]:
 async def run_fixes(project_id: str, run_id: str) -> list[dict[str, Any]]:
     """One-click fixes for the run's miss diagnoses: each a full config to save as a new version."""
     run = await _get_run(project_id, run_id, full=True)
+    if run["external"]:
+        return []  # nothing of ours to change in someone else's RAG
     v = await _version(project_id, run["version_id"])
     cfg = sync.version_config(v)
     out = []

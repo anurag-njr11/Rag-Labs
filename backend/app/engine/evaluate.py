@@ -546,7 +546,8 @@ async def score_external(job: Job, project_id: str, cfg: dict[str, Any], items: 
         if judged is not None:
             judged.extend(todo)
     metrics["diagnoses"] = {d: sum(1 for r in results if r["diagnosis"] == d) for d in DIAGNOSES}
-    metrics["config"] = {"external": vault.redact_url(ext.url)}
+    metrics["config"] = {"external": vault.redact_url(ext.url), "parse": "", "chunk": "", "embed": "", "store": "",
+                         "dense": False, "retrieve": "external", "top_k": ext.top_k, "rerank": "none"}
     return {"id": None}, metrics, results
 
 

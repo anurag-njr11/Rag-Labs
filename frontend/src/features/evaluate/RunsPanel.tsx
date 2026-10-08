@@ -1,6 +1,6 @@
 import { useState, type ReactNode } from 'react'
 import { ChevronRight, CircleCheck, CircleX, Play } from 'lucide-react'
-import { errorMessage, useCreateVersion, useEvalFixes, useEvalRun, useEvalRuns, useRunEval, useVersions } from '@/api/hooks'
+import { errorMessage, useCreateVersion, useEvalFixes, useEvalRun, useEvalRuns, useExternalSystems, useRunEval, useVersions } from '@/api/hooks'
 import { formatBytes, formatMs, formatNumber, formatPer1k, runCostPer1k, stripTags } from '@/api/format'
 import type { EvalDiagnosis, EvalFix, EvalItem, EvalItemResult, EvalMetrics, EvalRun, EvalRunDetail, Grade, Judge } from '@/api/types'
 import { Badge, Button, Card, Dialog, EffectBadge, ProgressBar, Select, Spinner, Switch, Tabs, cn, useToast, type ProgressTone, Collapse, presence, usePresence } from '@/components/ui'
@@ -65,6 +65,7 @@ function Delta({ now, before, pctFmt = true, ci, beforeCi }: { now: number; befo
 
 function configLine(m: EvalMetrics) {
   const c = m.config
+  if (c.external) return `your RAG · ${c.external} · top-${c.top_k} passages`
   const plain = (t: string) => t.replace(/_/g, ' ')
   return plain(`${c.retrieve} · top-k ${c.top_k} · rerank ${c.rerank} · ${c.chunk}${c.dense === false || (c.dense === undefined && c.retrieve === 'keyword') ? '' : ` · ${c.store}`}`)
 }
@@ -107,7 +108,7 @@ function Scorecard({ run, before, stale }: { run: EvalRunDetail; before?: EvalMe
       <p className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
         <span className={cn('text-title-lg', stale || m.n < MIN_N_FOR_VERDICT ? 'text-text-secondary' : TONE_TEXT[toneFor(m.hit_at_k)])}>{verdict(m.hit_at_k, m.n, stale)}</span>
         <span className="text-body text-text-secondary">
-          {hits} of {m.n} questions reach the prompt · v{run.version} · top-{m.k} passages sent to the model{m.answers?.judge ? ` · graded by ${m.answers.judge}` : ''}
+          {hits} of {m.n} questions reach the prompt · {run.external ?? `v${run.version}`} · top-{m.k} passages sent to the model{m.answers?.judge ? ` · graded by ${m.answers.judge}` : ''}
         </span>
       </p>
       <dl className="grid grid-cols-2 gap-3 md:grid-cols-3 xl:grid-cols-6">
@@ -116,7 +117,7 @@ function Scorecard({ run, before, stale }: { run: EvalRunDetail; before?: EvalMe
         {hitK && <Tile label={`Hit@${m.k}`} value={pct(m.hit_at_k)} meter={m.hit_at_k} hint={`reaches the prompt${m.ci?.hit_at_k ? ` · ${ciText(m.ci.hit_at_k)}` : ''}`} delta={<Delta now={m.hit_at_k} before={before?.hit_at_k} ci={m.ci?.hit_at_k} beforeCi={before?.ci?.hit_at_k} />} />}
         <Tile label="MRR" value={m.mrr.toFixed(2)} meter={m.mrr} hint={m.ndcg_at_k != null ? `nDCG@${m.k} ${m.ndcg_at_k.toFixed(2)} · 1.0 = always first` : '1.0 = always first'} delta={<Delta now={m.mrr} before={before?.mrr} ci={m.ci?.mrr} beforeCi={before?.ci?.mrr} pctFmt={false} />} />
         <Tile label="Retrieval p50" value={formatMs(m.p50_ms)} hint={`${m.p95_ms != null ? `p95 ${formatMs(m.p95_ms)} · ` : ''}retrieval only${m.answers?.answer_p50_ms != null ? '' : ' — end-to-end is much slower; run with answers to measure it'}`} />
-        {cost.value !== undefined && (
+        {cost.value !== undefined && !m.config.external && (
           <Tile
             label="Cost / 1k queries"
             value={cost.withAnswers || cost.value ? formatPer1k(cost.value) : 'not measured'}
@@ -267,7 +268,7 @@ function MissBreakdown({ run, projectId }: { run: EvalRunDetail; projectId: stri
               <span className="font-mono text-mono tabular-nums text-text-secondary">{n}</span>
             </div>
             <ProgressBar value={n / misses} tone={n ? 'warning' : 'neutral'} aria-label={`${DIAGNOSIS[d].label}: ${n}`} />
-            {n > 0 && <p className="text-body-sm text-text-tertiary">{DIAGNOSIS[d].fix}</p>}
+            {n > 0 && <p className="text-body-sm text-text-tertiary">{run.external && d === 'not_retrieved' ? 'The evidence was not in the passages your system returned — check its retriever, chunking or top-k.' : DIAGNOSIS[d].fix}</p>}
             {n > 0 && fixes.data?.find((f) => f.diagnosis === d) && (
               <div><ApplyFix projectId={projectId} fix={fixes.data.find((f) => f.diagnosis === d)!} /></div>
             )}
@@ -304,7 +305,7 @@ function RunHistory({ runs, selected, onSelect, setRevision = 0 }: { runs: EvalR
                 )}
               >
                 <span className="flex items-center gap-3">
-                  <span className="text-heading text-text-primary">v{r.version ?? '?'}</span>
+                  <span className="max-w-40 truncate text-heading text-text-primary">{r.external ?? `v${r.version ?? '?'}`}</span>
                   {m ? (
                     <>
                       <ProgressBar value={m.hit_at_k} tone={toneFor(m.hit_at_k)} className="flex-1" aria-label={`Hit@${m.k}`} />
@@ -565,9 +566,17 @@ export function RunsPanel({ projectId, setId, items, side, judge, setRevision, s
   const run = detail.data?.metrics ? detail.data : undefined
 
   const active = versions.data?.find((v) => v.active)
-  const options = (versions.data ?? []).map((v) => ({ value: v.id, label: `v${v.version}${v.active ? ' (active)' : ''}${v.note ? ` — ${v.note}` : ''}` }))
+  const externals = useExternalSystems(projectId).data ?? []
+  const options = [
+    ...(versions.data ?? []).map((v) => ({ value: v.id, label: `v${v.version}${v.active ? ' (active)' : ''}${v.note ? ` — ${v.note}` : ''}` })),
+    ...externals.map((x) => ({ value: x.id, label: `Your RAG: ${x.name}` })),
+  ]
 
   const go = () => {
+    if (answers && !judge && externals.some((x) => x.id === versionId)) {
+      toast({ tone: 'warning', title: 'Pick a judge model', description: "An external system has no model of its own to grade its answers; choose one in the Judge model menu above." })
+      return
+    }
     start.mutate(
       { version_id: versionId || active?.id, answers, judge: judge ?? undefined },
       {

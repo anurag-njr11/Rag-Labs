@@ -14,10 +14,12 @@ import { AdapterPanel } from './AdapterPanel'
 import { PromptOptPanel } from './PromptOptPanel'
 import { InjectionPanel } from './InjectionPanel'
 import { SweepsPanel } from './SweepsPanel'
+import { ExternalPanel } from './ExternalPanel'
 
 const VIEWS = [
   { value: 'quality', label: 'Retrieval quality' },
   { value: 'sweeps', label: 'Sweeps' },
+  { value: 'external', label: 'Your RAG' },
   { value: 'adapter', label: 'Embedding adapter' },
   { value: 'prompt', label: 'Prompt optimisation' },
   { value: 'injection', label: 'Injection resistance' },
@@ -145,6 +147,7 @@ export default function EvaluateTab() {
             }
           />}
           {view === 'sweeps' && <SweepsPanel projectId={project.id} setId={detail.data.id} judge={judge} />}
+          {view === 'external' && <ExternalPanel projectId={project.id} />}
           {view === 'adapter' && <AdapterPanel projectId={project.id} setId={detail.data.id} />}
           {view === 'prompt' && <PromptOptPanel projectId={project.id} setId={detail.data.id} />}
           {view === 'injection' && <InjectionPanel projectId={project.id} setId={detail.data.id} />}

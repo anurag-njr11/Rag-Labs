@@ -104,7 +104,7 @@ async def test_external_run_scores_like_a_pipeline(project, remote):
     assert results[1]["diagnosis"] == "not_retrieved" and results[2]["diagnosis"] is None and results[2]["error"]
     assert m["n"] == 3 and m["errors"] == 1 and m["hit_at_k"] == pytest.approx(1 / 3, abs=1e-3)
     assert m["mrr"] == pytest.approx(0.5 / 3, abs=1e-3) and m["cost_per_1k"] is None
-    assert m["diagnoses"]["not_retrieved"] == 1 and m["config"] == {"external": "http://rag.test/ask"}
+    assert m["diagnoses"]["not_retrieved"] == 1 and m["config"]["external"] == "http://rag.test/ask"
     assert len(remote) == 3
 
 

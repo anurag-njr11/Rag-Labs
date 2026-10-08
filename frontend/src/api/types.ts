@@ -760,6 +760,8 @@ export interface EvalConfigSummary {
   retrieve: string
   top_k: number
   rerank: string
+  /** A bring-your-own RAG's URL (the pipeline fields above are then blank). */
+  external?: string
 }
 export interface EvalMetrics {
   /** 95% intervals for the retrieval metrics (absent on runs made before they were added). */
@@ -816,6 +818,8 @@ export interface EvalRun {
   eval_set_id: string
   version_id: string
   version: number | null
+  /** Name of the bring-your-own RAG this run scored (`version_id` is then its id, `version` null). */
+  external: string | null
   build_id: string | null
   status: EvalStatus
   error: string | null
@@ -823,6 +827,30 @@ export interface EvalRun {
   /** The eval set's revision this run scored (null on older runs). */
   set_revision: number | null
   metrics: EvalMetrics | null
+}
+/** A RAG system running elsewhere, scored over HTTP (PRD §8.7). Header values are never returned. */
+export interface ExternalConfig {
+  url: string
+  headers?: Record<string, string>
+  question_field: string
+  answer_path: string
+  contexts_path: string
+  text_path: string
+  source_path: string
+  top_k: number
+  timeout_s: number
+}
+export interface ExternalSystem {
+  id: string
+  name: string
+  created_at: string
+  config: Omit<ExternalConfig, 'headers'> & { header_names: string[] }
+}
+export interface ExternalTestResult {
+  question: string
+  ms: number
+  answer: string | null
+  contexts: { text: string; external_source: string; score: number | null }[]
 }
 export interface EvalRunDetail extends EvalRun {
   results: EvalItemResult[]

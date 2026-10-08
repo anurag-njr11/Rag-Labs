@@ -291,6 +291,23 @@ a required fact is missing) → `wrong_specificity` (judge: too vague / too verb
 `GET /runs/{id}/fixes` returns nothing for the four answer-level modes (no single setting fixes them).
 Fields marked `?` are absent on runs scored before they existed.
 
+### Bring your own RAG (FR-4.1–4.4)
+
+Score a RAG that runs elsewhere with the same metrics. Header values are stored encrypted and never returned.
+
+| Endpoint | Purpose |
+|---|---|
+| `GET /api/projects/{id}/external` | list systems: `{id, name, created_at, config: {url, question_field, answer_path, contexts_path, text_path, source_path, top_k, timeout_s, header_names[]}}` |
+| `POST /api/projects/{id}/external` | `{name, config: {url, headers?, …mapping}}` → the system. 422 if the URL has credentials or isn't http(s) |
+| `DELETE /api/projects/{id}/external/{sid}` | 204 |
+| `POST /api/projects/{id}/external/test` | `{config, question?}` → `{question, ms, answer\|null, contexts[{text, external_source, score}]}`; 502 with a message if the call or mapping fails. Saves nothing |
+
+The system is called with `POST <url> {"question": "…"}` and must return `{"answer": "…", "contexts": [{"text": "…", "source": "file.md", "score": 0.8}]}`
+(paths configurable; no `answer` = retrieval only). Run it with `POST /eval/sets/{set_id}/runs` using the system's id as `version_id`; the run then has
+`external: "<name>"` and `version: null`, `build_id: null`, and `metrics.config.external = <url>`. A passage is a hit when it contains the item's evidence
+and, if it names a `source`, that is the item's document file. Only `not_retrieved` and answer diagnoses are produced. `answers: true` needs a `judge`.
+`GET /eval/runs/{id}/fixes` returns `[]` for external runs. Questions whose call failed carry `error` and count as misses; `metrics.errors` counts them.
+
 ### Sweeps
 
 A sweep scores every combination of a few axes (`slot.field` or `slot.type`) over a base version,
