@@ -10,7 +10,12 @@ A project card opens its workspace. Deleting a project asks for confirmation and
 
 ## The create wizard
 
-**New project** opens a four-step wizard. Its state lives in the address bar, so reloading the page resumes where you were.
+**New project** opens a wizard. Its state lives in the address bar, so reloading the page resumes where you were. The first screen asks what you want to do:
+
+- **Build a RAG here** is the four steps below.
+- **Evaluate a RAG I already have** is three steps: Name, Documents (upload the documents your RAG searches), then you land on Evaluate to generate questions and connect your endpoint. There is no Configure or Build step. See [Evaluate your own RAG](/docs/your-rag).
+
+The four steps for building:
 
 1. **Name.** A name and an optional description.
 2. **Documents.** Upload files or add a URL. Nothing is indexed yet; you choose how in the next step. See [Documents](/docs/documents) for formats and options.

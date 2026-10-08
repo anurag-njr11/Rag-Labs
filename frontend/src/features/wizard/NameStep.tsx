@@ -2,13 +2,13 @@ import { useState, type FormEvent } from 'react'
 import { ArrowRight } from 'lucide-react'
 import { errorMessage, useCreateProject, useUpdateProject } from '@/api/hooks'
 import type { Project } from '@/api/types'
-import { Button, Card, Field, Input, Textarea } from '@/components/ui'
+import { Button, Card, Field, Input, OptionCardGroup, Textarea } from '@/components/ui'
 import { StepIntro, WizardBody, WizardFooter } from './WizardShell'
 
 const MAX_NAME = 80
 
 /** Step 1 — name + description. Creates the project (v1 = recommended config) or updates it when coming back. */
-export function NameStep({ project, onNext }: { project?: Project; onNext: (p: Project) => void }) {
+export function NameStep({ project, byo, onMode, onNext }: { project?: Project; byo: boolean; onMode: (byo: boolean) => void; onNext: (p: Project) => void }) {
   const create = useCreateProject()
   const update = useUpdateProject(project?.id ?? '')
   const [name, setName] = useState(project?.name ?? '')
@@ -38,6 +38,17 @@ export function NameStep({ project, onNext }: { project?: Project; onNext: (p: P
           title="Name your project"
           description="A project holds one document set and every version of its retrieval pipeline."
         />
+        {!project && (
+          <OptionCardGroup
+            aria-label="What do you want to do?"
+            value={byo ? 'byo' : 'build'}
+            onChange={(v) => onMode(v === 'byo')}
+            items={[
+              { value: 'build', title: 'Build a RAG here', description: 'Upload documents, tune the pipeline, chat with cited answers, then measure it.' },
+              { value: 'byo', title: 'Evaluate a RAG I already have', description: 'Connect your own RAG over HTTP and score it on questions generated from your documents.' },
+            ]}
+          />
+        )}
         <Card padding="lg" className="flex flex-col gap-5">
           <Field label="Name" error={touched ? nameError : null} help="Shown on the projects page and in the API.">
             {(f) => (
@@ -51,7 +62,7 @@ export function NameStep({ project, onNext }: { project?: Project; onNext: (p: P
                 placeholder="e.g. Pydantic docs"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
-                onBlur={() => setTouched(true)}
+                onBlur={() => name.trim() && setTouched(true)}
               />
             )}
           </Field>
@@ -74,7 +85,8 @@ export function NameStep({ project, onNext }: { project?: Project; onNext: (p: P
           )}
         </Card>
       </WizardBody>
-      <WizardFooter step={0} hint={project ? 'Step 1 of 4 · project created' : 'Step 1 of 4 · starts with the recommended pipeline'}>
+      <WizardFooter step={0} byo={byo}
+        hint={project ? `Step 1 of ${byo ? 3 : 4} · project created` : byo ? 'Step 1 of 3 · you will upload the documents your RAG uses' : 'Step 1 of 4 · starts with the recommended pipeline'}>
         <Button type="submit" variant="primary" loading={pending} iconRight={<ArrowRight size={14} aria-hidden />}>
           {project ? 'Continue' : 'Create project'}
         </Button>

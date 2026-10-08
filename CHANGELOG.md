@@ -7,6 +7,7 @@ phases map to releases (`PRD.md` §5).
 
 ### Added
 
+- **"Evaluate a RAG I already have"** in the create wizard: a three-step path (Name, Documents, then Evaluate → Your RAG) that skips Configure and Build.
 - **In-app Docs** (top bar → Docs): 20 searchable pages with a sidebar, "on this page" outline and previous/next links, covering every tab, all pipeline options, the metrics and troubleshooting. Written as Markdown in `frontend/src/features/docs/content/`.
 - **Bring Your Own RAG** (FR-4.1–4.5): Evaluate → *Your RAG* connects an HTTP endpoint (answer + retrieved passages,
   with a response mapping and an encrypted auth header) and scores it on the same eval set with Hit@k, MRR, nDCG,

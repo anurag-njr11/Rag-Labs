@@ -8,7 +8,7 @@ The same retrieval metrics (Hit@k, MRR, nDCG), latency and optional answer gradi
 
 ## What you need
 
-1. A RAGLabs project with the **same documents** your system searches.
+1. A RAGLabs project with the **same documents** your system searches. The quickest way is **New project**, then **Evaluate a RAG I already have**: it asks for a name and your documents, then takes you to Evaluate.
 2. An **eval set** for those documents: generate one (this builds the project's default index first), or import your own with CSV. See [Evaluate](/docs/evaluate).
 3. An **HTTP endpoint** on your system that accepts a question and returns the answer and the passages it retrieved.
 

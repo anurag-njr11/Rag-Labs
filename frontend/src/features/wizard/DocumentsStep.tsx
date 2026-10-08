@@ -13,7 +13,7 @@ import { StepIntro, WizardBody, WizardFooter } from './WizardShell'
 type Source = 'files' | 'url'
 
 /** Step 2 — upload files (`?build=false`, nothing is indexed yet) or import a URL / sitemap. */
-export function DocumentsStep({ project, onBack, onNext }: { project: Project; onBack: () => void; onNext: () => void }) {
+export function DocumentsStep({ project, byo, onBack, onNext }: { project: Project; byo?: boolean; onBack: () => void; onNext: () => void }) {
   const pid = project.id
   const { toast } = useToast()
   const [source, setSource] = useState<Source>('files')
@@ -128,7 +128,7 @@ export function DocumentsStep({ project, onBack, onNext }: { project: Project; o
           )}
         </section>
       </WizardBody>
-      <WizardFooter step={1} hint={hint}>
+      <WizardFooter step={1} byo={byo} hint={hint ?? (byo ? 'Step 2 of 3 · upload the same documents your RAG searches' : undefined)}>
         <Button icon={<ArrowLeft size={14} aria-hidden />} onClick={onBack}>Back</Button>
         <Button
           variant="primary"
@@ -136,7 +136,7 @@ export function DocumentsStep({ project, onBack, onNext }: { project: Project; o
           disabled={docs.length === 0 || busy}
           onClick={onNext}
         >
-          Continue
+          {byo ? 'Continue to evaluation' : 'Continue'}
         </Button>
       </WizardFooter>
     </div>

@@ -1,5 +1,5 @@
 import { useRef, type ReactNode } from 'react'
-import { useSearchParams } from 'react-router-dom'
+import { useNavigate, useSearchParams } from 'react-router-dom'
 import { FolderX } from 'lucide-react'
 import { ApiError, errorMessage, useProject } from '@/api/hooks'
 import type { Project } from '@/api/types'
@@ -21,6 +21,8 @@ export default function CreateWizard() {
   const projectId = params.get('project') ?? undefined
   const versionId = params.get('v')
   const jobId = params.get('job')
+  const byo = params.get('mode') === 'byo'
+  const navigate = useNavigate()
   const rawStep = Number(params.get('step') ?? 0)
   const step = projectId ? Math.min(Math.max(Number.isFinite(rawStep) ? rawStep : 0, 0), versionId ? 3 : 2) : 0
   const q = useProject(projectId)
@@ -32,7 +34,7 @@ export default function CreateWizard() {
     const p = new URLSearchParams()
     if (id) p.set('project', id)
     p.set('step', String(next))
-    const merged: Record<string, string | null> = { v: versionId, job: jobId, ...extra }
+    const merged: Record<string, string | null> = { v: versionId, job: jobId, mode: byo ? 'byo' : null, ...extra }
     if (next < 3) {
       merged.job = null
       if (next < 2) merged.v = null
@@ -68,9 +70,10 @@ export default function CreateWizard() {
       </div>
     )
   } else if (step === 0 || !project) {
-    body = <NameStep project={project} onNext={(p) => go(1, {}, p.id)} />
+    body = <NameStep project={project} byo={byo} onMode={(on) => go(0, { mode: on ? 'byo' : null })} onNext={(p) => go(1, {}, p.id)} />
   } else if (step === 1) {
-    body = <DocumentsStep project={project} onBack={() => go(0)} onNext={() => go(2)} />
+    // Evaluating an existing RAG skips Configure and Build: the eval set is generated on the Evaluate tab.
+    body = <DocumentsStep project={project} byo={byo} onBack={() => go(0)} onNext={() => (byo ? navigate(`${projectPath(project.id, 'evaluate')}?view=external`) : go(2))} />
   } else if (step === 2) {
     body = <ConfigureStep project={project} onBack={() => go(1)} onNext={(vid) => go(3, { v: vid, job: null })} />
   } else {
@@ -88,7 +91,7 @@ export default function CreateWizard() {
 
   return (
     <div className="flex flex-1 flex-col overflow-x-clip">
-      <WizardHeader step={step} onStepClick={step < 3 ? onStepClick : undefined} exitTo={exitTo} title={project ? project.name : 'New project'} />
+      <WizardHeader step={step} onStepClick={step < 3 ? onStepClick : undefined} exitTo={exitTo} title={project ? project.name : 'New project'} byo={byo} />
       <div ref={stage} className="flex flex-1 flex-col">
         {body}
       </div>
