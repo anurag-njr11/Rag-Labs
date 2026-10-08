@@ -5,6 +5,21 @@ phases map to releases (`PRD.md` §5).
 
 ## [Unreleased]
 
+### Added
+
+- **Bring Your Own RAG** (FR-4.1–4.5): Evaluate → *Your RAG* connects an HTTP endpoint (answer + retrieved passages,
+  with a response mapping and an encrypted auth header) and scores it on the same eval set with Hit@k, MRR, nDCG,
+  latency and (with a judge) answer grading. It shows up in run history beside pipeline versions. Hits match on
+  evidence plus, when the system names a source, the file. Rerank/budget diagnoses and one-click fixes don't apply.
+- **`raglabs` CLI** (FR-4.6): `raglabs eval --endpoint … --set eval.csv --min-mrr 0.6` exits non-zero below a
+  threshold, for CI; `raglabs serve` runs the app.
+- Open-source files: Apache-2.0 `LICENSE`, `CONTRIBUTING.md`, `CODE_OF_CONDUCT.md`, `SECURITY.md`, issue/PR
+  templates and a CI workflow.
+
+### Removed
+
+- Unused code: `stores.drop_store_files` and the `useHealth`, `useBuilds`, `useJob`, `useNoProviderKey` and `useProjectId` hooks.
+
 ## [v3.0.0] — 2026-10-08 — Phase 3: Advanced Retrieval & Trust
 
 ### Added

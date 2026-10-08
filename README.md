@@ -118,6 +118,21 @@ curl -X POST http://127.0.0.1:8000/api/projects/<id>/chat \
 The full contract is in [`frontend/API.md`](frontend/API.md); interactive docs at
 http://127.0.0.1:8000/docs.
 
+## Test a RAG you already have
+
+Evaluate → **Your RAG** connects any HTTP endpoint (`POST {"question"}` → `{"answer", "contexts": [{"text", "source"}]}`, mappable) and scores it on the same eval set as your pipelines, so you can see
+"your RAG: MRR 0.52, best RAGLabs config: 0.71". See [`USER_GUIDE.md`](USER_GUIDE.md).
+
+### Gate CI on retrieval quality
+
+```bash
+cd backend && uv run raglabs eval --endpoint https://staging.example.com/ask --set eval.csv   --header "Authorization: Bearer $RAG_TOKEN" --min-mrr 0.6 --min-hit 0.8
+```
+
+`eval.csv` has columns `question`, `evidence` (a verbatim quote that answers it) and optionally `document`
+(the file name). Exit code 0 = thresholds met, 1 = missed, 2 = bad input or unreachable. `--json` prints the metrics.
+In GitHub Actions, run the command above in a step after `astral-sh/setup-uv`. `raglabs serve` starts the app.
+
 ## Tests
 
 ```bash

@@ -162,3 +162,22 @@ async def test_api_register_test_and_list(project, remote):
         assert [x["name"] for x in listed] == ["Mine"]
         assert (await c.delete(f"/api/projects/p/external/{made.json()['id']}")).status_code == 204
         assert (await c.get("/api/projects/p/external")).json() == []
+
+
+def test_cli_gate_exit_codes(remote, tmp_path, capsys):
+    from app import cli
+
+    csv_path = tmp_path / "eval.csv"
+    rows = ["question,evidence,document",
+            f"how many times are failed uploads retried,{EVIDENCE_1},uploads.md",
+            f"how big can an upload be,{EVIDENCE_2},uploads.md"]
+    csv_path.write_text(chr(10).join(rows), encoding="utf-8")
+    argv = ["eval", "--endpoint", "http://rag.test/ask", "--set", str(csv_path)]
+    # i1: evidence at rank 2 -> 1/2; i2: right text from the wrong file -> miss. MRR 0.25, Hit@8 0.5
+    assert cli.main(argv + ["--min-mrr", "0.2", "--min-hit", "0.5"]) == 0
+    assert "MRR 0.250" in capsys.readouterr().out
+    assert cli.main(argv + ["--min-mrr", "0.5", "--json"]) == 1
+    assert '"passed": false' in capsys.readouterr().out
+    with pytest.raises(SystemExit) as bad:
+        cli.main(["eval", "--endpoint", "ftp://x", "--set", str(csv_path)])
+    assert bad.value.code == 2

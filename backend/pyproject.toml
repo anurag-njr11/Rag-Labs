@@ -28,8 +28,15 @@ dependencies = [
     "uvicorn[standard]>=0.53.0",
 ]
 
-[tool.uv]
-package = false
+[project.scripts]
+raglabs = "app.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

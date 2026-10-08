@@ -422,6 +422,18 @@ Tick **Only misses** to list just the failures.
 
 A dialog shows the exact change first. Saving creates a new active version, and it is scored on the eval set automatically, so the result appears in **Run history** with ▲ / ▼. *Not retrieved* and *Wrong answer despite context* have no one-setting fix: run a sweep, or try another prompt style or model.
 
+### Evaluating a RAG you already built ("Your RAG")
+
+Evaluate → **Your RAG** scores a system that runs elsewhere (LangChain, LlamaIndex, your own API) on the same eval set as your pipelines.
+
+1. Upload the same documents and generate (or import) an eval set.
+2. In **Your RAG**, enter the endpoint URL (and an auth header if needed). RAGLabs sends `POST {"question": "..."}` and expects `{"answer": "...", "contexts": [{"text": "...", "source": "file.md"}]}`; open **Response mapping** if your API's shape differs. **Test with one question** shows what came back. **Save**.
+3. In **Retrieval quality**, pick *Your RAG: name* in the version menu and **Run evaluation**. It appears in the run history next to your pipelines.
+
+A passage is a hit when it contains the question's evidence and, if it names a source, that source is the right file. Only what is visible from outside is diagnosed (evidence missing from the returned passages, and answer problems when you grade answers; for that, choose a Judge model). RAGLabs can't tell you about your system's reranker or context budget.
+
+For CI, see "Gate CI on retrieval quality" in the [README](README.md).
+
 ### Editing the eval set
 
 Click **Edit questions** on the eval-set card to:
