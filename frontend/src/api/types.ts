@@ -812,6 +812,33 @@ export interface EvalItemResult {
   format_error?: string
   ms: number
   top: { id: string; document: string; heading_path: string; hit: boolean }[]
+  /** External systems: the trace id this question was sent with (`traceparent`). */
+  trace_id?: string | null
+  /** External systems: the OpenTelemetry spans it exported for this question (FR-4.7). */
+  steps?: ExternalStep[]
+}
+/** One span an external system exported, as a step. `start_ms` is relative to the question's first span. */
+export interface ExternalStep {
+  seq: number
+  step: string
+  start_ms: number
+  ms: number
+  tokens_in: number
+  tokens_out: number
+  cost_usd: number
+  /** The span with no parent: the whole request. */
+  root: boolean
+  payload: { model?: string | null; priced?: boolean }
+}
+export interface ExternalStepSummary {
+  step: string
+  n: number
+  /** Median start offset; rows come in this order. */
+  start_ms: number
+  p50_ms: number
+  p95_ms: number
+  tokens_in: number
+  tokens_out: number
 }
 export interface EvalRun {
   id: string
@@ -854,6 +881,8 @@ export interface ExternalTestResult {
 }
 export interface EvalRunDetail extends EvalRun {
   results: EvalItemResult[]
+  /** External systems that export OpenTelemetry spans: per step, across questions (root spans left out). */
+  trace_summary?: ExternalStepSummary[]
 }
 
 // ---- sweeps ----------------------------------------------------------------

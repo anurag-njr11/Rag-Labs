@@ -42,7 +42,7 @@ export function Input({ icon, suffix, invalid, mono, size = 'md', className, wra
           size === 'sm' ? 'h-6 px-2 text-body-sm' : 'h-8 px-2.5',
           icon && 'pl-8',
           suffix && 'pr-12',
-          mono && 'font-mono text-mono',
+          mono && 'font-mono text-mono [font-variant-ligatures:none]',
           className,
         )}
         {...rest}
@@ -64,7 +64,7 @@ export function Textarea({ invalid, mono, className, rows = 4, ...rest }: Textar
     <textarea
       rows={rows}
       aria-invalid={invalid || undefined}
-      className={cn(control, border(invalid), 'resize-y px-2.5 py-1.5', mono && 'font-mono text-mono', className)}
+      className={cn(control, border(invalid), 'resize-y px-2.5 py-1.5', mono && 'font-mono text-mono [font-variant-ligatures:none]', className)}
       {...rest}
     />
   )

@@ -39,7 +39,8 @@ Export a ready-made file from the Evaluate tab (**Export CSV**) and it works as 
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `--endpoint` | required | The URL to POST questions to; must be http or https and not contain credentials |
+| `--endpoint` | one of these | The URL to POST questions to; must be http or https and not contain credentials |
+| `--system` | one of these | A Python function to call in-process instead: `module:function` or `file.py:function` |
 | `--set` | required | The eval CSV |
 | `--min-mrr` | none | Fail if MRR is below this |
 | `--min-hit` | none | Fail if Hit@top-k is below this |
@@ -54,6 +55,16 @@ Export a ready-made file from the Evaluate tab (**Export CSV**) and it works as 
 | `--json` | off | Print the metrics as JSON |
 
 The endpoint contract and the scoring rules are the same as in [Evaluate your own RAG](/docs/your-rag).
+
+### A Python function instead of an endpoint
+
+`--system` scores a function in-process, with no server, in place of `--endpoint`:
+
+```bash
+uv run raglabs eval --system my_rag:ask --set eval.csv --min-mrr 0.6
+```
+
+Give `module:function` or `path/to/file.py:function`; with just a module or file, the one function marked `@raglabs.system` is used. The function's return shapes are described in [Evaluate your own RAG](/docs/your-rag). The mapping options do not apply.
 
 ### Output and exit codes
 

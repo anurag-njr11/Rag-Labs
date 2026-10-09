@@ -308,6 +308,17 @@ The system is called with `POST <url> {"question": "…"}` and must return `{"an
 and, if it names a `source`, that is the item's document file. Only `not_retrieved` and answer diagnoses are produced. `answers: true` needs a `judge`.
 `GET /eval/runs/{id}/fixes` returns `[]` for external runs. Questions whose call failed carry `error` and count as misses; `metrics.errors` counts them.
 
+**Traces (FR-4.7).** Each question is sent with `traceparent: 00-<trace_id>-<span_id>-01` and its result records `trace_id`.
+
+| Endpoint | Purpose |
+|---|---|
+| `POST /api/otel/v1/traces` | OTLP/HTTP trace export: `application/x-protobuf` (default) or `application/json`, optionally `Content-Encoding: gzip`, ≤ 5 MB / 1000 spans. → 200 empty `ExportTraceServiceResponse`; 400 if unparseable. Any API key scope may call it remotely |
+
+`GET /eval/runs/{id}` then joins stored spans by trace id (at read time, so late exports count): each result gets
+`steps: [{seq, step (span name), start_ms (from the question's first span), ms, tokens_in, tokens_out, cost_usd, root, payload: {model?, priced?}}]`
+and the run gets `trace_summary: [{step, n, start_ms, p50_ms, p95_ms, tokens_in, tokens_out}]` (non-root spans, ordered by median start).
+Both are absent when no spans arrived. `root` = the span's parent isn't in the trace (usually it's our `traceparent` span). Spans are kept 30 days.
+
 ### Sweeps
 
 A sweep scores every combination of a few axes (`slot.field` or `slot.type`) over a base version,

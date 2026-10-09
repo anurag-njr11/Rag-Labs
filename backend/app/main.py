@@ -12,7 +12,7 @@ from . import nodes  # noqa: F401  (registers every node type)
 from .api import chat, documents, projects, system
 from .api import compute as compute_api
 from .api import external as external_api
-from .api import keys
+from .api import keys, otel as otel_api
 from .api import recipes as recipes_api
 from .api import corpus, eval as eval_api
 from .config import get_settings
@@ -56,7 +56,7 @@ app.add_middleware(access.KeyMiddleware)
 if "*" not in _hosts:  # added last, so it runs first: a bad Host header never reaches the key check
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=_hosts)
 for r in (system.router, projects.router, documents.router, chat.router, eval_api.router, corpus.router,
-          compute_api.router, keys.router, recipes_api.router, external_api.router):
+          compute_api.router, keys.router, recipes_api.router, external_api.router, otel_api.router):
     app.include_router(r)
 
 

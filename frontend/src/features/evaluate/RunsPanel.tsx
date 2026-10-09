@@ -2,7 +2,7 @@ import { useState, type ReactNode } from 'react'
 import { ChevronRight, CircleCheck, CircleX, Play } from 'lucide-react'
 import { errorMessage, useCreateVersion, useEvalFixes, useEvalRun, useEvalRuns, useExternalSystems, useRunEval, useVersions } from '@/api/hooks'
 import { formatBytes, formatMs, formatNumber, formatPer1k, runCostPer1k, stripTags } from '@/api/format'
-import type { EvalDiagnosis, EvalFix, EvalItem, EvalItemResult, EvalMetrics, EvalRun, EvalRunDetail, Grade, Judge } from '@/api/types'
+import type { EvalDiagnosis, EvalFix, EvalItem, EvalItemResult, EvalMetrics, EvalRun, EvalRunDetail, ExternalStep, ExternalStepSummary, Grade, Judge } from '@/api/types'
 import { Badge, Button, Card, Dialog, EffectBadge, ProgressBar, Select, Spinner, Switch, Tabs, cn, useToast, type ProgressTone, Collapse, presence, usePresence } from '@/components/ui'
 import { EvalJobProgress } from './EvalJobProgress'
 
@@ -17,6 +17,8 @@ const TONE_TEXT: Record<ProgressTone, string> = {
   accent: 'text-accent-text',
   neutral: 'text-text-tertiary',
 }
+
+const EXTERNAL_NOT_RETRIEVED = 'The evidence was not in the passages your system returned — check its retriever, chunking or top-k.'
 
 /** One per failure mode (PRD §7.3); `short` is the fix named in the plain-English summary. */
 const DIAGNOSIS: Record<EvalDiagnosis, { label: string; fix: string; short: string }> = {
@@ -180,6 +182,78 @@ function Scorecard({ run, before, stale }: { run: EvalRunDetail; before?: EvalMe
           </>
         )}
       </dl>
+      {run.trace_summary && run.trace_summary.length > 0 && <StepSummary rows={run.trace_summary} n={m.n} />}
+    </div>
+  )
+}
+
+const tok = (a: number, b: number) => (a || b ? `${formatNumber(a)} / ${formatNumber(b)}` : '—')
+
+/** Where the time goes inside an external system, from the OpenTelemetry spans it exported (FR-4.7). */
+function StepSummary({ rows, n }: { rows: ExternalStepSummary[]; n: number }) {
+  const max = Math.max(1, ...rows.map((r) => r.p95_ms))
+  return (
+    <div className="rounded-lg border border-border-default">
+      <p className="px-4 pt-3 text-body text-text-primary">
+        Inside your system
+        <span className="ml-2 text-body-sm text-text-tertiary">from its OpenTelemetry spans · {Math.max(...rows.map((r) => r.n))} of {n} questions traced</span>
+      </p>
+      <div className="overflow-x-auto">
+        <table className="mt-2 w-full border-collapse text-body">
+          <caption className="sr-only">Per-step latency inside the external system</caption>
+          <thead>
+            <tr className="h-8 text-left text-caption text-text-tertiary">
+              <th scope="col" className="px-4 font-medium">Step</th>
+              <th scope="col" className="px-4 font-medium">p50 · p95</th>
+              <th scope="col" className="whitespace-nowrap px-4 text-right font-medium">Tokens in / out (mean)</th>
+            </tr>
+          </thead>
+          <tbody>
+            {rows.map((r) => (
+              <tr key={r.step} className="border-t border-border-default">
+                <td className="px-4 py-2 font-mono text-mono text-text-primary">{r.step}</td>
+                <td className="px-4 py-2">
+                  <div className="flex items-center gap-2">
+                    <span className="w-36 shrink-0 whitespace-nowrap font-mono text-mono tabular-nums text-text-primary">{formatMs(r.p50_ms)} · {formatMs(r.p95_ms)}</span>
+                    <span className="hidden h-1.5 w-full max-w-56 rounded-full bg-bg-muted sm:block" aria-hidden>
+                      <span className="block h-full rounded-full bg-accent-default" style={{ width: `${Math.max(2, (r.p50_ms / max) * 100)}%` }} />
+                    </span>
+                  </div>
+                </td>
+                <td className="px-4 py-2 text-right font-mono text-mono tabular-nums text-text-secondary">{tok(r.tokens_in, r.tokens_out)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  )
+}
+
+/** One question's spans as a waterfall. */
+function StepTimeline({ steps }: { steps: ExternalStep[] }) {
+  const span = Math.max(1, ...steps.map((s) => s.start_ms + s.ms))
+  return (
+    <div className="md:col-span-2">
+      <p className="text-text-tertiary">Trace from your system</p>
+      <ol className="mt-1 space-y-1">
+        {steps.map((s) => (
+          <li key={s.seq} className="grid grid-cols-[minmax(0,13rem)_4.5rem_1fr_auto] items-center gap-2">
+            <span className={cn('truncate font-mono text-mono-sm', s.root ? 'text-text-tertiary' : 'text-text-primary')} title={s.step}>{s.step}</span>
+            <span className="text-right font-mono text-mono-sm tabular-nums text-text-secondary">{formatMs(s.ms)}</span>
+            <span className="h-1.5 rounded-full bg-bg-muted" aria-hidden title={`starts at ${formatMs(s.start_ms)}`}>
+              <span
+                className={cn('block h-full rounded-full', s.root ? 'bg-accent-default/30' : 'bg-accent-default')}
+                style={{ marginLeft: `${(s.start_ms / span) * 100}%`, width: `${Math.max(1, (s.ms / span) * 100)}%` }}
+              />
+            </span>
+            <span className="whitespace-nowrap text-right text-body-sm text-text-tertiary">
+              {s.tokens_in || s.tokens_out ? `${tok(s.tokens_in, s.tokens_out)} tok` : ''}
+              {s.payload.model ? ` · ${s.payload.model}` : ''}
+            </span>
+          </li>
+        ))}
+      </ol>
     </div>
   )
 }
@@ -268,7 +342,7 @@ function MissBreakdown({ run, projectId }: { run: EvalRunDetail; projectId: stri
               <span className="font-mono text-mono tabular-nums text-text-secondary">{n}</span>
             </div>
             <ProgressBar value={n / misses} tone={n ? 'warning' : 'neutral'} aria-label={`${DIAGNOSIS[d].label}: ${n}`} />
-            {n > 0 && <p className="text-body-sm text-text-tertiary">{run.external && d === 'not_retrieved' ? 'The evidence was not in the passages your system returned — check its retriever, chunking or top-k.' : DIAGNOSIS[d].fix}</p>}
+            {n > 0 && <p className="text-body-sm text-text-tertiary">{run.external && d === 'not_retrieved' ? EXTERNAL_NOT_RETRIEVED : DIAGNOSIS[d].fix}</p>}
             {n > 0 && fixes.data?.find((f) => f.diagnosis === d) && (
               <div><ApplyFix projectId={projectId} fix={fixes.data.find((f) => f.diagnosis === d)!} /></div>
             )}
@@ -353,13 +427,15 @@ function Outcome({ res }: { res: EvalItemResult }) {
   )
 }
 
-function Diagnosis({ res, item }: { res: EvalItemResult; item?: EvalItem }) {
+function Diagnosis({ res, item, external }: { res: EvalItemResult; item?: EvalItem; external?: boolean }) {
   const diag = res.diagnosis ? DIAGNOSIS[res.diagnosis] : null
   if (!diag) return <span className="block truncate text-text-tertiary" title={item?.document ?? ''}>{item?.document ?? ''}</span>
+  // An external system only returns its top k, so "not in the top 50" would be wrong there.
+  const fix = external && res.diagnosis === 'not_retrieved' ? EXTERNAL_NOT_RETRIEVED : diag.fix
   return (
-    <span title={diag.fix}>
+    <span title={fix}>
       <span className="text-warning-fg">{diag.label}{res.deep_rank ? ` (#${res.deep_rank})` : ''}</span>
-      <span className="block text-body-sm text-text-tertiary">{diag.fix}</span>
+      <span className="block text-body-sm text-text-tertiary">{fix}</span>
     </span>
   )
 }
@@ -426,11 +502,12 @@ function ResultDetail({ res, item }: { res: EvalItemResult; item?: EvalItem }) {
           </ol>
         </div>
       )}
+      {res.steps && res.steps.length > 0 && <StepTimeline steps={res.steps} />}
     </div>
   )
 }
 
-function ResultRow({ res, item }: { res: EvalItemResult; item?: EvalItem }) {
+function ResultRow({ res, item, external }: { res: EvalItemResult; item?: EvalItem; external?: boolean }) {
   const [open, setOpen] = useState(false)
   const { ref: detailRef, mounted: detailMounted } = usePresence<HTMLDivElement>(open, presence.collapse())
   const question = item?.question ?? res.item_id
@@ -449,7 +526,7 @@ function ResultRow({ res, item }: { res: EvalItemResult; item?: EvalItem }) {
           </button>
         </td>
         <td className={cn(CELL, 'w-32')}><Outcome res={res} /></td>
-        <td className={cn(CELL, 'w-72 max-w-72 text-body')}><Diagnosis res={res} item={item} /></td>
+        <td className={cn(CELL, 'w-72 max-w-72 text-body')}><Diagnosis res={res} item={item} external={external} /></td>
       </tr>
       {detailMounted && (
         <tr className="border-b border-border-default bg-bg-subtle/50">
@@ -464,7 +541,7 @@ function ResultRow({ res, item }: { res: EvalItemResult; item?: EvalItem }) {
   )
 }
 
-function ResultCard({ res, item }: { res: EvalItemResult; item?: EvalItem }) {
+function ResultCard({ res, item, external }: { res: EvalItemResult; item?: EvalItem; external?: boolean }) {
   const [open, setOpen] = useState(false)
   return (
     <li className="rounded-lg border border-border-default bg-bg-surface p-3">
@@ -472,7 +549,7 @@ function ResultCard({ res, item }: { res: EvalItemResult; item?: EvalItem }) {
         <span className="text-body-lg text-text-primary">{item?.question ?? res.item_id}</span>
         <span className="flex flex-wrap items-center gap-2 text-body-sm">
           <Outcome res={res} />
-          <span className="min-w-0 flex-1"><Diagnosis res={res} item={item} /></span>
+          <span className="min-w-0 flex-1"><Diagnosis res={res} item={item} external={external} /></span>
         </span>
       </button>
       <Collapse open={open}>
@@ -525,12 +602,12 @@ function PerQuestion({ run, items }: { run: EvalRunDetail; items: EvalItem[] }) 
                 </tr>
               </thead>
               <tbody>
-                {shown.map((r) => <ResultRow key={r.item_id} res={r} item={byId.get(r.item_id)} />)}
+                {shown.map((r) => <ResultRow key={r.item_id} res={r} item={byId.get(r.item_id)} external={!!run.external} />)}
               </tbody>
             </table>
           </div>
           <ul className="flex flex-col gap-2 border-t border-border-default p-4 md:hidden" aria-label="Per-question retrieval results">
-            {shown.map((r) => <ResultCard key={r.item_id} res={r} item={byId.get(r.item_id)} />)}
+            {shown.map((r) => <ResultCard key={r.item_id} res={r} item={byId.get(r.item_id)} external={!!run.external} />)}
           </ul>
         </>
       )}

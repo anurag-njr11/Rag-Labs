@@ -116,6 +116,33 @@ Evaluate → **Your RAG** connects any HTTP endpoint (`POST {"question"}` → `{
 with a mappable response) and scores it on the same eval set as your pipelines, so you can see
 "your RAG: MRR 0.52, best RAGLabs config: 0.71". The create wizard has an *Evaluate a RAG I already have* path.
 
+### Your RAG is a Python function
+
+No API needed. Install this project next to your code, then:
+
+```python
+import raglabs
+
+@raglabs.system
+def ask(question):
+    hits = retriever.invoke(question)
+    return {"answer": chain.invoke(question),
+            "contexts": [{"text": h.page_content, "source": h.metadata["source"]} for h in hits]}
+
+raglabs.serve(ask, port=8100)              # connect http://127.0.0.1:8100 under Evaluate → Your RAG
+print(raglabs.evaluate(ask, "eval.csv"))   # or score it in-process: {'mrr': 0.71, 'hit_at_k': 0.9, ...}
+```
+
+### See where the time goes (OpenTelemetry)
+
+Every question is sent with a `traceparent` header. If your system is instrumented with OpenTelemetry, export its
+spans to RAGLabs: each eval result then shows a per-step timeline (tokens read from `gen_ai.usage.*`), and the run shows
+p50/p95 per step.
+
+```bash
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:8000/api/otel/v1/traces
+```
+
 ### Gate CI on retrieval quality
 
 ```bash
@@ -125,7 +152,8 @@ raglabs eval --endpoint https://staging.example.com/ask --set eval.csv \
 
 `eval.csv` has columns `question`, `evidence` (a verbatim quote that answers it) and optionally `document` (the file
 name). Exit code 0 = thresholds met, 1 = missed, 2 = bad input or unreachable. `--json` prints the metrics. In GitHub
-Actions, run it from `backend/` as `uv run raglabs eval ...` in a step after `astral-sh/setup-uv`.
+Actions, run it from `backend/` as `uv run raglabs eval ...` in a step after `astral-sh/setup-uv`. To test a Python
+function instead of an endpoint, use `--system my_rag:ask`.
 
 ## API
 

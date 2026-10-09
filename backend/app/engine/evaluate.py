@@ -500,7 +500,7 @@ async def score_item_external(ext: external.ExternalConfig, item: dict[str, Any]
         "diagnosis": None if rank else "not_retrieved", "deep_rank": None, "in_context": rank is not None,
         "ctx_tokens": sum(approx_tokens(c["text"]) for c in final), "llm_tokens": 0,
         "cost_usd": None,  # the external system's own cost is unknown to us
-        "ms": round(got["ms"], 1),
+        "ms": round(got["ms"], 1), "trace_id": got["trace_id"],
         "top": [{"id": str(i), "document": c["external_source"], "heading_path": "", "hit": M.is_hit(c, item)}
                 for i, c in enumerate(final[:5], start=1)],
         "_final": final, "_answer": got["answer"],

@@ -76,6 +76,39 @@ Cost per 1,000 queries is not reported, because RAGLabs cannot see what your sys
 
 If a request fails (timeout, HTTP error, or a response that does not match the mapping), that question counts as a miss and the run reports how many errored. If every request fails, the run fails with the first error.
 
+## Your RAG is a Python function
+
+You do not need an API. Install the `raglabs` package next to your code and either serve the function on the contract above, or score it in-process:
+
+```python
+import raglabs
+
+@raglabs.system
+def ask(question):
+    hits = retriever.invoke(question)
+    return {"answer": chain.invoke(question),
+            "contexts": [{"text": h.page_content, "source": h.metadata["source"]} for h in hits]}
+
+raglabs.serve(ask, port=8100)              # then connect http://127.0.0.1:8100 here
+print(raglabs.evaluate(ask, "eval.csv"))   # or: scores in-process, no server
+```
+
+The function may be sync or async. It can return the contract dict, a list of passages (retrieval only), or an `(answer, passages)` tuple, and a passage may be a plain string. In a notebook or other async code, use `await raglabs.aevaluate(...)`. For CI, see [CLI and CI](/docs/cli).
+
+## Per-step latency and tokens (OpenTelemetry)
+
+Each question is sent with a W3C `traceparent` header. If your system is instrumented with OpenTelemetry and keeps that trace context, point its exporter at RAGLabs:
+
+```bash
+OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:8000/api/otel/v1/traces
+```
+
+Its spans then show up on the run: **Inside your system** lists each step's p50 and p95 latency and mean tokens across questions, and each question's details show its trace as a timeline. Tokens are read from the `gen_ai.usage.input_tokens` / `output_tokens` attributes (the OpenTelemetry GenAI conventions, and the older `prompt_tokens` / `completion_tokens` names), and the model from `gen_ai.request.model`; a model RAGLabs knows the price of also gets a cost.
+
+> **Note** Exporters batch spans, so the last questions' traces can arrive a few seconds after the run ends. They are matched when the run is shown, so reopen it to see them. Spans are kept for 30 days.
+
+Protobuf (the default for OTLP over HTTP) and JSON are both accepted, gzipped or not. From another machine, the exporter needs a RAGLabs API key of any scope: `OTEL_EXPORTER_OTLP_TRACES_HEADERS=Authorization=Bearer%20rl_...`.
+
 ## Tips
 
 - Match the **documents**. If your system indexes different files than the project, evidence will not be found and scores will be misleadingly low.

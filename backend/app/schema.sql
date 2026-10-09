@@ -394,3 +394,18 @@ CREATE TABLE IF NOT EXISTS external_systems (
     headers    TEXT NOT NULL DEFAULT '',              -- vault token of the JSON headers
     created_at TEXT NOT NULL
 );
+
+-- OpenTelemetry spans an external system exported to /api/otel/v1/traces (FR-4.7). Joined to eval results by the
+-- trace id we sent in `traceparent`; pruned after 30 days (engine/otel.py).
+CREATE TABLE IF NOT EXISTS external_spans (
+    trace_id    TEXT NOT NULL,
+    span_id     TEXT NOT NULL,
+    parent_id   TEXT NOT NULL DEFAULT '',
+    name        TEXT NOT NULL,
+    start_ns    INTEGER NOT NULL,
+    end_ns      INTEGER NOT NULL,
+    attrs       TEXT NOT NULL DEFAULT '{}',
+    received_at TEXT NOT NULL,
+    PRIMARY KEY (trace_id, span_id)
+);
+CREATE INDEX IF NOT EXISTS idx_external_spans_received ON external_spans(received_at);

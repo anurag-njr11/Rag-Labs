@@ -26,6 +26,7 @@ LOOPBACK = {"127.0.0.1", "::1", "localhost", "testclient"}
 PROXY_HEADERS = ("x-forwarded-for", "forwarded", "x-real-ip")
 _CHAT = re.compile(r"^/api/projects/([^/]+)/chat/?$")
 OPEN = {"/api/health"}
+OTEL_PATH = "/api/otel/v1/traces"
 
 
 def _hash(key: str) -> str:
@@ -70,7 +71,7 @@ async def authenticate(header: str | None) -> dict[str, Any] | None:
 
 
 def allowed(key: dict[str, Any], method: str, path: str) -> bool:
-    if key["scope"] == "admin":
+    if key["scope"] == "admin" or (method == "POST" and path == OTEL_PATH):  # any key may export traces
         return True
     m = _CHAT.match(path)
     return method == "POST" and bool(m) and m.group(1) == key["project_id"]
@@ -92,7 +93,8 @@ class KeyMiddleware(BaseHTTPMiddleware):
                 return JSONResponse({"detail": "An API key is required: Authorization: Bearer rl_…"}, status_code=401,
                                     headers={"WWW-Authenticate": "Bearer"})
             if key is not None and not allowed(key, request.method, path):
-                return JSONResponse({"detail": "This key may only call its project's chat endpoint."}, status_code=403)
+                return JSONResponse({"detail": "This key may only call its project's chat endpoint (and export traces)."},
+                                    status_code=403)
             request.state.api_key = key
         return await call_next(request)
 

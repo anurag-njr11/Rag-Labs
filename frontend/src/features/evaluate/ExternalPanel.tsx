@@ -2,7 +2,7 @@ import { useState } from 'react'
 import { Plug, Trash2 } from 'lucide-react'
 import { errorMessage, useCreateExternal, useDeleteExternal, useExternalSystems, useTestExternal } from '@/api/hooks'
 import type { ExternalConfig, ExternalTestResult } from '@/api/types'
-import { Badge, Banner, Button, Card, Disclosure, Field, Input, useToast } from '@/components/ui'
+import { Badge, Banner, Button, Card, CodeBlock, Disclosure, Field, Input, useToast } from '@/components/ui'
 import { PanelIntro } from './PanelIntro'
 
 const DEFAULTS = { question_field: 'question', answer_path: 'answer', contexts_path: 'contexts', text_path: 'text', source_path: 'source', top_k: 8, timeout_s: 30 }
@@ -15,6 +15,21 @@ const MAPPING = [
 ] as const
 
 /** Connect a RAG that runs elsewhere (PRD §8.7): it is scored on the same eval set as RAGLabs pipelines. */
+const PY_SNIPPET = `import raglabs
+
+@raglabs.system
+def ask(question):
+    hits = retriever.invoke(question)          # your code
+    return {"answer": chain.invoke(question),
+            "contexts": [{"text": h.page_content, "source": h.metadata["source"]} for h in hits]}
+
+raglabs.serve(ask, port=8100)                  # connect it here, or:
+print(raglabs.evaluate(ask, "eval.csv"))       # CI: raglabs eval --system my_rag:ask --set eval.csv`
+
+const OTEL_SNIPPET = `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=${location.origin.replace('5173', '8000')}/api/otel/v1/traces
+# from another machine, add a RAGLabs API key (any scope may export traces):
+OTEL_EXPORTER_OTLP_TRACES_HEADERS=Authorization=Bearer%20rl_…`
+
 export function ExternalPanel({ projectId }: { projectId: string }) {
   const systems = useExternalSystems(projectId)
   const create = useCreateExternal(projectId)
@@ -58,6 +73,21 @@ export function ExternalPanel({ projectId }: { projectId: string }) {
             <Field label="Passages scored per question" help="Hit@k and MRR look at this many.">
               {(f) => <Input id={f.id} type="number" min={1} max={50} value={map.top_k} onChange={(e) => setMap({ ...map, top_k: Math.max(1, Number(e.target.value) || 1) })} />}
             </Field>
+          </div>
+        </Disclosure>
+        <Disclosure label="Your RAG is a Python function" hint="no API needed">
+          <div className="flex flex-col gap-2 pt-3 text-body text-text-secondary">
+            <p>Serve it on the contract with the <code className="font-mono text-mono">raglabs</code> package, then connect <code className="font-mono text-mono">http://127.0.0.1:8100</code> above. Or score it in-process, in a script or CI, with no server.</p>
+            <CodeBlock title="Python" code={PY_SNIPPET} />
+          </div>
+        </Disclosure>
+        <Disclosure label="Per-step latency and tokens" hint="OpenTelemetry">
+          <div className="flex flex-col gap-2 pt-3 text-body text-text-secondary">
+            <p>
+              Every question is sent with a <code className="font-mono text-mono">traceparent</code> header. If your system is instrumented with OpenTelemetry, export its spans here and each
+              result shows a step-by-step trace, and the run shows where the time goes. Tokens come from the <code className="font-mono text-mono">gen_ai.usage.*</code> attributes.
+            </p>
+            <CodeBlock title="Environment of your RAG service" code={OTEL_SNIPPET} />
           </div>
         </Disclosure>
         <div className="flex flex-wrap items-center gap-2">

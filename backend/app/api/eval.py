@@ -9,7 +9,16 @@ from pydantic import BaseModel, Field
 
 from .. import db
 from ..core.pipeline import diff_pipelines
-from ..engine import adapter, evaluate, external, injection, prompt_opt, sweep, sync
+from ..engine import (
+    adapter,
+    evaluate,
+    external,
+    injection,
+    otel,
+    prompt_opt,
+    sweep,
+    sync,
+)
 from ..ingest import jobs
 from ..llm import provider as llm
 
@@ -532,7 +541,15 @@ async def list_runs(project_id: str, set_id: str | None = None) -> list[dict[str
 
 @router.get("/runs/{run_id}")
 async def get_run(project_id: str, run_id: str) -> dict[str, Any]:
-    return await _get_run(project_id, run_id, full=True)
+    run = await _get_run(project_id, run_id, full=True)
+    # An external system's OpenTelemetry spans, joined by the trace id each question was sent with (FR-4.7).
+    # Read-time, so spans the exporter sent after the run finished still count.
+    traces = await otel.steps_for([r.get("trace_id") for r in run["results"]])
+    if traces:
+        for r in run["results"]:
+            r["steps"] = traces.get(r.get("trace_id") or "", [])
+        run["trace_summary"] = otel.summary([r["steps"] for r in run["results"]])
+    return run
 
 
 @router.get("/runs/{run_id}/fixes")
