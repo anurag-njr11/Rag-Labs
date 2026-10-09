@@ -9,3 +9,17 @@ backend/app/web/
 *.log
 .scratch/
 backend/dist/
+
+# Internal planning, specs and tooling: kept locally, not published
+/USER_GUIDE.md
+/CHANGELOG.md
+/PRD.md
+/IDEAS.md
+/OSS_ROADMAP.md
+/FOLLOW_UPS.md
+/RAG Builder*.md
+/raglabs.html
+/frontend/DESIGN.md
+/frontend/FOUNDATION.md
+/frontend/README.md
+/.claude/

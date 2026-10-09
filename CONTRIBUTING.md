@@ -9,7 +9,7 @@ cd backend && uv sync && uv run pytest -q    # ~240 tests, no API keys needed
 cd frontend && npm install && npm run build  # type-check + production build
 ```
 
-Run the app as described in the [README](README.md#run-it). Before opening a PR, both commands above must pass.
+Run the app as described in the [README](README.md#from-source). Before opening a PR, both commands above must pass.
 Read [`DEVELOPER_ARCHITECTURE.md`](DEVELOPER_ARCHITECTURE.md) for how the pieces fit.
 
 ## Where to contribute (the registries)
@@ -27,7 +27,7 @@ Most contributions are "register one class", no core changes:
 ## Pull requests
 
 - Keep PRs focused; one feature or fix each. Describe the *why*.
-- Add or update tests. Behaviour changes go in `CHANGELOG.md` under `[Unreleased]`.
+- Add or update tests. Describe behaviour changes in the PR.
 - API contract changes must be reflected in `frontend/API.md`.
 - No new dependency for something a few lines of stdlib can do.
 - Never commit API keys, `.env`, or the `data/` directory.

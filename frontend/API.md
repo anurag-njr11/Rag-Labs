@@ -453,7 +453,7 @@ Bearer`), 401 for an invalid or revoked key (even from loopback), 403 when a `ch
 | `DELETE /api/keys/{kid}` | | 204 revoked · 404 |
 | `GET /api/projects/{id}/usage?days=30` | | `{days, daily: {day, requests, errors, tokens_in, tokens_out, cost_usd, api}[], total: {…, playground}, latency: {p50_ms, p95_ms}, by_key: {id, name, prefix, requests}[]}` |
 
-Team workspaces / multi-tenancy are not in the self-hosted edition (see `OSS_ROADMAP.md`).
+Team workspaces / multi-tenancy are not in the self-hosted edition.
 
 ## Data tables & attested computations (FR-3.21)
 

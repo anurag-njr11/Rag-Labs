@@ -32,6 +32,14 @@ store; only the LLM calls you configure leave it.
 - **Bring your own RAG**: score any HTTP RAG endpoint on the same eval set, and gate CI on it.
 - **Export** a pipeline as a standalone FastAPI repo, or call it through the project API with scoped API keys.
 
+## Screenshots
+
+![Evaluate: Hit@k, MRR, nDCG and answer grading on a question set](docs/images/evaluate.jpg)
+
+![Playground: a cited answer, with the inspector showing how each source was found](docs/images/playground.jpg)
+
+![Configure: every pipeline stage with its options](docs/images/configure.jpg)
+
 ### What you can tune
 
 | Stage | Options |
@@ -105,7 +113,6 @@ pip install dist/raglabs-*.whl && raglabs serve      # http://127.0.0.1:8000, da
 Evaluate → **Your RAG** connects any HTTP endpoint (`POST {"question"}` → `{"answer", "contexts": [{"text", "source"}]}`,
 with a mappable response) and scores it on the same eval set as your pipelines, so you can see
 "your RAG: MRR 0.52, best RAGLabs config: 0.71". The create wizard has an *Evaluate a RAG I already have* path.
-See [`USER_GUIDE.md`](USER_GUIDE.md).
 
 ### Gate CI on retrieval quality
 
@@ -148,9 +155,8 @@ Please report vulnerabilities privately, as described in [`SECURITY.md`](SECURIT
 ## Documentation
 
 - The in-app **Docs** (top bar) explain every tab, option and metric. They are Markdown in `frontend/src/features/docs/content/`.
-- [`USER_GUIDE.md`](USER_GUIDE.md): tutorial and debugging strategies.
 - [`DEVELOPER_ARCHITECTURE.md`](DEVELOPER_ARCHITECTURE.md): how the pipeline, stores, retrieval and evaluation work.
-- [`PRD.md`](PRD.md), [`OSS_ROADMAP.md`](OSS_ROADMAP.md), [`IDEAS.md`](IDEAS.md), [`CHANGELOG.md`](CHANGELOG.md): scope, roadmap, ideas and release notes.
+- [`frontend/API.md`](frontend/API.md): the HTTP API contract.
 
 ## Project layout
 
@@ -162,7 +168,7 @@ backend/app/
   ingest/        loaders, documents, index builds, exact-match keys, background jobs
   engine/        retrieval, chat, evaluation, store management, sync jobs
   api/           FastAPI routers
-frontend/        Vite + React + Tailwind v4 web UI (API.md = backend contract, DESIGN.md = design spec)
+frontend/        Vite + React + Tailwind v4 web UI (API.md = backend contract)
 data/            created at runtime: app.db, raw files, caches, vector stores (gitignored)
 ```
 

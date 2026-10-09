@@ -1,5 +1,4 @@
-"""API keys and usage (FR-3.23, self-hosted part; team workspaces belong to the hosted edition — see
-OSS_ROADMAP.md).
+"""API keys and usage (FR-3.23, self-hosted part; team workspaces belong to a hosted edition).
 
 Security model: the web UI runs on the same machine, so requests from loopback stay open. A request
 from anywhere else must carry `Authorization: Bearer rl_…`. A `chat` key may only call its project's
