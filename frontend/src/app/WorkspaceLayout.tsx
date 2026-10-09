@@ -11,7 +11,6 @@ import { Button, ButtonLink, EmptyState, Pill, TabLinks, useSwapTransition, useT
 import { PageFallback } from './AppLayout'
 import { JobProgress } from './JobProgress'
 import { ProviderKeyBanner } from './ProviderKeyBanner'
-import { useLabs } from './labs'
 import type { WorkspaceContext } from './workspace'
 
 const INDEX_DOT: Record<IndexStatus['status'], string> = {
@@ -65,9 +64,6 @@ function WorkspaceHeader({ project }: { project: Project }) {
   }
 
   const base = `/projects/${project.id}`
-  const labs = useLabs()
-  // A project that already uses computations keeps the tab, whatever the Labs switch says.
-  const showData = labs || (project.active_version?.config.compute?.type ?? 'none') !== 'none' || tab === 'data'
   return (
     <div className="border-b border-border-default bg-bg-surface px-4 pt-3 sm:px-8">
       <nav aria-label="Breadcrumb" className="flex items-center gap-1 text-body-sm">
@@ -131,7 +127,7 @@ function WorkspaceHeader({ project }: { project: Project }) {
           { to: `${base}/evaluate`, label: 'Evaluate', icon: <FlaskConical aria-hidden /> },
           { to: `${base}/health`, label: 'Health', icon: <HeartPulse aria-hidden /> },
           { to: `${base}/api`, label: 'API', icon: <Code2 aria-hidden /> },
-          ...(showData ? [{ to: `${base}/data`, label: 'Computations', icon: <Table2 aria-hidden /> }] : []),
+          { to: `${base}/data`, label: 'Computations', icon: <Table2 aria-hidden /> },
         ]}
       />
     </div>

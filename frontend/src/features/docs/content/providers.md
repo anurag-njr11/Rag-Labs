@@ -44,7 +44,7 @@ The Embed stage's local models need no provider. Its **API model** option uses G
 
 ## Labs
 
-The **Labs** switch on this page reveals research-grade tools: attested computations (the Computations tab and the Compute stage), the embedding adapter and prompt optimisation. See [Computations](/docs/data) and [Advanced evaluation](/docs/advanced-evaluation). The setting is stored in your browser.
+The **Labs** switch on this page reveals research-grade evaluation tools: the embedding adapter and prompt optimisation. See [Advanced evaluation](/docs/advanced-evaluation). The setting is stored in your browser.
 
 ## Costs
 

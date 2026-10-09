@@ -12,7 +12,6 @@ import {
   useToast,
 } from '@/components/ui'
 import { useScrollReveal } from '@/components/ui/scrollReveal'
-import { useLabs } from '@/app/labs'
 import { denseUsed } from './Canvas.utils'
 import { SchemaForm } from './SchemaForm'
 import { errorsFor, isExact, localChanges } from './schema'
@@ -57,9 +56,7 @@ export function ConfigEditor({ value, onChange, errors, baseline, className, pro
   const [active, setActive] = useState<Slot>('parse')
   const catalog = nodes.data
   const dense = denseUsed(value)
-  const labs = useLabs()
-  const computeOn = (value.compute?.type ?? 'none') !== 'none'
-  const slots = useMemo(() => SLOTS.filter((s) => s !== 'compute' || labs || computeOn), [labs, computeOn])
+  const slots = SLOTS
   const warns: Partial<Record<Slot, string>> = {
     ...(value.verify?.type === 'none' ? { verify: "Off — answers aren't checked against their sources." } : {}),
     ...((value.prompt as { injection_guard?: string } | undefined)?.injection_guard === 'none'

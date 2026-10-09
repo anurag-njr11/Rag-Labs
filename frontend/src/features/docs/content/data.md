@@ -2,7 +2,7 @@
 
 Numbers should not be fished out of a document: the slide they live on may be stale, and a model can misread a table. The Computations tab (also called Data) lets a project answer numeric questions exactly, from your own tables, with a receipt.
 
-It is a research-grade feature. The tab appears when the active pipeline uses the **Compute** stage, or when **Labs** is switched on under **LLM providers**.
+Tables and computations do nothing until the **Compute** stage is set to *Attested computations* (see [Use it in answers](#use-it-in-answers)).
 
 ## The idea
 

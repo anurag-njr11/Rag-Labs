@@ -64,14 +64,14 @@ export default function ProvidersPage() {
             the browser.
           </p>
         </div>
-      <div className="mb-6 max-w-[720px] rounded-lg border border-border-default p-4">
-        <Field label="Labs" help="Show research-grade tools: attested computations (Computations tab, Compute stage), embedding adapter and prompt optimisation." inline>
-          {(f) => <Switch id={f.id} aria-describedby={f.describedBy} checked={labs} onChange={setLabs} />}
-        </Field>
-      </div>
         <Button variant="primary" icon={<Plus size={14} aria-hidden />} onClick={() => setEditing({ provider: null, create: true })}>
           Custom endpoint
         </Button>
+      </div>
+      <div className="mb-6 max-w-[720px] rounded-lg border border-border-default p-4">
+        <Field label="Labs" help="Show research-grade evaluation tools: embedding adapter and prompt optimisation." inline>
+          {(f) => <Switch id={f.id} aria-describedby={f.describedBy} checked={labs} onChange={setLabs} />}
+        </Field>
       </div>
 
       {providers.isError && (
@@ -263,7 +263,10 @@ function ProviderDialog({ provider: p, create, onClose }: { provider: Provider |
 
   const nameError = create && name && !NAME_RE.test(name) ? 'Lowercase letters, digits, - or _; starts with a letter; 2–32 chars.' : undefined
   const needsKey = urlChanged && !!p?.key_set && !apiKey.trim()
-  const canSave = (!create || (NAME_RE.test(name) && baseUrl.trim())) && (!isCustom || baseUrl.trim()) && !needsKey
+  const keyMissing = (isCustom ? keyRequired : !!p?.key_required) && !p?.key_set && !apiKey.trim()
+  const urlError = baseUrl.trim() && !/^https?:\/\/\S+$/.test(baseUrl.trim()) ? 'Must start with http:// or https://' : undefined
+  const canTest = !!baseUrl.trim() && !urlError && !keyMissing && (!create || NAME_RE.test(name))
+  const canSave = (!create || (NAME_RE.test(name) && baseUrl.trim())) && (!isCustom || baseUrl.trim()) && !needsKey && !keyMissing && !urlError
 
   const body = (): ProviderInput => {
     const b: ProviderInput = { base_url: baseUrl.trim(), default_model: model.trim(), supports_reasoning: reasoning }
@@ -307,7 +310,7 @@ function ProviderDialog({ provider: p, create, onClose }: { provider: Provider |
           <Button variant="ghost" onClick={onClose}>Cancel</Button>
           <Button
             loading={test.isPending}
-            disabled={!baseUrl.trim()}
+            disabled={!canTest}
             onClick={() => test.mutate({ name: create ? undefined : p?.name, body: body() })}
           >
             Test connection
@@ -337,9 +340,9 @@ function ProviderDialog({ provider: p, create, onClose }: { provider: Provider |
             {(f) => <Input id={f.id} value={title} onChange={(e) => setTitle(e.target.value)} />}
           </Field>
         )}
-        <Field label="Base URL" help="The URL that /chat/completions and /models hang off, usually ending in /v1.">
+        <Field label="Base URL" help={urlError ? undefined : 'The URL that /chat/completions and /models hang off, usually ending in /v1.'} error={urlError}>
           {(f) => (
-            <Input id={f.id} aria-describedby={f.describedBy} mono value={baseUrl}
+            <Input id={f.id} aria-describedby={f.describedBy} invalid={f.invalid} mono value={baseUrl}
               placeholder="http://localhost:8000/v1" onChange={(e) => setBaseUrl(e.target.value)} />
           )}
         </Field>
@@ -348,10 +351,12 @@ function ProviderDialog({ provider: p, create, onClose }: { provider: Provider |
           error={urlChanged && p?.key_set && !apiKey.trim() ? 'Re-enter the key: a stored key is never sent to a new base URL.' : undefined}
           help={
             p?.key_set
-              ? `Stored encrypted (${p.key_hint}). Leave empty to keep it.`
-              : p
+              ? p.source === 'env' || p.source === 'custom-env'
+                ? `Set in .env (${p.key_hint}). Enter a key here to override it.`
+                : `Stored encrypted (${p.key_hint}). Leave empty to keep it.`
+              : `${keyMissing ? 'Required. ' : ''}${p
                 ? `Or set ${p.key_env} in .env instead.`
-                : `Or set ${name ? name.toUpperCase().replace(/[^A-Z0-9]/g, '_') : 'ID'}_API_KEY in .env and restart.`
+                : `Or set ${name ? name.toUpperCase().replace(/[^A-Z0-9]/g, '_') : 'ID'}_API_KEY in .env and restart.`}`
           }
         >
           {(f) => (

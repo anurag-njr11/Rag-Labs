@@ -37,9 +37,9 @@ Inside a project, the header shows its name, the active version and the index st
 | [Evaluate](/docs/evaluate) | Measure quality and run sweeps |
 | [Health](/docs/health) | Find gaps and rot in the documents |
 | [API](/docs/api) | Call the project from code, manage keys and see usage |
-| [Computations](/docs/data) | Answer numeric questions exactly from tables (shown when enabled) |
+| [Computations](/docs/data) | Answer numeric questions exactly from tables |
 
-The **Computations** tab appears when the active pipeline uses the Compute stage, or when **Labs** is switched on under **LLM providers**. Labs also reveals the embedding adapter and prompt optimisation tools in Evaluate.
+The **Labs** switch under **LLM providers** reveals the embedding adapter and prompt optimisation tools in Evaluate.
 
 ## A provider banner
 
