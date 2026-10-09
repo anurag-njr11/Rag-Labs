@@ -34,11 +34,11 @@ store; only the LLM calls you configure leave it.
 
 ## Screenshots
 
-![Evaluate: Hit@k, MRR, nDCG and answer grading on a question set](docs/images/evaluate.jpg)
+![Evaluate: Hit@k, MRR, nDCG, latency and LLM-graded answers on a generated question set](docs/images/evaluate.jpg)
 
 ![Playground: a cited answer, with the inspector showing how each source was found](docs/images/playground.jpg)
 
-![Configure: every pipeline stage with its options](docs/images/configure.jpg)
+![Canvas: the whole pipeline as a graph, from indexing to the cited answer](docs/images/canvas.jpg)
 
 ### What you can tune
 
