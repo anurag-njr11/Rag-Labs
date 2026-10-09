@@ -5,5 +5,7 @@ data/
 **/.pytest_cache/
 frontend/node_modules/
 frontend/dist/
+backend/app/web/
 *.log
 .scratch/
+backend/dist/

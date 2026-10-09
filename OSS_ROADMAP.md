@@ -1,9 +1,9 @@
 # RAGLabs — Open Source, Bring Your Own RAG, and the SaaS Path
 
-> **Status (2026-10-08): steps 1–4 built** — docs and OSS files, BYO backend (FR-4.1–4.4), UI (FR-4.5), CLI gate (FR-4.6).
-> Not done: Docker image and `pip install raglabs` (the wheel has no frontend and resolves `data/` relative to the
-> source tree; a container also needs an auth story, since requests from outside the container aren't loopback),
-> the create-wizard entry point for BYO (it lives in Evaluate → Your RAG), FR-4.7, and the launch GIF.
+> **Status (2026-10-09): steps 1–4 built** — docs and OSS files, BYO backend (FR-4.1–4.4), UI (FR-4.5), CLI gate (FR-4.6),
+> and the create-wizard entry point ("Evaluate a RAG I already have").
+> Docker image and a wheel that ships the web UI are built (`docker compose up`; `OPEN_ACCESS` for the container auth
+> story). Not done: publishing to PyPI / a container registry, FR-4.7 (explicitly "later"), and the launch GIF.
 > Drafted 2026-10-07. Companion to `PRD.md` and `IDEAS.md`.
 
 ---

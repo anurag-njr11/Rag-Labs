@@ -1,7 +1,10 @@
 import logging
 from contextlib import asynccontextmanager
+from pathlib import Path
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from . import access, db, vault
@@ -63,3 +66,19 @@ async def health() -> dict:
         "status": "ok",
         "providers": {name: llm.availability(name)[0] for name in llm.PROVIDERS},
     }
+
+
+def mount_web(app: FastAPI, web: Path) -> None:
+    """Serve the built web UI (installed package / Docker image). In development Vite serves it instead."""
+    app.mount("/assets", StaticFiles(directory=web / "assets"), name="assets")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    async def serve(path: str) -> FileResponse:
+        if path == "api" or path.startswith("api/"):
+            raise HTTPException(404, "Not found")
+        file = (web / path).resolve()
+        return FileResponse(file if file.is_file() and file.is_relative_to(web.resolve()) else web / "index.html")
+
+
+if (get_settings().web_dir / "index.html").is_file():
+    mount_web(app, get_settings().web_dir)

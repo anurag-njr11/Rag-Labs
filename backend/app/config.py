@@ -14,7 +14,9 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    data_dir: Path = REPO_DIR / "data"
+    # A source checkout keeps its data beside the code; an installed package (pip, Docker) uses ~/.raglabs.
+    # Override with DATA_DIR.
+    data_dir: Path = REPO_DIR / "data" if (REPO_DIR / "frontend").is_dir() else Path.home() / ".raglabs"
 
     # LLM providers are configured via <NAME>_API_KEY etc. (see app/llm/provider.py),
     # which pydantic-settings can't enumerate ahead of time.
@@ -26,6 +28,10 @@ class Settings(BaseSettings):
     # Requests from this machine need no API key (the web UI runs here). Behind a reverse proxy every
     # request looks local: set TRUST_LOOPBACK=false, and every API call then needs a key.
     trust_loopback: bool = True
+    # Docker: a published port reaches the app from the bridge gateway, never from loopback, so the web UI would be
+    # locked out. OPEN_ACCESS=true treats every caller as local. Only publish the port on 127.0.0.1 (or put your own
+    # auth in front); on a reachable address this is an unauthenticated API.
+    open_access: bool = False
     # Code checks (verify.type = execution_check) run model-written code only in this Docker image, with no
     # network and tight limits. Use an image that has the libraries your docs are about.
     sandbox_image: str = "python:3.12-slim"
@@ -36,6 +42,11 @@ class Settings(BaseSettings):
     # A first-use local model download (fastembed embedder, cross-encoder) that hasn't finished by
     # then fails the build / chat turn / sweep cell instead of waiting forever.
     model_download_timeout_s: float = 600.0
+
+    @property
+    def web_dir(self) -> Path:
+        """The built web UI (`npm run build` writes it here); absent in a bare source checkout."""
+        return BACKEND_DIR / "app" / "web"
 
     @property
     def db_path(self) -> Path:

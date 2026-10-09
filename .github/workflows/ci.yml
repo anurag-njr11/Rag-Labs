@@ -23,3 +23,15 @@ jobs:
         with: { node-version: 22, cache: npm, cache-dependency-path: frontend/package-lock.json }
       - run: npm ci
       - run: npm run build
+
+  package:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: 22, cache: npm, cache-dependency-path: frontend/package-lock.json }
+      - uses: astral-sh/setup-uv@v5
+      - run: cd frontend && npm ci && npm run build
+      - run: cd backend && uv build --wheel
+      - run: unzip -l backend/dist/*.whl | grep app/web/index.html
+      - run: docker build -t raglabs .

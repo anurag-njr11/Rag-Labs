@@ -1,45 +1,38 @@
+<div align="center">
+
 # RAGLabs
 
-Build your own "chat with your documents" assistant from a web UI — no code.
-Upload documents, choose and tune every part of the pipeline (including the vector database),
-build the index, and chat with answers that cite their sources. An inspector shows which
-passages were found, by which search path, and what each step cost.
+**Build a RAG pipeline from a web UI, then measure why it fails.**
 
-**Measure it, too:** test questions written from your own documents, sweeps into a
-quality-vs-cost leaderboard, and a content backlog of what your documents can't answer.
+[![CI](https://github.com/anurag-njr11/Rag-Labs/actions/workflows/ci.yml/badge.svg)](https://github.com/anurag-njr11/Rag-Labs/actions/workflows/ci.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+![Python 3.12](https://img.shields.io/badge/python-3.12-blue.svg)
 
-**v3.0** — **Phase 1 (Build & Chat)**, **Phase 2 (Measure & Optimize)** and **Phase 3 (Advanced
-Retrieval & Trust)** are complete; see [`CHANGELOG.md`](CHANGELOG.md). [`PRD.md`](PRD.md) has the full plan (§7.0: what Phase 2 built)
-and [`IDEAS.md`](IDEAS.md) the idea catalogue.
+[Quick start](#quick-start) · [Features](#features) · [Test a RAG you already have](#test-a-rag-you-already-have) · [Documentation](#documentation) · [Contributing](#contributing)
 
-## Measure & optimize (v2.0)
+</div>
 
-- **Evaluate** — generate an eval set from your documents in one click; score any version on
-  Hit@k, MRR, nDCG, context tokens and p50/p95 latency, optionally with LLM-graded answers
-  (95% intervals, ties reported as ties). Every miss gets one diagnosis with a suggested fix.
-- **Sweeps & Auto-Optimize** — grid over up to 4 settings (chunking, embedder, retriever, top k,
-  reranker, query expansion…); Auto-Optimize answer-grades the best quarter. The leaderboard draws
-  the quality-vs-cost Pareto frontier and **Promote** makes the winner the live version.
-- **Corpus Health** — real user questions → a ranked backlog of what the documents can't answer
-  (vs. what retrieval merely missed), plus duplicates, contradictions, unused and stale documents.
+Most RAG failures happen before the LLM writes a word: the right passage was never retrieved. RAGLabs lets you
+upload documents, choose and tune every stage of the pipeline (including the vector database), chat with cited
+answers, and then **score the result**: test questions generated from your own documents, sweeps over settings,
+and a diagnosis for every miss. It also scores a RAG you built elsewhere, so you can compare it with a RAGLabs
+pipeline on the same questions.
 
-## Advanced retrieval & trust (v3.0)
+Everything runs on your machine. Documents, indexes and run history stay in a local SQLite database and vector
+store; only the LLM calls you configure leave it.
 
-- **Agentic retrieval & query decomposition** — an LLM planner searches again and keeps what answers;
-  multi-part questions are split and fused. Both are sweep axes, so you can see whether they pay for
-  their extra tokens and latency.
-- **Grounding check** — every claim and citation in an answer is graded against its sources; an
-  unsupported claim flags the answer or retries with more context.
-- **Injection-resistance testing** — plant poisoned passages in real retrieval results and measure
-  which defences stop them.
-- **Embedding adapter & prompt optimisation** — train a query-side map and DSPy-style few-shot
-  prompts on your eval set, with held-out before/after numbers.
-- **Platform** — OKF bundle import, code vertical, attested computation, production-query loop,
-  API keys with usage, chat-to-build and recipes.
+## Features
 
-The in-app **Docs** (top bar) explain every tab, option and metric; they are Markdown files in `frontend/src/features/docs/content/`.
+- **Build** with no code: parse, chunk, embed, store, retrieve, rerank, prompt and generate, each with real options (below). Every saved configuration is an immutable version you can diff and switch back to.
+- **Chat and inspect**: streaming answers with citations. An inspector shows which passages were found, by which search path, what was dropped and why, and what each step cost.
+- **Evaluate**: one-click eval sets from your documents; Hit@k, MRR, nDCG, tokens and p50/p95 latency, optionally with LLM-graded answers (95% intervals, ties reported as ties). Every miss gets one diagnosis and a suggested fix.
+- **Sweep and optimise**: grid over up to 4 settings (chunking, embedder, retriever, top k, reranker, query expansion...). The leaderboard draws the quality-vs-cost frontier, and **Promote** makes the winner live.
+- **Corpus Health**: real user questions become a ranked backlog of what your documents can't answer, plus duplicates, contradictions, unused and stale documents.
+- **Advanced retrieval and trust**: agentic retrieval and query decomposition, a grounding check that grades every claim and citation, injection-resistance testing, an embedding adapter and prompt optimisation.
+- **Bring your own RAG**: score any HTTP RAG endpoint on the same eval set, and gate CI on it.
+- **Export** a pipeline as a standalone FastAPI repo, or call it through the project API with scoped API keys.
 
-## What you can tune
+### What you can tune
 
 | Stage | Options |
 |---|---|
@@ -52,60 +45,78 @@ The in-app **Docs** (top bar) explain every tab, option and metric; they are Mar
 | Prompt | cited answer, concise, detailed, or your own template; context budget |
 | Generate | any OpenAI-compatible LLM: Gemini, NVIDIA, OpenAI, Anthropic, Groq, Mistral, OpenRouter, Together, DeepSeek, Ollama, LM Studio, or your own endpoint (vLLM, LiteLLM, a gateway…); model, temperature, top-p, max tokens |
 
-Every parameter is labelled **⚡ instant** (applies at query time) or **🔁 rebuild** (needs
-re-indexing). Rebuilds reuse cached work: switching vector store never re-embeds.
-Every saved configuration is an immutable version you can diff and switch back to at any time.
+Every parameter is labelled **⚡ instant** (applies at query time) or **🔁 rebuild** (needs re-indexing). Rebuilds
+reuse cached work: switching vector store never re-embeds.
 
-## Requirements
+## Quick start
 
-- [uv](https://docs.astral.sh/uv/) (Python is fetched automatically — the backend uses 3.12)
-- Node.js 20+
-- An LLM for chatting (retrieval and the inspector work without one): a free
-  [Gemini](https://aistudio.google.com/apikey) or [NVIDIA](https://build.nvidia.com) key, a key for
-  any other supported provider, or a local server such as Ollama. Connect it in the app under
-  **LLM providers**, or via `.env`.
+You need an LLM to chat with (retrieval, the inspector and retrieval evaluation work without one): a free
+[Gemini](https://aistudio.google.com/apikey) or [NVIDIA](https://build.nvidia.com) key, a key for any other supported
+provider, or a local server such as Ollama. Add it in the app under **LLM providers**, or in `.env`.
 
-## Security of API keys
-
-- Keys entered in the app are encrypted at rest (AES-256-GCM). The master key is created
-  on first run in your user config directory, **not** in `data/`, so a copied database
-  can't be read on its own. Back it up, or supply your own via `RAGLABS_SECRET_KEY`
-  (see `.env.example`).
-- Keys are never returned by the API (only `…abcd`), are scrubbed from logs, error
-  messages and run history, and are never written into exports.
-- A stored key is only ever sent to the base URL it was saved with. Changing the URL
-  means re-entering the key.
-- The backend only answers to `localhost`/`127.0.0.1` Host headers (`ALLOWED_HOSTS`),
-  which blocks DNS-rebinding attacks from web pages.
-
-## Run it
+### Docker
 
 ```bash
-cp .env.example .env          # optional: paste e.g. GEMINI_API_KEY / OPENAI_API_KEY (or add keys in the UI)
-
-# terminal 1 — backend (http://127.0.0.1:8000)
-cd backend
-uv sync
-uv run uvicorn app.main:app
-
-# terminal 2 — frontend (http://localhost:5173)
-cd frontend
-npm install
-npm run dev
+git clone https://github.com/anurag-njr11/Rag-Labs.git && cd Rag-Labs
+docker compose up --build        # http://localhost:8000
 ```
 
-Seed the demo project (the Pydantic v2 docs, ~500 chunks; the first run downloads a ~70 MB
-embedding model):
+The compose file publishes the port on `127.0.0.1` only and sets `OPEN_ACCESS=true`: a published port reaches the
+app from Docker's gateway (not loopback), and the web UI carries no API key. Don't publish it on a reachable address
+without your own auth in front. To serve only API-key callers, drop `OPEN_ACCESS` (the web UI then can't reach the
+API from inside Docker). Data, downloaded embedding models and the secret key live on named volumes (`/data`, `/config`).
+
+### From source
+
+Requires [uv](https://docs.astral.sh/uv/) (Python 3.12 is fetched automatically) and Node.js 20+.
 
 ```bash
-cd backend
-uv run python scripts/seed_demo.py
+cp .env.example .env          # optional: GEMINI_API_KEY / OPENAI_API_KEY ... (or add keys in the UI)
+
+# terminal 1: backend (http://127.0.0.1:8000)
+cd backend && uv sync && uv run uvicorn app.main:app
+
+# terminal 2: frontend (http://localhost:5173)
+cd frontend && npm install && npm run dev
 ```
 
-Then open the Playground and try:
+Seed a demo project (the Pydantic v2 docs, ~500 chunks; the first run downloads a ~70 MB embedding model):
 
-- *How do I make a field optional with a default?*
-- paste a raw error: `Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='abc', input_type=str]` — the top source carries the **exact** badge.
+```bash
+cd backend && uv run python scripts/seed_demo.py
+```
+
+Open the Playground and try *How do I make a field optional with a default?*, or paste a raw error such as
+`Input should be a valid integer, unable to parse string as an integer [type=int_parsing, input_value='abc', input_type=str]`
+(the top source carries the **exact** badge).
+
+### As a package
+
+`raglabs` is not on PyPI yet. Build the wheel yourself; it ships the web UI:
+
+```bash
+cd frontend && npm ci && npm run build      # writes backend/app/web
+cd ../backend && uv build --wheel           # dist/raglabs-*.whl
+pip install dist/raglabs-*.whl && raglabs serve      # http://127.0.0.1:8000, data in ~/.raglabs (or DATA_DIR)
+```
+
+## Test a RAG you already have
+
+Evaluate → **Your RAG** connects any HTTP endpoint (`POST {"question"}` → `{"answer", "contexts": [{"text", "source"}]}`,
+with a mappable response) and scores it on the same eval set as your pipelines, so you can see
+"your RAG: MRR 0.52, best RAGLabs config: 0.71". The create wizard has an *Evaluate a RAG I already have* path.
+See [`USER_GUIDE.md`](USER_GUIDE.md).
+
+### Gate CI on retrieval quality
+
+```bash
+raglabs eval --endpoint https://staging.example.com/ask --set eval.csv \
+  --header "Authorization: Bearer $RAG_TOKEN" --min-mrr 0.6 --min-hit 0.8
+```
+
+`eval.csv` has columns `question`, `evidence` (a verbatim quote that answers it) and optionally `document` (the file
+name). Exit code 0 = thresholds met, 1 = missed, 2 = bad input or unreachable. `--json` prints the metrics. In GitHub
+Actions, run it from `backend/` as `uv run raglabs eval ...` in a step after `astral-sh/setup-uv`.
 
 ## API
 
@@ -117,36 +128,31 @@ curl -X POST http://127.0.0.1:8000/api/projects/<id>/chat \
   -d '{"question": "How do I make a field optional?", "stream": false}'
 ```
 
-The full contract is in [`frontend/API.md`](frontend/API.md); interactive docs at
+Remote callers need an API key (`Authorization: Bearer rl_...`, created on the project's API tab); requests from this
+machine don't. The full contract is in [`frontend/API.md`](frontend/API.md); interactive docs at
 http://127.0.0.1:8000/docs.
 
-## Test a RAG you already have
+## Security
 
-Evaluate → **Your RAG** connects any HTTP endpoint (`POST {"question"}` → `{"answer", "contexts": [{"text", "source"}]}`, mappable) and scores it on the same eval set as your pipelines, so you can see
-"your RAG: MRR 0.52, best RAGLabs config: 0.71". See [`USER_GUIDE.md`](USER_GUIDE.md).
+- Keys entered in the app are encrypted at rest (AES-256-GCM). The master key is created on first run in your user
+  config directory, **not** in `data/`, so a copied database can't be read on its own. Back it up, or supply your own
+  via `RAGLABS_SECRET_KEY` (see `.env.example`).
+- Keys are never returned by the API (only `…abcd`), are scrubbed from logs, error messages and run history, and are
+  never written into exports.
+- A stored key is only ever sent to the base URL it was saved with. Changing the URL means re-entering the key.
+- The backend only answers to `localhost`/`127.0.0.1` Host headers (`ALLOWED_HOSTS`), which blocks DNS-rebinding
+  attacks from web pages.
 
-### Gate CI on retrieval quality
+Please report vulnerabilities privately, as described in [`SECURITY.md`](SECURITY.md).
 
-```bash
-cd backend && uv run raglabs eval --endpoint https://staging.example.com/ask --set eval.csv   --header "Authorization: Bearer $RAG_TOKEN" --min-mrr 0.6 --min-hit 0.8
-```
+## Documentation
 
-`eval.csv` has columns `question`, `evidence` (a verbatim quote that answers it) and optionally `document`
-(the file name). Exit code 0 = thresholds met, 1 = missed, 2 = bad input or unreachable. `--json` prints the metrics.
-In GitHub Actions, run the command above in a step after `astral-sh/setup-uv`. `raglabs serve` starts the app.
+- The in-app **Docs** (top bar) explain every tab, option and metric. They are Markdown in `frontend/src/features/docs/content/`.
+- [`USER_GUIDE.md`](USER_GUIDE.md): tutorial and debugging strategies.
+- [`DEVELOPER_ARCHITECTURE.md`](DEVELOPER_ARCHITECTURE.md): how the pipeline, stores, retrieval and evaluation work.
+- [`PRD.md`](PRD.md), [`OSS_ROADMAP.md`](OSS_ROADMAP.md), [`IDEAS.md`](IDEAS.md), [`CHANGELOG.md`](CHANGELOG.md): scope, roadmap, ideas and release notes.
 
-## Tests
-
-```bash
-cd backend && uv run pytest -q     # 240+ tests: contracts, all vector stores, pipeline rules, retrieval, eval, answer grading, sweeps, corpus health, eval-set editing
-cd frontend && npm run build       # type-check + production build
-```
-
-## Contributing & license
-
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) (how to add a node type, vector store or LLM preset). Licensed under [Apache-2.0](LICENSE).
-
-## Layout
+## Project layout
 
 ```
 backend/app/
@@ -154,16 +160,22 @@ backend/app/
   nodes/         parse, chunk, embed, retrieve, rerank, prompt, generate node types
   vectorstores/  numpy, faiss, chroma, qdrant, lancedb adapters (one contract, one test suite)
   ingest/        loaders, documents, index builds, exact-match keys, background jobs
-  engine/        retrieval, chat, store management, sync jobs
+  engine/        retrieval, chat, evaluation, store management, sync jobs
   api/           FastAPI routers
-frontend/        Vite + React + Tailwind v4 website (API.md = backend contract, DESIGN.md = design spec)
+frontend/        Vite + React + Tailwind v4 web UI (API.md = backend contract, DESIGN.md = design spec)
 data/            created at runtime: app.db, raw files, caches, vector stores (gitignored)
-.claude/agents/  subagent definitions used to build this in parallel
 ```
 
-## Parallel agents
+## Contributing
 
-[`.claude/agents/`](.claude/agents) defines subagents with non-overlapping ownership, so work can
-run in parallel: `figma-designer`, `frontend-foundation` (runs first), then `frontend-projects`,
-`frontend-configure` and `frontend-playground` in parallel, plus `backend-engineer`,
-`qa-tester` and `code-reviewer`. They are picked up when Claude Code starts (or via `/agents`).
+Contributions are welcome. [`CONTRIBUTING.md`](CONTRIBUTING.md) covers setup and how to add a node type, vector store
+or LLM preset, which are the usual first contributions. Before opening a PR:
+
+```bash
+cd backend && uv run pytest -q     # contracts, all vector stores, retrieval, eval, sweeps, corpus health...
+cd frontend && npm run build       # type-check + production build
+```
+
+## License
+
+[Apache-2.0](LICENSE)

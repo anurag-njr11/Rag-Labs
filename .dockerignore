@@ -1,0 +1,11 @@
+backend/.venv
+backend/.scratch
+**/__pycache__
+frontend/node_modules
+frontend/dist
+backend/app/web
+data
+.git
+*.log
+.env
+raglabs.html

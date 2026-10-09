@@ -1,0 +1,14 @@
+services:
+  raglabs:
+    build: .
+    ports:
+      - "127.0.0.1:8000:8000"   # keep it on 127.0.0.1: OPEN_ACCESS means no API key is checked
+    environment:
+      OPEN_ACCESS: "true"
+      # GEMINI_API_KEY: ...     # or add provider keys in Settings → Providers
+    volumes:
+      - raglabs-data:/data
+      - raglabs-config:/config
+volumes:
+  raglabs-data:
+  raglabs-config:

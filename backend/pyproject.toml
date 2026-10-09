@@ -37,6 +37,8 @@ build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["app"]
+# gitignored, so it has to be named: run `npm run build` in frontend/ before building a wheel
+artifacts = ["app/web"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

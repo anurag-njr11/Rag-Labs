@@ -7,6 +7,9 @@ phases map to releases (`PRD.md` §5).
 
 ### Added
 
+- **Docker image and installable package**: `docker compose up` runs the app with the web UI on :8000; `raglabs serve`
+  from an installed wheel serves the built UI and keeps data in `~/.raglabs` (or `DATA_DIR`). `OPEN_ACCESS=true`
+  trusts every caller, for a port published only on 127.0.0.1.
 - **"Evaluate a RAG I already have"** in the create wizard: a three-step path (Name, Documents, then Evaluate → Your RAG) that skips Configure and Build.
 - **In-app Docs** (top bar → Docs): 20 searchable pages with a sidebar, "on this page" outline and previous/next links, covering every tab, all pipeline options, the metrics and troubleshooting. Written as Markdown in `frontend/src/features/docs/content/`.
 - **Bring Your Own RAG** (FR-4.1–4.5): Evaluate → *Your RAG* connects an HTTP endpoint (answer + retrieved passages,

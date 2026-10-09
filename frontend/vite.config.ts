@@ -9,6 +9,9 @@ export default defineConfig({
     alias: { '@': fileURLToPath(new URL('./src', import.meta.url)) },
   },
   build: {
+    // The backend serves the build (and the wheel / Docker image ships it) from here.
+    outDir: '../backend/app/web',
+    emptyOutDir: true,
     rolldownOptions: {
       output: {
         // React + router change rarely: own chunk so app deploys don't bust their cache (and the entry stays < 500 kB).

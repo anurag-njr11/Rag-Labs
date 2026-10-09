@@ -80,8 +80,9 @@ def allowed(key: dict[str, Any], method: str, path: str) -> bool:
 class KeyMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request: Request, call_next: Any) -> Any:
         path = request.url.path
-        local = ((request.client.host if request.client else "") in LOOPBACK and get_settings().trust_loopback
-                 and not any(h in request.headers for h in PROXY_HEADERS))
+        s = get_settings()
+        local = s.open_access or ((request.client.host if request.client else "") in LOOPBACK and s.trust_loopback
+                                  and not any(h in request.headers for h in PROXY_HEADERS))
         request.state.api_key = None
         if path.startswith("/api/") and path not in OPEN and request.method != "OPTIONS":
             header = request.headers.get("authorization")
