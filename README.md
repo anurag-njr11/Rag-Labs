@@ -12,6 +12,8 @@
 
 </div>
 
+![RAGLabs demo: ask a question and inspect the cited sources, score the pipeline, then edit it on the canvas](docs/images/demo.gif)
+
 Most RAG failures happen before the LLM writes a word: the right passage was never retrieved. RAGLabs lets you
 upload documents, choose and tune every stage of the pipeline (including the vector database), chat with cited
 answers, and then **score the result**: test questions generated from your own documents, sweeps over settings,
