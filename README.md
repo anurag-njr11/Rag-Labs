@@ -102,7 +102,7 @@ Open the Playground and try *How do I make a field optional with a default?*, or
 
 ### As a package
 
-`raglabs` is not on PyPI yet. Build the wheel yourself; it ships the web UI:
+RAGLabs isn't published to PyPI; build the wheel yourself (it ships the web UI):
 
 ```bash
 cd frontend && npm ci && npm run build      # writes backend/app/web

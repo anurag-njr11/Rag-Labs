@@ -242,6 +242,28 @@ async def test_pinned_definition_ranks_first_after_fusion(project):
     assert not any(r["pinned"] for r in res_off)
 
 
+def test_only_focused_questions_get_the_exact_boost():
+    found = {"c1": ["heading:int_parsing"]}
+    assert retrieval.focused("What is int_parsing?", found)  # short: about the identifier
+    # long, and names the identifier only in passing: the example that answers it should win, not the definition
+    assert not retrieval.focused("What is the custom error message for the 'int_parsing' error type in the example?", found)
+    # long, but it is a pasted error that appears in the docs
+    msg = "Input should be a valid integer, unable to parse string as an integer"
+    sig = dict(lookup.query_keys(msg))  # {kind: key}; the whole message is a signature key
+    assert retrieval.focused(msg, {"c1": [sig["signature"]]})
+
+
+async def test_unfocused_question_skips_the_exact_path(project):
+    cfg = _cfg("numpy")
+    build = await builder.sync_build(project, cfg)
+    ctx = RunContext()
+    q = "Could you explain how I would go about changing the message that int_parsing shows to users?"
+    res = await retrieval.retrieve(ctx, build=build, cfg=cfg, question=q)
+    step = _events(ctx, "exact_search")[0]
+    assert step.payload["hits"] >= 1 and step.payload["used"] is False
+    assert not any(r["pinned"] or "exact" in r["found_by"] for r in res)
+
+
 # --- query expansion & context window -----------------------------------------
 
 def _events(ctx, step):

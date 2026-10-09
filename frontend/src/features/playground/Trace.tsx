@@ -27,7 +27,8 @@ function payloadFacts(s: TraceStep): string[] {
       break
     case 'keyword_search':
     case 'exact_search':
-      if (num(p.hits) != null) f.push(`${p.hits} hits`)
+      if (num(p.hits) != null) f.push(`${p.hits} hit${p.hits === 1 ? '' : 's'}`)
+      if (p.used === false) f.push('not used — the question only mentions the identifier in passing')
       break
     case 'fuse':
       if (str(p.method)) f.push(String(p.method).toUpperCase())

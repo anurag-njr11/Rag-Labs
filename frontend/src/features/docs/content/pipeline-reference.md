@@ -110,7 +110,7 @@ Finds candidate passages. All options are **instant**.
 
 | Type | Search paths |
 | --- | --- |
-| `fused` (default) | Dense, keyword and exact, combined. Best default; adds exact matching for error messages and symbols |
+| `fused` (default) | Dense, keyword and exact, combined. Best default; adds exact matching for error messages and symbols. Exact matches count when the question is about the identifier or error (8 words or fewer, or pasted error text found in the docs); in a longer question that only mentions one, it ranks like `hybrid` |
 | `hybrid` | Dense and keyword |
 | `dense` | Vectors only |
 | `keyword` | BM25 full text only; no embeddings at query time |
@@ -124,7 +124,7 @@ Finds candidate passages. All options are **instant**.
 | `dense_weight`, `keyword_weight`, `exact_weight` | 1.0, 1.0, 1.5 | How much each path counts |
 | `candidates` | 40 | Results each path contributes before fusion |
 | `min_score` | 0 | Drop dense results below this similarity |
-| `pin_definitions` | on | Put sections whose heading exactly names the symbol or error you asked about first |
+| `pin_definitions` | on | Put sections whose heading exactly names the symbol or error you asked about first (for questions about that symbol or error) |
 | `mmr`, `mmr_lambda` | off, 0.7 | Diversify results; 1 is pure relevance, 0 pure diversity |
 | `query_expansion` | `none` | `multi_query` (rewrites), `hyde` (a hypothetical answer, dense only) or `decompose` (split a multi-part question) |
 | `expansion_queries` | 3 | Rewrites to search with, or the most sub-questions |

@@ -339,6 +339,18 @@ class ExactIndex:
         return ranked, {cid: sorted(matched[cid]) for cid, _ in ranked}
 
 
+FOCUSED_WORDS = 8
+
+
+def focused(question: str, found: dict[str, list[str]]) -> bool:
+    """Exact matches count only for a question *about* the identifier/error: short, or with error text that appears
+    in the docs. A long question that names one in passing is answered by another passage (mirrors the engine)."""
+    if len(_WORD.findall(question)) <= FOCUSED_WORDS:
+        return True
+    error_text = {k for kind, k in query_keys(question) if kind == "signature"}
+    return any(label in error_text for labels in found.values() for label in labels)
+
+
 @lru_cache(maxsize=1)
 def exact_index() -> ExactIndex:
     return ExactIndex(load_chunks())
@@ -684,8 +696,10 @@ def retrieve(question: str, rc: dict[str, Any] | None = None) -> list[dict[str, 
         for i, q in enumerate(queries):
             lists[key("keyword", i)] = keyword_index().search(q, rc["candidates"])
     if "exact" in paths:
-        lists["exact"], found = exact_index().search(question, rc["candidates"])
-        exact_keys.update(found)
+        ranked, found = exact_index().search(question, rc["candidates"])
+        if not ranked or focused(question, found):
+            lists["exact"] = ranked
+            exact_keys.update(found)
 
     base = {"dense": rc["dense_weight"], "keyword": rc["keyword_weight"], "exact": rc["exact_weight"]}
     ordered = {k: lists[k] for k in sorted(lists)}  # sorted: float sums independent of path order
